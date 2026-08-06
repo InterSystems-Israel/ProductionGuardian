@@ -28,7 +28,7 @@
     {
       "host": "FHIR Transform",
       "type": "process",
-      "status": "Warning",
+      "status": "OK",
       "queued": 96,
       "messagesPerSec": 14.2,
       "errored": 0,

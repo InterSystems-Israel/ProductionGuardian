@@ -1,7 +1,7 @@
 {
   "id": "baseline-warming",
   "label": "Baseline warming up",
-  "note": "The engine has just started: no rolling baseline yet, so comparisons show as absent rather than as zero. CONTRACT-Q3.",
+  "note": "The engine has just started: no rolling baseline yet, so comparisons show as absent rather than as zero.",
   "hosts": [
     {
       "host": "EMR Source",
@@ -39,7 +39,7 @@
     {
       "host": "Cloud API",
       "type": "operation",
-      "status": "Warning",
+      "status": "OK",
       "queued": 44,
       "messagesPerSec": 16.5,
       "errored": 3,

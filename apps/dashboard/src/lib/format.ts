@@ -24,8 +24,9 @@ export function formatRate(value: number | null | undefined): string {
 }
 
 /**
- * Durations arrive in seconds (CONTRACT-Q6). Sub-second reads as ms because
- * `0.08 s` is harder to compare at a glance than `80 ms`.
+ * Durations arrive in seconds — confirmed empirically by Dev B against LABDEMO,
+ * not assumed (§4 Q6). Sub-second reads as ms because `0.08 s` is harder to
+ * compare at a glance than `80 ms`.
  */
 export function formatDuration(seconds: number | null | undefined): string {
   if (typeof seconds !== 'number' || !Number.isFinite(seconds)) return ABSENT;

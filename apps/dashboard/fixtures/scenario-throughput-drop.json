@@ -6,7 +6,7 @@
     {
       "host": "EMR Source",
       "type": "service",
-      "status": "Warning",
+      "status": "OK",
       "queued": 0,
       "messagesPerSec": 1.8,
       "errored": 0,

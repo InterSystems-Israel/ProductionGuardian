@@ -39,7 +39,7 @@
     {
       "host": "Cloud API",
       "type": "operation",
-      "status": "Warning",
+      "status": "Retry",
       "queued": 19,
       "messagesPerSec": 17.6,
       "errored": 4,

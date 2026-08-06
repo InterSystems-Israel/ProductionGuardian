@@ -46,8 +46,9 @@ export function SeveritySummary({
   loading,
 }: SeveritySummaryProps): JSX.Element {
   const counts = countBySeverity(findings);
-  /* CONTRACT-Q1: only an exact 'OK' counts as healthy. An unrecognized status is
-     deliberately excluded rather than assumed fine. */
+  /* Only an exact 'OK' counts as healthy. Of the seven statuses the contract
+     enumerates (§4 Q1) that is the only affirmatively-good one, and an
+     unrecognized status stays excluded rather than assumed fine. */
   const hostsOk = hosts.filter((host) => host.status === 'OK').length;
 
   return (

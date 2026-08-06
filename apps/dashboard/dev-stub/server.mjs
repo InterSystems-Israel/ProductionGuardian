@@ -42,17 +42,24 @@ async function loadScenario(id) {
   return JSON.parse(raw);
 }
 
+/*
+ * Second precision, no milliseconds — `toISOString()` emits `…52.000Z`, which the
+ * contract's timestamp pattern rejects. Matches `toContractIso` in
+ * `src/api/scenarios.ts`; both exist so the stub's bytes are contract-valid.
+ */
+const toContractIso = (epochMs) => `${new Date(epochMs).toISOString().slice(0, 19)}Z`;
+
 /** Fixture offsets → absolute ISO, exactly as the real engine would emit. */
 function resolve(scenario) {
   const now = Date.now();
   return {
     hosts: scenario.hosts.map(({ lastActivitySecondsAgo, ...host }) => ({
       ...host,
-      lastActivity: new Date(now - lastActivitySecondsAgo * 1000).toISOString(),
+      lastActivity: toContractIso(now - lastActivitySecondsAgo * 1000),
     })),
     findings: scenario.findings.map(({ detectedSecondsAgo, ...finding }) => ({
       ...finding,
-      detectedAt: new Date(now - detectedSecondsAgo * 1000).toISOString(),
+      detectedAt: toContractIso(now - detectedSecondsAgo * 1000),
     })),
   };
 }
@@ -60,8 +67,9 @@ function resolve(scenario) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
-  // CORS, so the stub also works when hit directly rather than through the
-  // Vite proxy. CONTRACT-Q9 — Dev B may or may not do this.
+  // CORS, so the stub also works when hit directly rather than through the Vite
+  // proxy. Matches what Dev B's engine sends (contract §3), so swapping this stub
+  // for the real API changes nothing about how the dashboard reaches it.
   res.setHeader('Access-Control-Allow-Origin', '*');
 
   if (alwaysFail) {

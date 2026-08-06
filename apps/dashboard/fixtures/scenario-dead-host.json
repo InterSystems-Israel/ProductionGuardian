@@ -17,7 +17,7 @@
     {
       "host": "Lab Router",
       "type": "process",
-      "status": "Warning",
+      "status": "OK",
       "queued": 212,
       "messagesPerSec": 17.4,
       "errored": 0,
@@ -28,7 +28,7 @@
     {
       "host": "FHIR Transform",
       "type": "process",
-      "status": "Warning",
+      "status": "OK",
       "queued": 338,
       "messagesPerSec": 0.4,
       "errored": 0,
@@ -39,7 +39,7 @@
     {
       "host": "Cloud API",
       "type": "operation",
-      "status": "Inactive",
+      "status": "Stopped",
       "queued": 154,
       "messagesPerSec": 0,
       "errored": 0,
@@ -57,7 +57,7 @@
       "currentValue": 0,
       "baselineValue": 17.9,
       "detectedSecondsAgo": 95,
-      "message": "Cloud API reports status Inactive with 154 messages queued"
+      "message": "Cloud API reports status Stopped with 154 messages queued"
     },
     {
       "id": "f-1102",

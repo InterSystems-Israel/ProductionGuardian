@@ -34,9 +34,9 @@ const EMPTY_IDS: ReadonlySet<string> = new Set();
 /**
  * Newest first, with severity breaking ties.
  *
- * CONTRACT-Q5: server-side ordering is unconfirmed, so the UI sorts. Sorting an
- * already-sorted array is cheap and makes the display independent of Dev B's
- * choice either way.
+ * Dev B sorts server-side with the same key (§4 Q5), so this is redundant — kept
+ * deliberately, because sorting an already-sorted array is cheap and it keeps the
+ * display correct if a future engine change reorders.
  */
 function sortFindings(findings: readonly FindingView[]): FindingView[] {
   return [...findings].sort((a, b) => {
@@ -98,9 +98,10 @@ export function useHealthScan(
   /* Ids seen on previous polls. A ref rather than state: it must not itself
      trigger a render, and it has to survive the client swap. */
   const seenIds = useRef<Set<string>>(new Set());
-  /* CONTRACT-Q4 depends on `finding.id` being stable while a condition persists.
-     If Dev B says ids churn per poll, every finding would look new on every
-     poll and this highlight has to go — the assumption is load-bearing here. */
+  /* Confirmed stable while a condition persists (§4 Q4), which is what makes the
+     highlight meaningful: an id appearing is a genuinely new condition, not the
+     same one re-keyed. Findings vanish when cleared, so ids leaving the set need
+     no tombstone handling. */
 
   const refresh = useCallback(
     async (signal?: AbortSignal): Promise<void> => {

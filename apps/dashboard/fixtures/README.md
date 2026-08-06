@@ -16,6 +16,26 @@ the screencast source (`apps/dashboard/CLAUDE.md` §5).
 - **Shape matches the contract exactly.** The same guards in `src/api/guards.ts`
   run over fixture data as over live data. If a fixture is dropped by a guard,
   the type transcription is wrong — that is the point of running them here.
+- **`status` uses the real IRIS enum** — `OK`, `Error`, `Inactive`, `Retry`,
+  `Stopped`, `Unconfigured`, `Disabled` (contract §4 Q1). There is **no
+  `Warning`**: a struggling host still reports `OK`, and the *finding* is what
+  signals trouble. Fixtures that used `Warning` to mean "degraded" were rewritten
+  to say so through findings instead.
+
+## Checking them
+
+The guards are deliberately lenient — they coerce and log-and-skip so one bad
+payload cannot blank the grid on stage. That leniency means a fixture can drift
+from the contract and still render, so the shape claim above gets a strict check
+of its own:
+
+```bash
+npm run validate:fixtures
+```
+
+It resolves each fixture's relative ages into timestamps exactly as `mockClient`
+does, then validates the result against `contracts/healthscan.schema.json`. Skips
+cleanly when `contracts/` is not checked out.
 
 ## The files
 
@@ -28,7 +48,7 @@ the screencast source (`apps/dashboard/CLAUDE.md` §5).
 | `scenario-slow-processing.json` | FHIR Transform processing time inflated |
 | `scenario-throughput-drop.json` | EMR Source intake collapsed |
 | `scenario-system-alert.json` | Alert posted to alerts.log |
-| `scenario-baseline-warming.json` | `baselineValue: null` — the warm-up state (CONTRACT-Q3) |
+| `scenario-baseline-warming.json` | `baselineValue: null` — the warm-up state (contract §4 Q3) |
 
 `mockClient` walks a scripted progression through a subset of these so the
 dashboard visibly comes alive during the demo without anyone touching IRIS.

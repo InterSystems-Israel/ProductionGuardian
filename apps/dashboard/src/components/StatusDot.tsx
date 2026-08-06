@@ -10,16 +10,31 @@ import type { HostStatus } from '../types/healthscan';
 
 type Tone = 'ok' | 'warning' | 'critical' | 'neutral';
 
+/*
+ * The full IRIS enum (contract §4 Q1). Only `OK` earns the healthy tone and only
+ * `Error` earns critical: the dot reports *status*, while severity comes from the
+ * findings joined to the host in `HostGrid`. The four statuses `dead_host` fires
+ * on (Error, Inactive, Stopped, Disabled) therefore do not all read critical here
+ * — a deliberately stopped host is not the same claim as a failing one, and the
+ * finding beside it carries the alarm.
+ */
 const TONES: Record<HostStatus, Tone> = {
   OK: 'ok',
-  Warning: 'warning',
   Error: 'critical',
+  Retry: 'warning', // retrying: degraded but still working
   Inactive: 'neutral',
+  Stopped: 'neutral',
+  Unconfigured: 'neutral',
+  Disabled: 'neutral',
 };
 
-/** CONTRACT-Q1: keyed off the assumed enum; unknown values fall through to neutral. */
 function toneFor(status: string): Tone {
   return TONES[status as HostStatus] ?? 'neutral';
+}
+
+/** A status the contract enumerates, so it is safe to show the raw IRIS word. */
+function isKnown(status: string): status is HostStatus {
+  return Object.prototype.hasOwnProperty.call(TONES, status);
 }
 
 export interface StatusDotProps {
@@ -30,7 +45,9 @@ export interface StatusDotProps {
 
 export function StatusDot({ status, withLabel = false }: StatusDotProps): JSX.Element {
   const tone = toneFor(status);
-  const known = tone !== 'neutral' || status === 'Inactive';
+  // Four statuses now render neutral, so "is it neutral" no longer answers "do we
+  // recognize it" — the membership check does.
+  const known = isKnown(status);
 
   return (
     <span className="pg-status">

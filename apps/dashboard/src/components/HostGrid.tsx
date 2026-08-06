@@ -18,7 +18,7 @@ export interface HostGridProps {
   loading: boolean;
 }
 
-/** CONTRACT-Q8: assumes `finding.host` matches `host.host` exactly. */
+/** `finding.host` is always exactly a `host.host` value — same string, same case (§4 Q8). */
 function severityByHost(
   findings: readonly FindingView[],
 ): Map<string, { worst: Severity | null; count: number }> {

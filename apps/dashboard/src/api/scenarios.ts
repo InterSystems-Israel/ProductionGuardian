@@ -61,12 +61,25 @@ export const PROGRESSION: readonly string[] = [
   'healthy',
 ];
 
+/**
+ * Second-precision ISO 8601, `Z`-suffixed — exactly what
+ * `contracts/healthscan.schema.json` permits for `lastActivity` / `detectedAt`.
+ *
+ * `toISOString()` alone is *not* conforming: it always emits milliseconds
+ * (`…52.000Z`) and the contract's pattern forbids the fractional part. Dropping it
+ * keeps the mock's bytes valid under both the pattern and a plain `date-time`
+ * format check, so demo data cannot be looser than what the live engine may send.
+ */
+function toContractIso(epochMs: number): string {
+  return `${new Date(epochMs).toISOString().slice(0, 19)}Z`;
+}
+
 /** Fixture host → contract host: relative age becomes an ISO timestamp. */
 function resolveHost(host: ScenarioHost, now: number): Host {
   const { lastActivitySecondsAgo, ...rest } = host;
   return {
     ...rest,
-    lastActivity: new Date(now - lastActivitySecondsAgo * 1000).toISOString(),
+    lastActivity: toContractIso(now - lastActivitySecondsAgo * 1000),
   };
 }
 
@@ -74,7 +87,7 @@ function resolveFinding(finding: ScenarioFinding, now: number): Finding {
   const { detectedSecondsAgo, ...rest } = finding;
   return {
     ...rest,
-    detectedAt: new Date(now - detectedSecondsAgo * 1000).toISOString(),
+    detectedAt: toContractIso(now - detectedSecondsAgo * 1000),
   };
 }
 

@@ -1,5 +1,6 @@
 /**
- * Findings, newest first. Sorting happens in `useHealthScan` (CONTRACT-Q5).
+ * Findings, newest first. Sorting happens in `useHealthScan`; Dev B also sorts
+ * server-side with the same key (§4 Q5).
  *
  * Rows are keyed by `finding.id` so React keeps identity across polls — that is
  * what lets the detail drawer stay open and the scroll position hold while data

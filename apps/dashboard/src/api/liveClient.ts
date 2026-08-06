@@ -2,9 +2,9 @@
  * Fetches Dev B's findings API.
  *
  * Base URL comes from `VITE_HEALTHSCAN_BASE_URL`, defaulting to the relative
- * `/api/healthscan` that the Vite dev proxy forwards to `:3002`. Going through
- * the proxy means CORS is never the dashboard's problem and Dev B can be Node or
- * Python without a change here (CONTRACT-Q9).
+ * `/api/healthscan` that the Vite dev proxy forwards to `:3002`. Dev B sends
+ * `Access-Control-Allow-Origin: *` (§4 Q9), so the proxy is optional — kept as the
+ * default anyway, since it also means Dev B's language never matters here.
  */
 
 import type { HealthScanApi } from './HealthScanApi';
@@ -32,10 +32,15 @@ export class HealthScanRequestError extends Error {
 }
 
 /**
- * CONTRACT-Q7: unresolved whether an empty result is `[]` or `404`, and what the
- * API returns while the engine is still starting. Both are treated as "nothing
- * to report" so a healthy-but-empty production cannot read as an outage; only a
- * genuine transport or server failure raises.
+ * Empty is `200` + `[]`, never `404`, including during engine startup (§3, §4 Q7).
+ * The 404-to-empty mapping below is therefore dead against a conforming engine —
+ * kept because it costs one line and a wrong 404 reading as an outage mid-demo
+ * costs more. Only a genuine transport or server failure raises.
+ *
+ * `X-Healthscan-State: warming | stale` is advisory and deliberately ignored: the
+ * dashboard already derives warm-up from `baselineValue: null` and staleness from
+ * its own `lastSuccessAt` clock, and a header would give it a second, disagreeing
+ * source of truth for the same banner.
  */
 async function getJson(path: string, signal?: AbortSignal): Promise<unknown> {
   let response: Response;

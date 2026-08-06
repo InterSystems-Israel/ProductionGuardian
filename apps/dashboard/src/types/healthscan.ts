@@ -1,10 +1,9 @@
 /**
  * Direct transcription of the Health Scan API contract.
  *
- * Source of record: `apps/dashboard/CLAUDE.md` §2.3, which matches §5 of
- * `docs/production-guardian-healthscan-mvp1.docx`. Dev B has not yet merged
- * `contracts/healthscan.d.ts`; when they do, reconcile every `CONTRACT-Q` site
- * in this directory against it.
+ * Source of record: `contracts/healthscan.d.ts` and `contracts/healthscan-api.md`,
+ * published by Dev B. §4 of that document answers all twelve of the Day-1
+ * questions, so the `CONTRACT-Q` markers that used to sit here are resolved.
  *
  * Never add a field here to make a component compile — that is a contract
  * change request to Dev B.
@@ -12,10 +11,24 @@
 
 export type Severity = 'info' | 'warning' | 'critical';
 
-/** CONTRACT-Q1: exact set unconfirmed. Assumed OK | Warning | Error | Inactive. */
-export type HostStatus = 'OK' | 'Warning' | 'Error' | 'Inactive';
+/**
+ * The IRIS host statuses, read from IRIS source rather than inferred (contract §4 Q1).
+ *
+ * There is no `Warning` — an early assumption that turned out not to exist. A
+ * host with a problem still reports `OK`; the *finding* is what signals trouble,
+ * which is why the host card takes its severity border from findings, not status.
+ * `Disabled` comes from `EnumerateHostStatus` rather than the metric.
+ */
+export type HostStatus =
+  | 'OK'
+  | 'Error'
+  | 'Inactive'
+  | 'Retry'
+  | 'Stopped'
+  | 'Unconfigured'
+  | 'Disabled';
 
-/** CONTRACT-Q2: the eight snake_case names, unconfirmed with Dev B. */
+/** The eight snake_case names, confirmed unchanged (contract §2.1, §4 Q2). */
 export type FindingType =
   | 'dead_host' // iris_interop_hosts status Inactive/Error
   | 'stalled_host' // iris_last_activity stale while queued
@@ -28,14 +41,20 @@ export type FindingType =
 
 export interface Host {
   host: string;
-  type: string; // 'service' | 'process' | 'operation' — treat as an open string
+  // 'service' | 'process' | 'operation' — an open string. IRIS says `actor` for
+  // business processes; Dev B normalizes it to `process` before it reaches us (Q10).
+  type: string;
   status: HostStatus;
   queued: number;
   messagesPerSec: number;
   errored: number;
-  avgProcessingTime: number; // CONTRACT-Q6: seconds (schema shows 0.08)
-  avgQueueingTime: number; // CONTRACT-Q6: seconds
-  lastActivity: string; // ISO 8601 UTC
+  // Seconds, confirmed empirically (Q6). Aggregated across message types,
+  // weighted by sample count, so a host handling two types reports the weighted
+  // mean rather than either one (Q12).
+  avgProcessingTime: number;
+  avgQueueingTime: number;
+  /** ISO 8601 UTC. Derived from elapsed seconds, so accurate to ±10s (Q11). */
+  lastActivity: string;
 }
 
 export interface Finding {
@@ -44,7 +63,7 @@ export interface Finding {
   type: FindingType;
   severity: Severity;
   currentValue: number;
-  /** CONTRACT-Q3: assumed null while the rolling baseline is still warming up. */
+  /** null while the rolling baseline is still warming up (Q3). Render as `—`. */
   baselineValue: number | null;
   detectedAt: string; // ISO 8601 UTC
   message: string; // human-readable; render as-is, never reconstructed
