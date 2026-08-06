@@ -179,7 +179,130 @@ button {
   padding: var(--pg-space-5);
 }
 
+/* The stale wrapper inherits the content column's own layout, so adding it
+   around the sections does not change the spacing. */
+.pg-content > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pg-space-6);
+  min-width: 0;
+}
+
+/* Data known to be out of date reads as receded, but stays legible — the banner
+   above it carries the explanation. */
+.pg-stale {
+  opacity: 0.6;
+  filter: saturate(0.75);
+  transition: opacity 150ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-stale {
+    transition: none;
+  }
+}
+
+/* ── Connection banner ─────────────────────────────────────────────────────── */
+
+.pg-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--pg-space-3);
+  padding: var(--pg-space-3) var(--pg-space-4);
+  border: 1px solid var(--pg-border);
+  border-left: 3px solid var(--pg-neutral);
+  border-radius: var(--pg-radius);
+  background: var(--pg-surface);
+  box-shadow: var(--pg-shadow-card);
+}
+
+.pg-banner--error {
+  border-left-color: var(--pg-critical);
+  background: var(--pg-critical-bg);
+}
+
+.pg-banner--error .pg-banner__icon {
+  color: var(--pg-critical);
+}
+
+.pg-banner--stale {
+  border-left-color: var(--pg-warning);
+  background: var(--pg-warning-bg);
+}
+
+.pg-banner--stale .pg-banner__icon {
+  color: var(--pg-warning);
+}
+
+.pg-banner__icon {
+  display: inline-flex;
+  padding-top: 1px;
+}
+
+.pg-banner__body {
+  min-width: 0;
+}
+
+.pg-banner__title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--pg-navy-800);
+}
+
+.pg-banner__detail {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--pg-text-muted);
+}
+
+.pg-banner__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--pg-space-2);
+  margin-left: auto;
+  flex: none;
+}
+
 /* ── Controls ──────────────────────────────────────────────────────────────── */
+
+/* Segmented demo/live control. Two real buttons rather than a checkbox: the
+   presenter needs to see which mode is active without reading a label. */
+.pg-toggle {
+  display: inline-flex;
+  padding: 2px;
+  background: var(--pg-surface-sunk);
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-radius-pill);
+}
+
+.pg-toggle__option {
+  padding: 3px var(--pg-space-3);
+  background: none;
+  border: none;
+  border-radius: var(--pg-radius-pill);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--pg-text-muted);
+  cursor: pointer;
+}
+
+.pg-toggle__option--active {
+  background: var(--pg-surface);
+  color: var(--pg-navy-800);
+  font-weight: 600;
+  box-shadow: var(--pg-shadow-card);
+}
+
+.pg-button--primary {
+  background: var(--pg-navy-800);
+  border-color: var(--pg-navy-800);
+  color: var(--pg-text-invert);
+}
+
+.pg-button--primary:hover {
+  background: var(--pg-navy-700);
+}
 
 .pg-pill {
   display: inline-flex;

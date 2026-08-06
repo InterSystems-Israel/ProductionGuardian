@@ -3,9 +3,9 @@
 Operator-facing frontend for Production Guardian MVP 1. React 18 + Vite +
 TypeScript, no runtime dependencies beyond React itself.
 
-**Current state:** the host grid, findings list and severity summary run against
-fixture data. Live polling, the demo/live toggle and the finding detail drawer are
-not built yet — see [Not built yet](#not-built-yet).
+**Current state:** host grid, findings list and severity summary, with live
+polling and a demo/live toggle. The finding detail drawer is not built yet — see
+[Not built yet](#not-built-yet).
 
 ---
 
@@ -51,6 +51,44 @@ drive it from the header:
 
 The header caption shows which fixture is on screen and the step number, so you
 can always tell what you are looking at.
+
+## Live mode
+
+The dashboard polls both endpoints every 5 s (`VITE_POLL_INTERVAL_MS`), pauses
+while the tab is hidden, and refetches the moment it returns.
+
+Dev B's API isn't up yet, so there's a **throwaway stub** in `dev-stub/` serving
+the same fixtures over real HTTP on `:3002`. It exists to exercise the live code
+path — fetch, JSON parsing, error handling, backoff — and gets deleted once the
+real API lands.
+
+```bash
+node dev-stub/server.mjs           # cycles the progression
+node dev-stub/server.mjs --fail    # always 503, to watch degradation
+node dev-stub/server.mjs --scenario=dead-host
+```
+
+Then open <http://localhost:5173/?mode=live>, or click **Live** in the header.
+The mode is reflected in the URL, so it's shareable.
+
+### Watch it degrade and recover
+
+This is the demo-reliability path, and the one worth testing by hand:
+
+1. Start the stub, open `?mode=live`, confirm the teal **LIVE** pill and data flowing.
+2. **Kill the stub.** Within ~5 s: a red banner appears, the last-good data stays
+   on screen but dimmed, labelled `Showing data as of HH:MM:SS UTC`. **It must
+   never blank.**
+3. Wait. Polling backs off 5 s → 10 s → 20 s → 30 s rather than hammering. At
+   **3 consecutive failures** a *Switch to demo mode* button appears — the
+   on-stage escape hatch.
+4. **Restart the stub.** The banner clears on the next successful poll, with no
+   page reload.
+
+The last-good payload is cached in `localStorage` (live mode only — caching demo
+fixtures would let a stale scenario resurface as if it were real). So step 2 also
+works on a *fresh page load* while the API is down: real data appears
+immediately, dimmed, rather than empty skeletons.
 
 ## Things worth deliberately checking
 
@@ -111,14 +149,17 @@ Both are clean as of the current commit.
 fixtures/*.json                 8 scenarios, LABDEMO's 4 components
    │
    ├─ api/scenarios.ts          static imports; relative → absolute timestamps
-   ├─ api/mockClient.ts   ─┐
-   └─ api/liveClient.ts   ─┤    (Phase 2 — not built yet)
+   ├─ api/mockClient.ts   ─┐    demo: scripted progression
+   └─ api/liveClient.ts   ─┤    live: fetch :3002 via the Vite proxy
                            │
                     api/HealthScanApi.ts     the seam: two impls, one interface
                            │
                     api/guards.ts            validate at the boundary
                            │
                   hooks/useHealthScan.ts     the only place data enters the UI
+                     + api/lastGood.ts       localStorage, live mode only
+                           │
+                  hooks/usePolling.ts        one timer, abort, backoff
                            │
                       components/*           props in, no fetching
 ```
@@ -159,10 +200,16 @@ watching in the console.
 
 | Phase | Work | Status |
 |---|---|---|
-| 2 | Live polling, demo/live toggle, `ConnectionBanner`, last-good cache | not started |
+| 2 | Live polling, demo/live toggle, `ConnectionBanner`, last-good cache | **done** |
 | 3 | Finding detail drawer — current vs. baseline, metric, timestamp | not started |
 | 4 | Screencast (needs a human to record) | not started |
 | 5 | `docs/demo/cue-sheet.md` | not started |
+
+Clicking a finding currently just highlights the row; the drawer with the
+current-vs-baseline comparison is Phase 3.
+
+`dev-stub/` is temporary scaffolding, not a deliverable — delete it when Dev B's
+`:3002` API is up.
 
 Out of scope for MVP 1 by design, not omission: remediation buttons, root-cause
 narratives, forecasts, a 0–100 health score, trend charts, production switching,

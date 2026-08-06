@@ -1,44 +1,55 @@
 /**
- * Layout, client selection, and the refresh orchestration.
+ * Layout, client selection, and polling orchestration.
  *
- * Phase 1 scope: the mock client only, refreshed on mount and on demand. The
- * live client, the demo/live toggle and interval polling arrive in Phase 2 —
- * the seam they plug into is `api` below, which is already the only thing the
- * rest of the tree knows about.
+ * The only place that knows which `HealthScanApi` implementation is running.
+ * Everything below receives data through `useHealthScan` and is unaware of the
+ * difference between demo and live.
  */
 
-import { useEffect, useMemo, useState } from 'react';
-import { createMockClient } from './api/mockClient';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { Mode } from './api/HealthScanApi';
+import { createLiveClient } from './api/liveClient';
+import { createMockClient, type MockClient } from './api/mockClient';
 import { useHealthScan } from './hooks/useHealthScan';
+import { pollIntervalMs, usePolling } from './hooks/usePolling';
 import { AppShell } from './components/AppShell';
+import { ConnectionBanner, type ConnectionState } from './components/ConnectionBanner';
 import { SeveritySummary } from './components/SeveritySummary';
 import { HostGrid } from './components/HostGrid';
 import { FindingsList } from './components/FindingsList';
 import { IconRestart } from './components/icons';
 import { formatAge } from './lib/format';
+import { readMode, readScenario, writeMode } from './lib/mode';
 
-/** Relative timestamps re-render on this cadence; independent of data polling. */
+/** Relative timestamps re-render on this cadence, independent of data polling. */
 const CLOCK_TICK_MS = 1000;
 
-function readScenarioParam(): string | undefined {
-  const value = new URLSearchParams(window.location.search).get('scenario');
-  return value === null || value.length === 0 ? undefined : value;
-}
+/** Data older than this multiple of the poll interval is called stale (§4.4). */
+const STALE_AFTER_INTERVALS = 3;
 
 export function App(): JSX.Element {
-  // Created once: the mock holds the progression step, so re-creating it would
-  // reset the demo story on every render.
-  const api = useMemo(() => createMockClient(readScenarioParam()), []);
-
-  const { hosts, findings, loading, lastSuccessAt, newFindingIds, refresh, resetSeen } =
-    useHealthScan(api);
-
+  const [mode, setMode] = useState<Mode>(() => readMode());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const intervalMs = useMemo(() => pollIntervalMs(), []);
+
+  /* Both clients are created once and kept, so switching modes mid-demo does not
+     reset the mock's progression — the presenter can flip to live, find it dead,
+     and flip back to exactly where the story was. */
+  const mockClient = useMemo<MockClient>(() => createMockClient(readScenario()), []);
+  const liveClient = useMemo(() => createLiveClient(), []);
+  const api = mode === 'live' ? liveClient : mockClient;
+
+  const { hosts, findings, loading, error, lastSuccessAt, newFindingIds, refresh, resetSeen } =
+    useHealthScan(api, { cacheLastGood: mode === 'live' });
+
+  const onTick = useCallback(
+    (signal: AbortSignal) => refresh(signal),
+    [refresh],
+  );
+
+  const { failureCount, pollNow } = usePolling({ onTick, intervalMs });
 
   // One shared clock for every relative timestamp on the page.
   useEffect(() => {
@@ -46,66 +57,123 @@ export function App(): JSX.Element {
     return () => window.clearInterval(timer);
   }, []);
 
-  const scenario = api.currentScenario();
+  const switchMode = useCallback(
+    (next: Mode): void => {
+      setMode(next);
+      writeMode(next);
+      // The two clients report different worlds; carrying "seen" ids across
+      // would make the new mode's findings all look pre-existing.
+      resetSeen();
+      setSelectedId(null);
+    },
+    [resetSeen],
+  );
 
-  function handleRestart(): void {
-    api.restart();
+  const isStale =
+    lastSuccessAt !== null && now - lastSuccessAt > intervalMs * STALE_AFTER_INTERVALS;
+
+  const connectionState: ConnectionState =
+    error !== null ? 'error' : isStale ? 'stale' : 'ok';
+
+  function handleRestartDemo(): void {
+    mockClient.restart();
     resetSeen();
     setSelectedId(null);
-    void refresh();
+    pollNow();
   }
+
+  const scenario = mockClient.currentScenario();
 
   const headerActions = (
     <>
-      <span className="pg-pill pg-pill--demo">Demo</span>
-      <span className="pg-header__meta">
-        {api.isPinned()
-          ? scenario.label
-          : `${scenario.label} · step ${api.step() + 1}/${api.stepCount()}`}
-      </span>
+      <span className={`pg-pill pg-pill--${mode}`}>{mode === 'live' ? 'Live' : 'Demo'}</span>
+
+      {mode === 'demo' && (
+        <span className="pg-header__meta">
+          {mockClient.isPinned()
+            ? scenario.label
+            : `${scenario.label} · step ${mockClient.step() + 1}/${mockClient.stepCount()}`}
+        </span>
+      )}
+
       <span className="pg-header__meta pg-header__meta--mono">
         updated {formatAge(lastSuccessAt, now)}
       </span>
-      <button type="button" className="pg-button" onClick={() => void refresh()}>
-        Advance
-      </button>
-      <button
-        type="button"
-        className="pg-button pg-button--icon"
-        onClick={handleRestart}
-        title="Restart the demo progression"
-        aria-label="Restart the demo progression"
-      >
-        <IconRestart size={15} />
-      </button>
+
+      {mode === 'demo' && (
+        <button
+          type="button"
+          className="pg-button pg-button--icon"
+          onClick={handleRestartDemo}
+          title="Restart the demo progression"
+          aria-label="Restart the demo progression"
+        >
+          <IconRestart size={15} />
+        </button>
+      )}
+
+      {/* A visible toggle so the presenter never has to edit the URL (§4.2). */}
+      <div className="pg-toggle" role="group" aria-label="Data source">
+        <button
+          type="button"
+          className={`pg-toggle__option${mode === 'demo' ? ' pg-toggle__option--active' : ''}`}
+          onClick={() => switchMode('demo')}
+          aria-pressed={mode === 'demo'}
+        >
+          Demo
+        </button>
+        <button
+          type="button"
+          className={`pg-toggle__option${mode === 'live' ? ' pg-toggle__option--active' : ''}`}
+          onClick={() => switchMode('live')}
+          aria-pressed={mode === 'live'}
+        >
+          Live
+        </button>
+      </div>
     </>
   );
 
+  // Dim the content while showing data known to be out of date, so nobody reads
+  // a stale number as current.
+  const contentClass = connectionState === 'ok' ? '' : 'pg-stale';
+
   return (
     <AppShell headerActions={headerActions}>
-      <SeveritySummary findings={findings} hosts={hosts} loading={loading} />
+      <ConnectionBanner
+        state={connectionState}
+        error={error}
+        lastSuccessAt={lastSuccessAt}
+        failureCount={failureCount}
+        onRetry={pollNow}
+        onSwitchToDemo={() => switchMode('demo')}
+      />
 
-      <section className="pg-section" aria-labelledby="pg-hosts-heading">
-        <h2 id="pg-hosts-heading" className="pg-section__title">
-          Hosts
-        </h2>
-        <HostGrid hosts={hosts} findings={findings} now={now} loading={loading} />
-      </section>
+      <div className={contentClass}>
+        <SeveritySummary findings={findings} hosts={hosts} loading={loading} />
 
-      <section className="pg-section" aria-labelledby="pg-findings-heading">
-        <h2 id="pg-findings-heading" className="pg-section__title">
-          Findings
-          {findings.length > 0 && <span className="pg-section__count">{findings.length}</span>}
-        </h2>
-        <FindingsList
-          findings={findings}
-          selectedId={selectedId}
-          newFindingIds={newFindingIds}
-          now={now}
-          loading={loading}
-          onSelect={(id) => setSelectedId((current) => (current === id ? null : id))}
-        />
-      </section>
+        <section className="pg-section" aria-labelledby="pg-hosts-heading">
+          <h2 id="pg-hosts-heading" className="pg-section__title">
+            Hosts
+          </h2>
+          <HostGrid hosts={hosts} findings={findings} now={now} loading={loading} />
+        </section>
+
+        <section className="pg-section" aria-labelledby="pg-findings-heading">
+          <h2 id="pg-findings-heading" className="pg-section__title">
+            Findings
+            {findings.length > 0 && <span className="pg-section__count">{findings.length}</span>}
+          </h2>
+          <FindingsList
+            findings={findings}
+            selectedId={selectedId}
+            newFindingIds={newFindingIds}
+            now={now}
+            loading={loading}
+            onSelect={(id) => setSelectedId((current) => (current === id ? null : id))}
+          />
+        </section>
+      </div>
     </AppShell>
   );
 }

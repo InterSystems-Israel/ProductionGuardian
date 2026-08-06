@@ -11,6 +11,7 @@
 
 import { useCallback, useRef, useState } from 'react';
 import type { HealthScanApi } from '../api/HealthScanApi';
+import { readLastGood, writeLastGood } from '../api/lastGood';
 import type { FindingView, HostView } from '../types/healthscan';
 import { compareSeverity, toSeverity } from '../lib/severity';
 import { parseTimestamp } from '../lib/format';
@@ -47,20 +48,51 @@ function sortFindings(findings: readonly FindingView[]): FindingView[] {
 }
 
 export interface UseHealthScanResult extends HealthScanState {
-  /** Fetches both endpoints on one tick. Safe to call from a poll or by hand. */
+  /**
+   * Fetches both endpoints on one tick. Re-throws on failure so `usePolling`
+   * can back off — the state update and the signal to the poller are separate
+   * concerns, and swallowing the error here would peg polling at 5s during an
+   * outage.
+   */
   refresh: (signal?: AbortSignal) => Promise<void>;
   /** Drops cached ids so the next refresh treats everything as pre-existing. */
   resetSeen: () => void;
 }
 
-export function useHealthScan(api: HealthScanApi): UseHealthScanResult {
-  const [state, setState] = useState<HealthScanState>({
-    hosts: [],
-    findings: [],
-    loading: true,
-    error: null,
-    lastSuccessAt: null,
-    newFindingIds: EMPTY_IDS,
+export interface UseHealthScanOptions {
+  /**
+   * Seed from and persist to the last-good cache. Live mode only: caching demo
+   * fixtures would let a stale scenario resurface as though it were real data.
+   */
+  cacheLastGood?: boolean;
+}
+
+export function useHealthScan(
+  api: HealthScanApi,
+  { cacheLastGood = false }: UseHealthScanOptions = {},
+): UseHealthScanResult {
+  const [state, setState] = useState<HealthScanState>(() => {
+    // Paint the last-good payload immediately in live mode, so a demo that opens
+    // while the API is down still shows real data rather than empty skeletons.
+    const cached = cacheLastGood ? readLastGood() : null;
+    if (cached !== null) {
+      return {
+        hosts: cached.hosts,
+        findings: cached.findings,
+        loading: true,
+        error: null,
+        lastSuccessAt: cached.at,
+        newFindingIds: EMPTY_IDS,
+      };
+    }
+    return {
+      hosts: [],
+      findings: [],
+      loading: true,
+      error: null,
+      lastSuccessAt: null,
+      newFindingIds: EMPTY_IDS,
+    };
   });
 
   /* Ids seen on previous polls. A ref rather than state: it must not itself
@@ -87,15 +119,20 @@ export function useHealthScan(api: HealthScanApi): UseHealthScanResult {
         }
         seenIds.current = new Set(sorted.map((finding) => finding.id));
 
+        const at = Date.now();
         setState({
           hosts,
           findings: sorted,
           loading: false,
           error: null,
-          lastSuccessAt: Date.now(),
+          lastSuccessAt: at,
           // Nothing is "new" on first paint — the whole list would pulse at once.
           newFindingIds: isFirstLoad ? EMPTY_IDS : fresh,
         });
+
+        if (cacheLastGood) {
+          writeLastGood({ hosts, findings: sorted, at });
+        }
       } catch (cause) {
         // An abort is the caller's own doing (unmount, next tick) — not an error.
         if (cause instanceof DOMException && cause.name === 'AbortError') return;
@@ -104,9 +141,11 @@ export function useHealthScan(api: HealthScanApi): UseHealthScanResult {
         // they are dimmed. Blanking the grid on a transient failure is worse
         // than showing stale data with a timestamp (§4.2).
         setState((previous) => ({ ...previous, loading: false, error: message }));
+        // Re-thrown so the poller backs off rather than hammering a dead API.
+        throw cause;
       }
     },
-    [api],
+    [api, cacheLastGood],
   );
 
   const resetSeen = useCallback((): void => {
