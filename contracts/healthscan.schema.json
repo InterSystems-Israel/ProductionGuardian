@@ -1,0 +1,162 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://production-guardian/contracts/healthscan.schema.json",
+  "title": "Production Guardian — Health Scan API",
+  "description": "Schemas for GET /api/healthscan/hosts and GET /api/healthscan/findings. Owner: Dev B. See healthscan-api.md.",
+
+  "definitions": {
+    "Host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "type",
+        "status",
+        "queued",
+        "messagesPerSec",
+        "errored",
+        "avgProcessingTime",
+        "avgQueueingTime",
+        "lastActivity"
+      ],
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Config item name exactly as it appears in IRIS. Join key for Finding.host."
+        },
+        "type": {
+          "type": "string",
+          "description": "Normalized host type. IRIS reports processes as 'actor'; we map actor -> process. Open string: render unknown values neutrally.",
+          "examples": ["service", "process", "operation"]
+        },
+        "status": {
+          "type": "string",
+          "description": "Host status as reported by IRIS. Enumerated for validation, but consumers must render unknown values neutrally rather than failing. Note there is no 'Warning'.",
+          "enum": [
+            "OK",
+            "Error",
+            "Inactive",
+            "Retry",
+            "Stopped",
+            "Unconfigured",
+            "Disabled"
+          ]
+        },
+        "queued": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Current queue depth."
+        },
+        "messagesPerSec": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Throughput over the last sampling interval."
+        },
+        "errored": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cumulative errored message count since production start."
+        },
+        "avgProcessingTime": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Seconds. Aggregated across message types, weighted by sample count."
+        },
+        "avgQueueingTime": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Seconds. Aggregated across message types, weighted by sample count."
+        },
+        "lastActivity": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+          "description": "ISO 8601 UTC. Derived as now minus IRIS elapsed-seconds, so accurate to roughly the poll interval."
+        }
+      }
+    },
+
+    "Finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "host",
+        "type",
+        "severity",
+        "currentValue",
+        "baselineValue",
+        "detectedAt",
+        "message"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable for the lifetime of the condition. Safe to key React lists on."
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Always exactly equal to some Host.host value."
+        },
+        "type": {
+          "type": "string",
+          "description": "One of the eight finding types. Open string: unknown values must render with a neutral icon and humanized label.",
+          "enum": [
+            "dead_host",
+            "stalled_host",
+            "queue_buildup",
+            "elevated_error_rate",
+            "slow_processing",
+            "growing_queue_wait",
+            "throughput_drop",
+            "system_alert"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "warning", "critical"],
+          "description": "Unknown values must be treated as 'info'."
+        },
+        "currentValue": {
+          "type": "number",
+          "description": "The metric value that breached."
+        },
+        "baselineValue": {
+          "type": ["number", "null"],
+          "description": "null while the rolling baseline is still warming up. Render as an em dash, never as 0 or NaN."
+        },
+        "detectedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+          "description": "When the condition was first confirmed (after sustained breach), not when last seen."
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable and authoritative. Render as-is."
+        }
+      }
+    },
+
+    "HostsResponse": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Host" },
+      "description": "GET /api/healthscan/hosts. Empty array when no hosts, never 404."
+    },
+
+    "FindingsResponse": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Finding" },
+      "description": "GET /api/healthscan/findings. Empty array when no findings, never 404. Sorted detectedAt desc."
+    }
+  },
+
+  "oneOf": [
+    { "$ref": "#/definitions/HostsResponse" },
+    { "$ref": "#/definitions/FindingsResponse" }
+  ]
+}

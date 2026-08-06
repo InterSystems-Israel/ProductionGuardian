@@ -1,0 +1,46 @@
+[
+  {
+    "host": "Cloud API",
+    "type": "operation",
+    "status": "OK",
+    "queued": 0,
+    "messagesPerSec": 0.4,
+    "errored": 0,
+    "avgProcessingTime": 0.05,
+    "avgQueueingTime": 0.02,
+    "lastActivity": "2026-08-06T15:47:52Z"
+  },
+  {
+    "host": "EMR Source",
+    "type": "service",
+    "status": "OK",
+    "queued": 0,
+    "messagesPerSec": 0.2,
+    "errored": 0,
+    "avgProcessingTime": 0.01,
+    "avgQueueingTime": 0,
+    "lastActivity": "2026-08-06T15:47:52Z"
+  },
+  {
+    "host": "FHIR Transform",
+    "type": "process",
+    "status": "OK",
+    "queued": 0,
+    "messagesPerSec": 1.2,
+    "errored": 0,
+    "avgProcessingTime": 0.08,
+    "avgQueueingTime": 0,
+    "lastActivity": "2026-08-06T15:47:52Z"
+  },
+  {
+    "host": "Lab Router",
+    "type": "process",
+    "status": "OK",
+    "queued": 0,
+    "messagesPerSec": 1.2,
+    "errored": 0,
+    "avgProcessingTime": 0.08,
+    "avgQueueingTime": 0,
+    "lastActivity": "2026-08-06T15:47:52Z"
+  }
+]
