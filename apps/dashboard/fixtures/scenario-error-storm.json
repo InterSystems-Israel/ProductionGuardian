@@ -1,0 +1,83 @@
+{
+  "id": "error-storm",
+  "label": "Error storm",
+  "note": "Cloud API is rejecting messages. Error count is climbing fast against a baseline of zero.",
+  "hosts": [
+    {
+      "host": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 3,
+      "messagesPerSec": 19.1,
+      "errored": 0,
+      "avgProcessingTime": 0.04,
+      "avgQueueingTime": 0.01,
+      "lastActivitySecondsAgo": 1
+    },
+    {
+      "host": "Lab Router",
+      "type": "process",
+      "status": "OK",
+      "queued": 14,
+      "messagesPerSec": 18.9,
+      "errored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0.03,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "FHIR Transform",
+      "type": "process",
+      "status": "Warning",
+      "queued": 22,
+      "messagesPerSec": 18.2,
+      "errored": 34,
+      "avgProcessingTime": 0.23,
+      "avgQueueingTime": 0.09,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "Cloud API",
+      "type": "operation",
+      "status": "Error",
+      "queued": 61,
+      "messagesPerSec": 12.6,
+      "errored": 218,
+      "avgProcessingTime": 0.52,
+      "avgQueueingTime": 0.84,
+      "lastActivitySecondsAgo": 1
+    }
+  ],
+  "findings": [
+    {
+      "id": "f-1210",
+      "host": "Cloud API",
+      "type": "elevated_error_rate",
+      "severity": "critical",
+      "currentValue": 218,
+      "baselineValue": 0,
+      "detectedSecondsAgo": 72,
+      "message": "218 errored messages against a baseline of 0"
+    },
+    {
+      "id": "f-1211",
+      "host": "FHIR Transform",
+      "type": "elevated_error_rate",
+      "severity": "warning",
+      "currentValue": 34,
+      "baselineValue": 1,
+      "detectedSecondsAgo": 41,
+      "message": "34 errored messages is 34x baseline"
+    },
+    {
+      "id": "f-1212",
+      "host": "Cloud API",
+      "type": "throughput_drop",
+      "severity": "warning",
+      "currentValue": 12.6,
+      "baselineValue": 17.9,
+      "detectedSecondsAgo": 25,
+      "message": "Throughput 12.6 msg/sec is below the 17.9 msg/sec baseline"
+    }
+  ]
+}

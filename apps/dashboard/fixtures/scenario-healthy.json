@@ -1,0 +1,52 @@
+{
+  "id": "healthy",
+  "label": "Healthy",
+  "note": "Everything within baseline. Zero findings — the empty state.",
+  "hosts": [
+    {
+      "host": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 2,
+      "messagesPerSec": 18.6,
+      "errored": 0,
+      "avgProcessingTime": 0.04,
+      "avgQueueingTime": 0.01,
+      "lastActivitySecondsAgo": 3
+    },
+    {
+      "host": "Lab Router",
+      "type": "process",
+      "status": "OK",
+      "queued": 11,
+      "messagesPerSec": 18.4,
+      "errored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0.02,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "FHIR Transform",
+      "type": "process",
+      "status": "OK",
+      "queued": 6,
+      "messagesPerSec": 18.1,
+      "errored": 0,
+      "avgProcessingTime": 0.21,
+      "avgQueueingTime": 0.03,
+      "lastActivitySecondsAgo": 4
+    },
+    {
+      "host": "Cloud API",
+      "type": "operation",
+      "status": "OK",
+      "queued": 3,
+      "messagesPerSec": 17.9,
+      "errored": 0,
+      "avgProcessingTime": 0.36,
+      "avgQueueingTime": 0.05,
+      "lastActivitySecondsAgo": 5
+    }
+  ],
+  "findings": []
+}

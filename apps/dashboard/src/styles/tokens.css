@@ -1,0 +1,56 @@
+/* Design tokens ONLY. No selectors beyond :root, no component styles.
+   Palette from docs/production-guardian-deck.pptx and docs/Brochure.png. */
+
+:root {
+  /* Brand */
+  --pg-navy-900: #142138;   /* deepest — nav rail base            */
+  --pg-navy-800: #1B2A4A;   /* primary brand navy — headings, rail */
+  --pg-navy-700: #233A5C;   /* rail hover / elevated navy          */
+  --pg-navy-600: #2A4570;
+  --pg-teal-500: #00A887;   /* brand accent — healthy, active      */
+  --pg-teal-200: #90C8BF;   /* muted accent                        */
+
+  /* Neutrals */
+  --pg-surface:      #FFFFFF;   /* cards                    */
+  --pg-surface-alt:  #F0F4F8;   /* page background          */
+  --pg-surface-sunk: #E8EEF5;   /* inset / table header     */
+  --pg-border:       #D0DAE8;
+  --pg-border-soft:  #E8EEF5;
+  --pg-text:         #1B2A4A;
+  --pg-text-muted:   #6B7280;
+  --pg-text-invert:  #FFFFFF;
+
+  /* Severity — the only semantic colors; never reuse for decoration.
+     Darkened from the brochure's marketing tones so severity text clears
+     WCAG AA on white and stays legible on a projector. */
+  --pg-critical:     #C0392B;
+  --pg-critical-bg:  #FCEBE9;
+  --pg-warning:      #B8791C;
+  --pg-warning-bg:   #FDF4E3;
+  --pg-info:         #1F5F9E;
+  --pg-info-bg:      #EAF2FA;
+  --pg-ok:           #00806A;   /* darkened teal — AA on white  */
+  --pg-ok-bg:        #E6F6F2;
+  --pg-neutral:      #6B7280;   /* unknown status / warming up  */
+  --pg-neutral-bg:   #F0F4F8;
+
+  /* Type */
+  --pg-font: "Inter", "Segoe UI", -apple-system, system-ui, sans-serif;
+  --pg-font-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  /* Geometry — 4px scale, use these, not magic numbers */
+  --pg-space-1: 4px;  --pg-space-2: 8px;  --pg-space-3: 12px;
+  --pg-space-4: 16px; --pg-space-5: 24px; --pg-space-6: 32px;
+  --pg-radius:    8px;
+  --pg-radius-lg: 12px;
+  --pg-radius-pill: 999px;
+  --pg-shadow-card: 0 1px 2px rgb(20 33 56 / 6%), 0 2px 8px rgb(20 33 56 / 4%);
+  --pg-shadow-drawer: -8px 0 24px rgb(20 33 56 / 12%);
+
+  /* Layout — added here rather than inlined, per §9 */
+  --pg-rail-width: 208px;
+  --pg-header-height: 60px;
+  --pg-content-max: 1600px;
+  --pg-drawer-width: 420px;
+  --pg-focus-ring: 0 0 0 3px rgb(0 168 135 / 45%);
+}

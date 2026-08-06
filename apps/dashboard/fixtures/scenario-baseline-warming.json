@@ -1,0 +1,73 @@
+{
+  "id": "baseline-warming",
+  "label": "Baseline warming up",
+  "note": "The engine has just started: no rolling baseline yet, so comparisons show as absent rather than as zero. CONTRACT-Q3.",
+  "hosts": [
+    {
+      "host": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 5,
+      "messagesPerSec": 17.2,
+      "errored": 0,
+      "avgProcessingTime": 0.05,
+      "avgQueueingTime": 0.01,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "Lab Router",
+      "type": "process",
+      "status": "OK",
+      "queued": 18,
+      "messagesPerSec": 17.0,
+      "errored": 0,
+      "avgProcessingTime": 0.09,
+      "avgQueueingTime": 0.04,
+      "lastActivitySecondsAgo": 1
+    },
+    {
+      "host": "FHIR Transform",
+      "type": "process",
+      "status": "OK",
+      "queued": 7,
+      "messagesPerSec": 16.8,
+      "errored": 0,
+      "avgProcessingTime": 0.24,
+      "avgQueueingTime": 0.03,
+      "lastActivitySecondsAgo": 3
+    },
+    {
+      "host": "Cloud API",
+      "type": "operation",
+      "status": "Warning",
+      "queued": 44,
+      "messagesPerSec": 16.5,
+      "errored": 3,
+      "avgProcessingTime": 0.91,
+      "avgQueueingTime": 0.38,
+      "lastActivitySecondsAgo": 2
+    }
+  ],
+  "findings": [
+    {
+      "id": "f-1660",
+      "host": "Cloud API",
+      "type": "slow_processing",
+      "severity": "warning",
+      "currentValue": 0.91,
+      "baselineValue": null,
+      "detectedSecondsAgo": 20,
+      "message": "Average processing time 0.91s exceeds the absolute threshold; baseline still warming up"
+    },
+    {
+      "id": "f-1661",
+      "host": "Cloud API",
+      "type": "queue_buildup",
+      "severity": "info",
+      "currentValue": 44,
+      "baselineValue": null,
+      "detectedSecondsAgo": 12,
+      "message": "Queue depth 44 exceeds the absolute threshold; baseline still warming up"
+    }
+  ]
+}

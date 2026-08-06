@@ -1,0 +1,73 @@
+{
+  "id": "slow-processing",
+  "label": "Slow processing",
+  "note": "FHIR Transform is taking far longer per message than baseline. Nothing is failing yet — this is the early signal.",
+  "hosts": [
+    {
+      "host": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 3,
+      "messagesPerSec": 18.7,
+      "errored": 0,
+      "avgProcessingTime": 0.04,
+      "avgQueueingTime": 0.01,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "Lab Router",
+      "type": "process",
+      "status": "OK",
+      "queued": 13,
+      "messagesPerSec": 18.5,
+      "errored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0.02,
+      "lastActivitySecondsAgo": 1
+    },
+    {
+      "host": "FHIR Transform",
+      "type": "process",
+      "status": "Warning",
+      "queued": 96,
+      "messagesPerSec": 14.2,
+      "errored": 0,
+      "avgProcessingTime": 1.86,
+      "avgQueueingTime": 1.24,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "Cloud API",
+      "type": "operation",
+      "status": "OK",
+      "queued": 7,
+      "messagesPerSec": 14.0,
+      "errored": 0,
+      "avgProcessingTime": 0.39,
+      "avgQueueingTime": 0.07,
+      "lastActivitySecondsAgo": 3
+    }
+  ],
+  "findings": [
+    {
+      "id": "f-1330",
+      "host": "FHIR Transform",
+      "type": "slow_processing",
+      "severity": "warning",
+      "currentValue": 1.86,
+      "baselineValue": 0.21,
+      "detectedSecondsAgo": 88,
+      "message": "Average processing time 1.86s is 8.9x the 0.21s baseline"
+    },
+    {
+      "id": "f-1331",
+      "host": "FHIR Transform",
+      "type": "queue_buildup",
+      "severity": "info",
+      "currentValue": 96,
+      "baselineValue": 6,
+      "detectedSecondsAgo": 52,
+      "message": "Queue depth 96 is 16x baseline"
+    }
+  ]
+}

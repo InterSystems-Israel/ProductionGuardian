@@ -1,0 +1,73 @@
+{
+  "id": "throughput-drop",
+  "label": "Throughput drop",
+  "note": "EMR Source intake has collapsed. Queues are draining, which looks healthy until you notice nothing is arriving.",
+  "hosts": [
+    {
+      "host": "EMR Source",
+      "type": "service",
+      "status": "Warning",
+      "queued": 0,
+      "messagesPerSec": 1.8,
+      "errored": 0,
+      "avgProcessingTime": 0.03,
+      "avgQueueingTime": 0.01,
+      "lastActivitySecondsAgo": 34
+    },
+    {
+      "host": "Lab Router",
+      "type": "process",
+      "status": "OK",
+      "queued": 1,
+      "messagesPerSec": 1.8,
+      "errored": 0,
+      "avgProcessingTime": 0.07,
+      "avgQueueingTime": 0.01,
+      "lastActivitySecondsAgo": 29
+    },
+    {
+      "host": "FHIR Transform",
+      "type": "process",
+      "status": "OK",
+      "queued": 0,
+      "messagesPerSec": 1.7,
+      "errored": 0,
+      "avgProcessingTime": 0.19,
+      "avgQueueingTime": 0.02,
+      "lastActivitySecondsAgo": 31
+    },
+    {
+      "host": "Cloud API",
+      "type": "operation",
+      "status": "OK",
+      "queued": 0,
+      "messagesPerSec": 1.7,
+      "errored": 0,
+      "avgProcessingTime": 0.34,
+      "avgQueueingTime": 0.03,
+      "lastActivitySecondsAgo": 36
+    }
+  ],
+  "findings": [
+    {
+      "id": "f-1440",
+      "host": "EMR Source",
+      "type": "throughput_drop",
+      "severity": "critical",
+      "currentValue": 1.8,
+      "baselineValue": 18.6,
+      "detectedSecondsAgo": 66,
+      "message": "Throughput 1.8 msg/sec is 10% of the 18.6 msg/sec baseline"
+    },
+    {
+      "id": "f-1441",
+      "host": "Lab Router",
+      "type": "throughput_drop",
+      "severity": "info",
+      "currentValue": 1.8,
+      "baselineValue": 18.4,
+      "detectedSecondsAgo": 54,
+      "message": "Throughput 1.8 msg/sec is below the 18.4 msg/sec baseline"
+    }
+  ]
+}

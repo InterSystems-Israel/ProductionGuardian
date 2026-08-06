@@ -1,0 +1,73 @@
+{
+  "id": "system-alert",
+  "label": "System alert",
+  "note": "An alert has been posted to alerts.log. It comes from /api/monitor/alerts rather than a per-host metric.",
+  "hosts": [
+    {
+      "host": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 4,
+      "messagesPerSec": 18.4,
+      "errored": 0,
+      "avgProcessingTime": 0.04,
+      "avgQueueingTime": 0.01,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "Lab Router",
+      "type": "process",
+      "status": "OK",
+      "queued": 12,
+      "messagesPerSec": 18.2,
+      "errored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0.02,
+      "lastActivitySecondsAgo": 3
+    },
+    {
+      "host": "FHIR Transform",
+      "type": "process",
+      "status": "OK",
+      "queued": 8,
+      "messagesPerSec": 18.0,
+      "errored": 2,
+      "avgProcessingTime": 0.22,
+      "avgQueueingTime": 0.03,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "Cloud API",
+      "type": "operation",
+      "status": "Warning",
+      "queued": 19,
+      "messagesPerSec": 17.6,
+      "errored": 4,
+      "avgProcessingTime": 0.68,
+      "avgQueueingTime": 0.21,
+      "lastActivitySecondsAgo": 1
+    }
+  ],
+  "findings": [
+    {
+      "id": "f-1550",
+      "host": "Cloud API",
+      "type": "system_alert",
+      "severity": "critical",
+      "currentValue": 1,
+      "baselineValue": 0,
+      "detectedSecondsAgo": 28,
+      "message": "New alert in alerts.log: Cloud API connection retry limit reached"
+    },
+    {
+      "id": "f-1551",
+      "host": "Cloud API",
+      "type": "slow_processing",
+      "severity": "info",
+      "currentValue": 0.68,
+      "baselineValue": 0.36,
+      "detectedSecondsAgo": 15,
+      "message": "Average processing time 0.68s is above the 0.36s baseline"
+    }
+  ]
+}

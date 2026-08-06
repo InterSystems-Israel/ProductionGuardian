@@ -1,0 +1,83 @@
+{
+  "id": "dead-host",
+  "label": "Dead host",
+  "note": "Cloud API has stopped. Nothing drains downstream, so FHIR Transform stalls behind it — the critical scenario.",
+  "hosts": [
+    {
+      "host": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 6,
+      "messagesPerSec": 18.8,
+      "errored": 0,
+      "avgProcessingTime": 0.04,
+      "avgQueueingTime": 0.01,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "Lab Router",
+      "type": "process",
+      "status": "Warning",
+      "queued": 212,
+      "messagesPerSec": 17.4,
+      "errored": 0,
+      "avgProcessingTime": 0.09,
+      "avgQueueingTime": 2.1,
+      "lastActivitySecondsAgo": 3
+    },
+    {
+      "host": "FHIR Transform",
+      "type": "process",
+      "status": "Warning",
+      "queued": 338,
+      "messagesPerSec": 0.4,
+      "errored": 0,
+      "avgProcessingTime": 0.24,
+      "avgQueueingTime": 41.6,
+      "lastActivitySecondsAgo": 402
+    },
+    {
+      "host": "Cloud API",
+      "type": "operation",
+      "status": "Inactive",
+      "queued": 154,
+      "messagesPerSec": 0,
+      "errored": 0,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
+      "lastActivitySecondsAgo": 486
+    }
+  ],
+  "findings": [
+    {
+      "id": "f-1101",
+      "host": "Cloud API",
+      "type": "dead_host",
+      "severity": "critical",
+      "currentValue": 0,
+      "baselineValue": 17.9,
+      "detectedSecondsAgo": 95,
+      "message": "Cloud API reports status Inactive with 154 messages queued"
+    },
+    {
+      "id": "f-1102",
+      "host": "FHIR Transform",
+      "type": "stalled_host",
+      "severity": "critical",
+      "currentValue": 402,
+      "baselineValue": 4,
+      "detectedSecondsAgo": 60,
+      "message": "No activity for 6m 42s while 338 messages are queued"
+    },
+    {
+      "id": "f-1103",
+      "host": "Lab Router",
+      "type": "queue_buildup",
+      "severity": "warning",
+      "currentValue": 212,
+      "baselineValue": 15,
+      "detectedSecondsAgo": 38,
+      "message": "Queue depth 212 is 14x baseline"
+    }
+  ]
+}
