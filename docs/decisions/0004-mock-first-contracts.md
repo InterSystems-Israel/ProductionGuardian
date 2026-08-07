@@ -50,15 +50,36 @@ This is being written after the fact, so it can be assessed rather than asserted
 **Dev C** started the dashboard against a transcription of §5 (`apps/dashboard/CLAUDE.md` §2.3)
 rather than idling for the published contract, tagging 13 assumption sites with `// CONTRACT-Q<n>`.
 When the real contract landed (PR #3), **eight of the nine assumptions were correct**; only the
-`HostStatus` enum needed changing — roughly one line against ~1,750 lines written. The bet paid
-off almost exactly as intended.
+`HostStatus` enum needed changing. The bet paid off close to as intended.
+
+**But the cost was 83 insertions across 10 files, not one line** — worth recording accurately,
+because the reason is the transferable lesson. Removing `Warning` from the enum did not merely
+narrow a union: **7 demo fixtures used `status: "Warning"` in 8 places** to *mean* "this host is
+degraded", so the correction made a concept the dashboard had built on **unrepresentable**. Each
+of those fixtures had to be rewritten to express degradation through findings instead, and
+`StatusDot`'s tone map needed a real change rather than a one-line one — its "is this status
+known" test had inferred recognition from "the tone is not neutral", which stops working the
+moment four statuses are legitimately neutral.
+
+So the sharper form of the lesson: **a wrong enum value is cheap; a wrong enum value you have
+built semantics on top of is not.** Reconciliation cost scales with how much meaning was attached
+to the wrong assumption, not with how many characters it occupied.
+
+What kept it contained was **defensive rendering** (`apps/dashboard/CLAUDE.md` §2.4) forcing
+unknown statuses down a neutral path from the very first commit, so the wrong value never spread
+beyond fixtures and one tone map. The `CONTRACT-Q<n>` markers told Dev C *where* to look;
+defensive rendering is why looking was all it took. Both practices earn their place, but they do
+different jobs and the second is the one that bounded the damage.
 
 **Dev B** published the findings contract while LABDEMO was still being built, and validated it
 against real captured metrics rather than waiting for Dev A's proxy.
 
 **The `CONTRACT-Q<n>` convention deserves promotion from accident to practice.** Tagging every
 assumption site with a greppable marker is what made reconciliation a `grep` instead of an audit.
-Recommend it explicitly for any future contract-dependent work.
+One refinement from having consumed them: **the marker must carry the assumption inline**
+(`// CONTRACT-Q1: assumed OK | Warning | Error | Inactive`). Markers that named only the question
+number sent the reader back to the question list; markers that stated the assumption were
+self-contained. Recommend it explicitly for any future contract-dependent work.
 
 ## Consequences
 
@@ -96,8 +117,9 @@ work alone and none together.
 
 Each developer confirms they are building against mocked contracts, not waiting on real endpoints:
 
-- [ ] **Dev A** — metrics proxy, `iris/**`
+- [ ] **Dev A** — metrics proxy, `iris/**` (not yet onboarded; box left for them to tick rather
+      than filled in on their behalf)
 - [x] **Dev B** — detection engine, findings API (confirmed: contract published and validated
       against captured metrics before the proxy existed)
-- [ ] **Dev C** — dashboard (evidently followed in practice from Day 1; confirming your own
-      position here is what makes it recorded rather than inferred)
+- [x] **Dev C** — dashboard (confirmed: built against a transcription of §5 from Day 1, never
+      waited on `:3002`, and runs against a throwaway local stub until the real endpoints exist)
