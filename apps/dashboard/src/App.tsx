@@ -6,7 +6,7 @@
  * difference between demo and live.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Mode } from './api/HealthScanApi';
 import { createLiveClient } from './api/liveClient';
 import { createMockClient, type MockClient } from './api/mockClient';
@@ -17,6 +17,7 @@ import { ConnectionBanner, type ConnectionState } from './components/ConnectionB
 import { SeveritySummary } from './components/SeveritySummary';
 import { HostGrid } from './components/HostGrid';
 import { FindingsList } from './components/FindingsList';
+import { FindingDetail } from './components/FindingDetail';
 import { IconRestart } from './components/icons';
 import { formatAge } from './lib/format';
 import { readMode, readScenario, writeMode } from './lib/mode';
@@ -68,6 +69,58 @@ export function App(): JSX.Element {
     },
     [resetSeen],
   );
+
+  /* Looked up from the live array rather than held in state, so the open drawer
+     shows the *current* values of its finding as polls land — a queue that keeps
+     climbing updates in place. Because ids are stable while a condition persists
+     (contract §4 Q4), the lookup survives every poll that the condition does.
+     When the condition clears the finding disappears and this goes null, which
+     closes the drawer on its own: no tombstone, no stale numbers left on screen. */
+  const selected = useMemo(
+    () => findings.find((finding) => finding.id === selectedId) ?? null,
+    [findings, selectedId],
+  );
+
+  /* Returning focus to the row that opened the drawer is required (§7.3), and it
+     is also what makes the drawer keyboard-usable at all: Esc has to land
+     somewhere sensible. The row keeps DOM identity across polls thanks to the
+     `finding.id` key, so this ref stays valid through a refresh. */
+  const returnFocusTo = useRef<string | null>(null);
+
+  /* Drop the selection once its finding is gone, rather than leaving `selectedId`
+     pointing at nothing. Without this the drawer would *reopen by itself* if the
+     same condition recurred later under the same id — Dev B's registry is keyed
+     by (host, type), so a recurrence reusing an id is plausible. A drawer opening
+     with no click is a ghost on stage.
+
+     Guarded on `loading` so the transient empty first paint does not count as
+     "disappeared". A failed poll keeps the last-good array, so it cannot fire. */
+  useEffect(() => {
+    if (!loading && selectedId !== null && selected === null) {
+      setSelectedId(null);
+      returnFocusTo.current = null;
+    }
+  }, [loading, selected, selectedId]);
+
+  const closeDetail = useCallback((): void => {
+    setSelectedId(null);
+    const id = returnFocusTo.current;
+    returnFocusTo.current = null;
+    if (id === null) return;
+    // Deferred a frame: the drawer is still mounted this tick, and focusing
+    // before it unmounts loses the focus ring to the drawer's own teardown.
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLButtonElement>(`[data-finding-id="${CSS.escape(id)}"]`)?.focus();
+    });
+  }, []);
+
+  const selectFinding = useCallback((id: string): void => {
+    setSelectedId((current) => {
+      const next = current === id ? null : id;
+      returnFocusTo.current = next === null ? null : id;
+      return next;
+    });
+  }, []);
 
   const isStale =
     lastSuccessAt !== null && now - lastSuccessAt > intervalMs * STALE_AFTER_INTERVALS;
@@ -170,10 +223,15 @@ export function App(): JSX.Element {
             newFindingIds={newFindingIds}
             now={now}
             loading={loading}
-            onSelect={(id) => setSelectedId((current) => (current === id ? null : id))}
+            onSelect={selectFinding}
           />
         </section>
       </div>
+
+      {/* Outside the dimming wrapper: stale data dims the grid, but the drawer the
+          operator deliberately opened should stay fully legible. Its numbers carry
+          the same "as of" caveat the banner states once. */}
+      <FindingDetail finding={selected} now={now} onClose={closeDetail} />
     </AppShell>
   );
 }

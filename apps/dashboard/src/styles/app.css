@@ -734,10 +734,197 @@ button {
   cursor: default;
 }
 
+/* ── Finding detail drawer ─────────────────────────────────────────────────── */
+
+/* Fixed rather than a grid column: the operator must keep seeing the grid behind
+   it (§7.2), and a column would reflow the whole content region on open — cards
+   would re-wrap and the row that was just clicked could move under the cursor. */
+.pg-drawer {
+  position: fixed;
+  top: var(--pg-header-height);
+  right: 0;
+  bottom: 0;
+  width: var(--pg-drawer-width);
+  display: flex;
+  flex-direction: column;
+  background: var(--pg-surface);
+  border-left: 1px solid var(--pg-border);
+  box-shadow: var(--pg-shadow-drawer);
+  z-index: 20;
+  animation: pg-drawer-in 160ms ease-out 1;
+}
+
+@keyframes pg-drawer-in {
+  from { transform: translateX(12px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.pg-drawer__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--pg-space-3);
+  padding: var(--pg-space-4) var(--pg-space-5);
+  border-bottom: 1px solid var(--pg-border-soft);
+}
+
+.pg-drawer__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pg-space-2);
+  align-items: flex-start;
+}
+
+.pg-drawer__title {
+  display: flex;
+  align-items: center;
+  gap: var(--pg-space-2);
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--pg-text);
+}
+
+.pg-drawer__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--pg-space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--pg-space-5);
+}
+
+/* The comparison is the visual focus of the drawer (§7.2) — it gets the tinted
+   panel and the largest type on the page after the summary numerals. */
+.pg-compare {
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-radius-lg);
+  background: var(--pg-surface-alt);
+  padding: var(--pg-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--pg-space-3);
+}
+
+.pg-compare--critical { border-left: 3px solid var(--pg-critical); }
+.pg-compare--warning  { border-left: 3px solid var(--pg-warning); }
+.pg-compare--info     { border-left: 3px solid var(--pg-info); }
+
+.pg-compare__pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--pg-space-3);
+}
+
+.pg-compare__side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pg-space-1);
+  min-width: 0;
+}
+
+.pg-compare__label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--pg-text-muted);
+}
+
+/* Monospaced so the two numerals align digit-for-digit and do not jitter as
+   polls land (§7.3). `break-word` because a duration can render long. */
+.pg-compare__value {
+  font-family: var(--pg-font-mono);
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--pg-text);
+  overflow-wrap: break-word;
+}
+
+/* Baseline reads quieter than current: current is what is wrong, baseline is
+   only the yardstick. */
+.pg-compare__side--baseline .pg-compare__value {
+  color: var(--pg-text-muted);
+  font-weight: 500;
+}
+
+.pg-compare__delta {
+  margin: 0;
+  padding-top: var(--pg-space-3);
+  border-top: 1px solid var(--pg-border-soft);
+  font-family: var(--pg-font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--pg-text);
+}
+
+.pg-drawer__message {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--pg-text);
+}
+
+.pg-facts {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--pg-space-3);
+}
+
+.pg-facts__row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: var(--pg-space-3);
+  align-items: baseline;
+}
+
+.pg-facts__row dt {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--pg-text-muted);
+}
+
+.pg-facts__row dd {
+  margin: 0;
+  font-size: 13px;
+  color: var(--pg-text);
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.pg-facts__mono {
+  font-family: var(--pg-font-mono);
+  font-size: 12px;
+}
+
+.pg-facts__absent {
+  color: var(--pg-text-muted);
+}
+
+/* Absolute UTC under the relative time: the relative reads faster, the absolute
+   is what correlates against a log. */
+.pg-facts__sub {
+  display: block;
+  color: var(--pg-text-muted);
+  font-size: 11px;
+}
+
+.pg-drawer__note {
+  margin: 0;
+  padding: var(--pg-space-3);
+  border-radius: var(--pg-radius);
+  background: var(--pg-neutral-bg);
+  color: var(--pg-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 /* ── Motion and viewport ───────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
   .pg-finding--new,
+  .pg-drawer,
   .pg-skeleton {
     animation: none;
   }
@@ -756,5 +943,11 @@ button {
     font-size: 0;
     gap: 0;
     justify-content: center;
+  }
+
+  /* At 1024px a 420px drawer would cover most of the grid, defeating the reason
+     it is a drawer and not a modal. Narrower, so the grid stays visible beside it. */
+  .pg-drawer {
+    width: min(var(--pg-drawer-width), 60vw);
   }
 }

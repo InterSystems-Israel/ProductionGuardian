@@ -44,6 +44,10 @@ export function FindingRow({
       className={classes}
       onClick={() => onSelect(finding.id)}
       aria-expanded={selected}
+      /* How `App` finds this row again to return focus when the drawer closes
+         (§7.3). An id rather than a ref per row: the row that opened the drawer
+         may have re-rendered, or moved, on any poll since. */
+      data-finding-id={finding.id}
     >
       <span className="pg-finding__severity">
         <SeverityBadge severity={finding.severity} />

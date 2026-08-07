@@ -87,19 +87,30 @@ export function formatAge(sinceMs: number | null, now: number = Date.now()): str
  * view (§7.2). A ratio only informs when the baseline is a meaningful non-zero
  * quantity — a queue that went 0 → 12 is a delta, not "12× baseline", and
  * "Infinity×" on a projector reads as a bug. Falls back to a signed delta.
+ *
+ * A ratio is dimensionless, but a *delta* is not: `0.68s` vs `0.36s` is
+ * "+320 ms", not the unitless "+0.3" that reads as a bare number next to two
+ * millisecond values. `formatDelta` supplies the unit, which is why the caller
+ * passes what the metric measures.
  */
-export function formatComparison(current: number, baseline: number | null): string {
+export function formatComparison(
+  current: number,
+  baseline: number | null,
+  formatDelta: (value: number) => string = formatRate,
+): string {
   if (baseline === null) return ABSENT;
   if (baseline === 0) {
-    return current === 0 ? 'no change' : `+${formatRate(current)} from 0`;
+    return current === 0 ? 'no change' : `+${formatDelta(current)} from 0`;
   }
   const ratio = current / baseline;
   // Below 2× a multiplier is noise; a delta is more honest at that scale.
   if (ratio >= 2) return `${decimal.format(ratio)}×`;
   if (ratio > 0 && ratio <= 0.5) return `${decimal.format(ratio * 100)}% of baseline`;
+  // Sign applied to the magnitude, because the unit formatters describe sizes,
+  // not signed quantities — `formatDuration(-0.32)` has no sensible reading.
   const delta = current - baseline;
-  const sign = delta > 0 ? '+' : '';
-  return `${sign}${formatRate(delta)}`;
+  const sign = delta > 0 ? '+' : delta < 0 ? '−' : '';
+  return `${sign}${formatDelta(Math.abs(delta))}`;
 }
 
 /** `queue_buildup` → `Queue buildup`. Used for finding types the UI doesn't know. */

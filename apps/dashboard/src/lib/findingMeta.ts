@@ -94,7 +94,11 @@ export function findingMeta(type: string): FindingMeta {
 export type ValueKind = 'count' | 'duration' | 'rate';
 
 const VALUE_KIND: Record<FindingType, ValueKind> = {
-  dead_host: 'count',
+  /* `rate`, not `count`: a dead host's values are throughput, not a tally. Dev B's
+     captured sample carries `current: 0, baseline: 0.4` — 0.4 being Cloud API's
+     actual messagesPerSec — so formatting as a count rounds the baseline to "0"
+     and the comparison reads "no change" for a host that has stopped dead. */
+  dead_host: 'rate',
   stalled_host: 'duration',
   queue_buildup: 'count',
   elevated_error_rate: 'count',

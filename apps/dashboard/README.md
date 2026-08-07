@@ -201,12 +201,19 @@ watching in the console.
 | Phase | Work | Status |
 |---|---|---|
 | 2 | Live polling, demo/live toggle, `ConnectionBanner`, last-good cache | **done** |
-| 3 | Finding detail drawer — current vs. baseline, metric, timestamp | not started |
+| 3 | Finding detail drawer — current vs. baseline, metric, timestamp | **done** |
+| 4 | Static fallback build | **done** — `dist/index.html` opens from `file://` |
 | 4 | Screencast (needs a human to record) | not started |
 | 5 | `docs/demo/cue-sheet.md` | not started |
 
-Clicking a finding currently just highlights the row; the drawer with the
-current-vs-baseline comparison is Phase 3.
+Click any finding row to open the detail drawer: current vs. baseline side by
+side, the comparison between them, the underlying IRIS metric, and detected-at as
+both relative and absolute UTC. `Esc` closes it and returns focus to the row that
+opened it.
+
+The drawer looks its finding up from the live array on every poll rather than
+holding a copy, so an open drawer's numbers update as the condition develops, and
+it closes itself if the condition clears.
 
 `dev-stub/` is temporary scaffolding, not a deliverable — delete it when Dev B's
 `:3002` API is up.
