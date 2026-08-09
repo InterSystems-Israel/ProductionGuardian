@@ -57,15 +57,19 @@ can always tell what you are looking at.
 The dashboard polls both endpoints every 5 s (`VITE_POLL_INTERVAL_MS`), pauses
 while the tab is hidden, and refetches the moment it returns.
 
-Dev B's API isn't up yet, so there's a **throwaway stub** in `dev-stub/` serving
-the same fixtures over real HTTP on `:3002`. It exists to exercise the live code
-path — fetch, JSON parsing, error handling, backoff — and gets deleted once the
-real API lands.
+Dev B's detection engine serves both endpoints on `:3002`. It runs with **nothing
+on `:3001`** — it replays captured LABDEMO fixtures through healthy → degrading →
+dead → recovery, so findings appear *and clear* without IRIS being involved:
 
 ```bash
-node dev-stub/server.mjs           # cycles the progression
-node dev-stub/server.mjs --fail    # always 503, to watch degradation
-node dev-stub/server.mjs --scenario=dead-host
+cd ../../services/detection-engine && npm install && npm start
+```
+
+The default 10 s poll means the baseline needs ~14 polls to warm before the first
+finding is confirmed. To watch a whole cycle without waiting, compress it:
+
+```bash
+POLL_INTERVAL_MS=700 npm start     # full appear-and-clear cycle in ~30 s
 ```
 
 Then open <http://localhost:5173/?mode=live>, or click **Live** in the header.
@@ -75,14 +79,14 @@ The mode is reflected in the URL, so it's shareable.
 
 This is the demo-reliability path, and the one worth testing by hand:
 
-1. Start the stub, open `?mode=live`, confirm the teal **LIVE** pill and data flowing.
-2. **Kill the stub.** Within ~5 s: a red banner appears, the last-good data stays
+1. Start the engine, open `?mode=live`, confirm the teal **LIVE** pill and data flowing.
+2. **Kill the engine.** Within ~5 s: a red banner appears, the last-good data stays
    on screen but dimmed, labelled `Showing data as of HH:MM:SS UTC`. **It must
    never blank.**
 3. Wait. Polling backs off 5 s → 10 s → 20 s → 30 s rather than hammering. At
    **3 consecutive failures** a *Switch to demo mode* button appears — the
    on-stage escape hatch.
-4. **Restart the stub.** The banner clears on the next successful poll, with no
+4. **Restart the engine.** The banner clears on the next successful poll, with no
    page reload.
 
 The last-good payload is cached in `localStorage` (live mode only — caching demo
@@ -214,9 +218,6 @@ opened it.
 The drawer looks its finding up from the live array on every poll rather than
 holding a copy, so an open drawer's numbers update as the condition develops, and
 it closes itself if the condition clears.
-
-`dev-stub/` is temporary scaffolding, not a deliverable — delete it when Dev B's
-`:3002` API is up.
 
 Out of scope for MVP 1 by design, not omission: remediation buttons, root-cause
 narratives, forecasts, a 0–100 health score, trend charts, production switching,
