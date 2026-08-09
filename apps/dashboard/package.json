@@ -9,7 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "validate:fixtures": "node tools/validate-fixtures.mjs"
+    "validate:fixtures": "node tools/validate-fixtures.mjs && node tools/validate-fixture-claims.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

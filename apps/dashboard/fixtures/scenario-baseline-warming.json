@@ -1,73 +1,73 @@
 {
   "id": "baseline-warming",
   "label": "Baseline warming up",
-  "note": "The engine has just started: no rolling baseline yet, so comparisons show as absent rather than as zero.",
+  "note": "The engine has just started, so there is no rolling baseline and comparisons render as absent rather than as zero. Only the absolute rules can fire in this state: every comparative rule returns nothing while its baseline is null, so a warm-up fixture showing queue_buildup or slow_processing would be unproducible by the real engine.",
   "hosts": [
     {
       "host": "EMR Source",
       "type": "service",
       "status": "OK",
-      "queued": 5,
-      "messagesPerSec": 17.2,
+      "queued": 0,
+      "messagesPerSec": 0.2,
       "errored": 0,
-      "avgProcessingTime": 0.05,
-      "avgQueueingTime": 0.01,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
       "lastActivitySecondsAgo": 2
     },
     {
       "host": "Lab Router",
       "type": "process",
       "status": "OK",
-      "queued": 18,
-      "messagesPerSec": 17.0,
+      "queued": 0,
+      "messagesPerSec": 1.2,
       "errored": 0,
-      "avgProcessingTime": 0.09,
-      "avgQueueingTime": 0.04,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0,
       "lastActivitySecondsAgo": 1
     },
     {
       "host": "FHIR Transform",
       "type": "process",
       "status": "OK",
-      "queued": 7,
-      "messagesPerSec": 16.8,
+      "queued": 12,
+      "messagesPerSec": 0,
       "errored": 0,
-      "avgProcessingTime": 0.24,
-      "avgQueueingTime": 0.03,
-      "lastActivitySecondsAgo": 3
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0.31,
+      "lastActivitySecondsAgo": 312
     },
     {
       "host": "Cloud API",
       "type": "operation",
-      "status": "OK",
+      "status": "Disabled",
       "queued": 44,
-      "messagesPerSec": 16.5,
+      "messagesPerSec": 0,
       "errored": 3,
-      "avgProcessingTime": 0.91,
-      "avgQueueingTime": 0.38,
-      "lastActivitySecondsAgo": 2
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
+      "lastActivitySecondsAgo": 168
     }
   ],
   "findings": [
     {
       "id": "f-1660",
       "host": "Cloud API",
-      "type": "slow_processing",
-      "severity": "warning",
-      "currentValue": 0.91,
+      "type": "dead_host",
+      "severity": "critical",
+      "currentValue": 0,
       "baselineValue": null,
       "detectedSecondsAgo": 20,
-      "message": "Average processing time 0.91s exceeds the absolute threshold; baseline still warming up"
+      "message": "Cloud API is Disabled with 44 message(s) queued"
     },
     {
       "id": "f-1661",
-      "host": "Cloud API",
-      "type": "queue_buildup",
-      "severity": "info",
-      "currentValue": 44,
+      "host": "FHIR Transform",
+      "type": "stalled_host",
+      "severity": "warning",
+      "currentValue": 312,
       "baselineValue": null,
       "detectedSecondsAgo": 12,
-      "message": "Queue depth 44 exceeds the absolute threshold; baseline still warming up"
+      "message": "No activity for 312s while 12 message(s) are queued"
     }
   ]
 }

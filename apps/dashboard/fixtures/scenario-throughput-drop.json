@@ -1,28 +1,28 @@
 {
   "id": "throughput-drop",
   "label": "Throughput drop",
-  "note": "EMR Source intake has collapsed. Queues are draining, which looks healthy until you notice nothing is arriving.",
+  "note": "EMR Source intake has collapsed and the drop propagates downstream. Queues are draining, which looks healthy until you notice nothing is arriving. Every collapsed value here is below the measured healthy rate — the whole point of the rescale, since the old fixture's 'collapsed' 1.8 msg/sec was above LABDEMO's real 1.2.",
   "hosts": [
     {
       "host": "EMR Source",
       "type": "service",
       "status": "OK",
       "queued": 0,
-      "messagesPerSec": 1.8,
+      "messagesPerSec": 0,
       "errored": 0,
-      "avgProcessingTime": 0.03,
-      "avgQueueingTime": 0.01,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
       "lastActivitySecondsAgo": 34
     },
     {
       "host": "Lab Router",
       "type": "process",
       "status": "OK",
-      "queued": 1,
-      "messagesPerSec": 1.8,
+      "queued": 0,
+      "messagesPerSec": 0.4,
       "errored": 0,
-      "avgProcessingTime": 0.07,
-      "avgQueueingTime": 0.01,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0,
       "lastActivitySecondsAgo": 29
     },
     {
@@ -30,10 +30,10 @@
       "type": "process",
       "status": "OK",
       "queued": 0,
-      "messagesPerSec": 1.7,
+      "messagesPerSec": 0.1,
       "errored": 0,
-      "avgProcessingTime": 0.19,
-      "avgQueueingTime": 0.02,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0,
       "lastActivitySecondsAgo": 31
     },
     {
@@ -41,10 +41,10 @@
       "type": "operation",
       "status": "OK",
       "queued": 0,
-      "messagesPerSec": 1.7,
+      "messagesPerSec": 0.1,
       "errored": 0,
-      "avgProcessingTime": 0.34,
-      "avgQueueingTime": 0.03,
+      "avgProcessingTime": 0.05,
+      "avgQueueingTime": 0,
       "lastActivitySecondsAgo": 36
     }
   ],
@@ -54,20 +54,30 @@
       "host": "EMR Source",
       "type": "throughput_drop",
       "severity": "critical",
-      "currentValue": 1.8,
-      "baselineValue": 18.6,
+      "currentValue": 0,
+      "baselineValue": 0.2,
       "detectedSecondsAgo": 66,
-      "message": "Throughput 1.8 msg/sec is 10% of the 18.6 msg/sec baseline"
+      "message": "Throughput 0.0 msg/sec is 100% below baseline"
+    },
+    {
+      "id": "f-1442",
+      "host": "FHIR Transform",
+      "type": "throughput_drop",
+      "severity": "critical",
+      "currentValue": 0.1,
+      "baselineValue": 1.2,
+      "detectedSecondsAgo": 58,
+      "message": "Throughput 0.1 msg/sec is 92% below baseline"
     },
     {
       "id": "f-1441",
       "host": "Lab Router",
       "type": "throughput_drop",
-      "severity": "info",
-      "currentValue": 1.8,
-      "baselineValue": 18.4,
+      "severity": "warning",
+      "currentValue": 0.4,
+      "baselineValue": 1.2,
       "detectedSecondsAgo": 54,
-      "message": "Throughput 1.8 msg/sec is below the 18.4 msg/sec baseline"
+      "message": "Throughput 0.4 msg/sec is 67% below baseline"
     }
   ]
 }

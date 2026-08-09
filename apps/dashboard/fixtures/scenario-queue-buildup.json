@@ -1,17 +1,17 @@
 {
   "id": "queue-buildup",
   "label": "Queue buildup",
-  "note": "Lab Router's queue is climbing well past baseline while throughput holds — the classic downstream bottleneck.",
+  "note": "Cloud API has slowed, so Lab Router's queue climbs behind it while throughput holds — the classic downstream bottleneck. LABDEMO's measured queue baseline is 0, so the buildup has no ratio to quote and the absolute depth is the whole signal.",
   "hosts": [
     {
       "host": "EMR Source",
       "type": "service",
       "status": "OK",
-      "queued": 4,
-      "messagesPerSec": 19.2,
+      "queued": 0,
+      "messagesPerSec": 0.2,
       "errored": 0,
-      "avgProcessingTime": 0.04,
-      "avgQueueingTime": 0.01,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
       "lastActivitySecondsAgo": 2
     },
     {
@@ -19,32 +19,32 @@
       "type": "process",
       "status": "OK",
       "queued": 486,
-      "messagesPerSec": 19.0,
+      "messagesPerSec": 1.2,
       "errored": 0,
-      "avgProcessingTime": 0.09,
-      "avgQueueingTime": 4.8,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0.62,
       "lastActivitySecondsAgo": 1
     },
     {
       "host": "FHIR Transform",
       "type": "process",
       "status": "OK",
-      "queued": 9,
-      "messagesPerSec": 18.4,
+      "queued": 4,
+      "messagesPerSec": 1.2,
       "errored": 0,
-      "avgProcessingTime": 0.22,
-      "avgQueueingTime": 0.04,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0.05,
       "lastActivitySecondsAgo": 3
     },
     {
       "host": "Cloud API",
       "type": "operation",
       "status": "OK",
-      "queued": 5,
-      "messagesPerSec": 18.2,
+      "queued": 14,
+      "messagesPerSec": 0.4,
       "errored": 0,
-      "avgProcessingTime": 0.41,
-      "avgQueueingTime": 0.06,
+      "avgProcessingTime": 0.05,
+      "avgQueueingTime": 1.84,
       "lastActivitySecondsAgo": 4
     }
   ],
@@ -53,21 +53,21 @@
       "id": "f-1042",
       "host": "Lab Router",
       "type": "queue_buildup",
-      "severity": "warning",
+      "severity": "critical",
       "currentValue": 486,
-      "baselineValue": 15,
+      "baselineValue": 0,
       "detectedSecondsAgo": 45,
-      "message": "Queue depth 486 is 32x baseline"
+      "message": "Queue depth 486 with no baseline queue"
     },
     {
       "id": "f-1043",
-      "host": "Lab Router",
+      "host": "Cloud API",
       "type": "growing_queue_wait",
-      "severity": "warning",
-      "currentValue": 4.8,
+      "severity": "critical",
+      "currentValue": 1.84,
       "baselineValue": 0.02,
       "detectedSecondsAgo": 30,
-      "message": "Average queueing time 4.8s is well above the 0.02s baseline"
+      "message": "Average queue wait 1.84s is 92x baseline"
     }
   ]
 }
