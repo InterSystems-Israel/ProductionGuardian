@@ -4,6 +4,41 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-08-09 — Schema fixes from Dev C's review (Dev B)
+
+Two **schema** defects found by Dev C reviewing PR #3, both with reproductions, both confirmed
+here before fixing. The prose contract was right in both cases; the schema disagreed with it. No
+change to any documented field, so **nothing to reconcile on the consumer side.**
+
+**1. The schema rejected `[]`.** The root `oneOf` failed on an empty array because it satisfied
+*both* `HostsResponse` and `FindingsResponse` vacuously, and `oneOf` requires exactly one match.
+§3 mandates `200` + `[]` for no findings, no hosts, *and* engine startup — so the CI job in
+`README.md` would have failed on the single most common healthy response.
+
+Fixed by removing the root `oneOf` entirely and validating against named definitions. That is
+strictly better than switching to `anyOf`: it also closes a hole where a **hosts array served in
+the findings position validated fine**, because the root schema accepted either and could not
+tell them apart. A check that silently was not happening.
+
+**2. The timestamp `pattern` rejected `toISOString()`.** It forbade fractional seconds, but JS
+always emits milliseconds (`.000Z`) and Python's `isoformat()` gives microseconds. Dev C's eight
+fixtures all failed on this for real. Fixed by allowing optional sub-second digits:
+`(\.[0-9]{1,6})?`. Second precision stays valid, so nothing that passed before now fails.
+
+Chose relaxing over demanding second precision because `format: date-time` already accepted what
+`pattern` rejected — only the stricter one bit, which made it an accident rather than a decision.
+Requiring emitters to slice digits off a native formatter is a tax with no benefit, given
+`lastActivity` is ±10s anyway (Q11).
+
+**Also added `validate.mjs` + `package.json`,** replacing the `ajv-cli` one-liners in `README.md`.
+Dev C found those degrade silently: `-c ajv-formats` resolves from the invocation directory and
+ignores `format` when run elsewhere, and the `#/definitions/...` argument is rewritten into a
+filesystem path by Git Bash on Windows. The script also asserts **five must-reject and four
+must-accept cases**, because both defects here were *structural* — the class that positive-only
+and value-level testing cannot reach.
+
+Verified: `npm run validate` → 11/11 checks pass; both committed samples still valid.
+
 ## 2026-08-06 — Health Scan contract published (Dev B)
 
 Initial publication of `healthscan-api.md`, `healthscan.schema.json`, `healthscan.d.ts`,

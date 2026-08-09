@@ -37,6 +37,23 @@ The `contracts` CI job validates every file in `samples/` against the schemas. I
 the shared fixtures disagree, CI says so — rather than the Day-5 rehearsal.
 
 ```bash
-npx ajv-cli validate -s healthscan.schema.json -d samples/hosts-response.json
-npx ajv-cli validate -s healthscan.schema.json -d samples/findings-response.json
+cd contracts && npm install && npm run validate
 ```
+
+It checks three things, and the last two are what make the first mean anything:
+
+- each sample against **one named definition** (`HostsResponse` / `FindingsResponse`)
+- structural cases that must **pass** — `[]`, and sub-second timestamps from any language
+- cases that must **fail** — a retired `Warning` status, an unknown finding type, a hosts array
+  served in the findings position
+
+**Do not replace this with an `ajv-cli` one-liner.** Three reasons, all learned the hard way on
+PR #3:
+
+1. Validating against the root schema instead of a named definition cannot tell a hosts array
+   from a findings array. That check silently does not happen.
+2. `ajv validate -r '#/definitions/HostsResponse'` is not portable — Git Bash on Windows rewrites
+   the `#/...` argument into a filesystem path and the command fails.
+3. `-c ajv-formats` resolves relative to the invocation directory, so from the wrong place it
+   silently ignores `format` rather than failing. A validator that quietly gets weaker is worse
+   than one that breaks.

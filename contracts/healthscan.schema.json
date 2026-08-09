@@ -71,7 +71,7 @@
         "lastActivity": {
           "type": "string",
           "format": "date-time",
-          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$",
           "description": "ISO 8601 UTC. Derived as now minus IRIS elapsed-seconds, so accurate to roughly the poll interval."
         }
       }
@@ -131,7 +131,7 @@
         "detectedAt": {
           "type": "string",
           "format": "date-time",
-          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$",
           "description": "When the condition was first confirmed (after sustained breach), not when last seen."
         },
         "message": {
@@ -153,10 +153,5 @@
       "items": { "$ref": "#/definitions/Finding" },
       "description": "GET /api/healthscan/findings. Empty array when no findings, never 404. Sorted detectedAt desc."
     }
-  },
-
-  "oneOf": [
-    { "$ref": "#/definitions/HostsResponse" },
-    { "$ref": "#/definitions/FindingsResponse" }
-  ]
+  }
 }
