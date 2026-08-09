@@ -18,7 +18,7 @@
 
 import { useEffect } from 'react';
 import type { FindingView } from '../types/healthscan';
-import { findingMeta, valueKind } from '../lib/findingMeta';
+import { comparesToBaseline, findingMeta, valueKind } from '../lib/findingMeta';
 import { toSeverity } from '../lib/severity';
 import {
   ABSENT,
@@ -77,7 +77,15 @@ export function FindingDetail({ finding, now, onClose }: FindingDetailProps): JS
   const meta = findingMeta(finding.type);
   const kind = valueKind(finding.type);
   const severity = toSeverity(finding.severity);
-  const warming = finding.baselineValue === null;
+
+  /* A null baseline has two unrelated causes and they must not be described the same
+     way: the baseline is still warming up, or this rule never had one. Only the first
+     is temporary, and calling an absolute finding "still warming up" understates a
+     `dead_host` as provisional when it is the most certain thing on screen. */
+  const absent = finding.baselineValue === null;
+  const comparative = comparesToBaseline(finding.type);
+  const warming = absent && comparative;
+  const noBaselineApplies = absent && !comparative;
 
   return (
     /* `aria-labelledby` points at the heading rather than duplicating the label as
@@ -117,7 +125,13 @@ export function FindingDetail({ finding, now, onClose }: FindingDetailProps): JS
             </div>
 
             <div className="pg-compare__side pg-compare__side--baseline">
-              <span className="pg-compare__label">Baseline</span>
+              {/* Labelled "Baseline" only when there is one to speak of. For an
+                  absolute rule the em dash is the honest value, but under a
+                  "Baseline" heading it reads as missing data rather than as
+                  inapplicable. */}
+              <span className="pg-compare__label">
+                {noBaselineApplies ? 'Baseline (n/a)' : 'Baseline'}
+              </span>
               <span className="pg-compare__value">{formatValue(finding.baselineValue, kind)}</span>
             </div>
           </div>
@@ -125,9 +139,15 @@ export function FindingDetail({ finding, now, onClose }: FindingDetailProps): JS
           {/* A ratio only informs against a meaningful non-zero baseline;
               `formatComparison` falls back to a delta and to '—' while warming. */}
           <p className="pg-compare__delta">
-            {warming
-              ? 'No baseline yet — still warming up'
-              : formatComparison(finding.currentValue, finding.baselineValue, deltaFormatter(kind))}
+            {noBaselineApplies
+              ? 'Detected outright — no baseline comparison applies'
+              : warming
+                ? 'No baseline yet — still warming up'
+                : formatComparison(
+                    finding.currentValue,
+                    finding.baselineValue,
+                    deltaFormatter(kind),
+                  )}
           </p>
         </section>
 
@@ -180,6 +200,16 @@ export function FindingDetail({ finding, now, onClose }: FindingDetailProps): JS
             The rolling baseline needs a few minutes of samples after the engine starts.
             Until then this finding comes from an absolute threshold rather than a
             comparison.
+          </p>
+        )}
+
+        {noBaselineApplies && (
+          /* Says why the baseline is empty for a rule that never has one, so the
+             em dash reads as "not applicable" rather than "not loaded yet". */
+          <p className="pg-drawer__note">
+            {meta.label} is detected directly from {meta.metric ?? 'the reported state'},
+            so there is no baseline to compare against. This finding does not depend on
+            the engine having warmed up.
           </p>
         )}
       </div>

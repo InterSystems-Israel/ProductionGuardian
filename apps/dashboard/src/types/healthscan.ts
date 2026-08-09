@@ -63,7 +63,14 @@ export interface Finding {
   type: FindingType;
   severity: Severity;
   currentValue: number;
-  /** null while the rolling baseline is still warming up (Q3). Render as `—`. */
+  /**
+   * Render as `—`, never `0` or `NaN`. **`null` has two causes, not one.** The
+   * contract documents warm-up (Q3), but the engine also sends `null` for the rules
+   * that never compare against a baseline — `dead_host`, `stalled_host`,
+   * `system_alert`. Distinguish with `comparesToBaseline()`, not by assuming warm-up:
+   * "still warming up" on a `dead_host` is false whenever the baseline is warm.
+   * Raised on PR #8.
+   */
   baselineValue: number | null;
   detectedAt: string; // ISO 8601 UTC
   message: string; // human-readable; render as-is, never reconstructed

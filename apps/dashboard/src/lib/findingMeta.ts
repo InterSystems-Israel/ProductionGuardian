@@ -111,3 +111,32 @@ const VALUE_KIND: Record<FindingType, ValueKind> = {
 export function valueKind(type: string): ValueKind {
   return VALUE_KIND[type as FindingType] ?? 'count';
 }
+
+/**
+ * Whether the rule behind a finding compares against a baseline at all.
+ *
+ * The contract gives `baselineValue: null` one documented meaning — "the rolling
+ * baseline is still warming up" (§2, Q3) — but the engine also sends `null` for the
+ * rules that are **absolute by design** and have no baseline to warm. Both readings
+ * arrive as the same `number | null`, so the type cannot separate them and the drawer
+ * would otherwise say "still warming up" about a fully warm baseline. Raised on PR #8;
+ * this table is the local resolution and stays correct whichever way that lands.
+ *
+ * Derived from the contract's own §2.1 table rather than from Dev B's rule taxonomy:
+ * `dead_host` reads a status and `stalled_host` reads an idle time, so neither has a
+ * "normal" to compare against, while `system_alert` reports a discrete event. The
+ * other five compare a metric to its rolling mean.
+ *
+ * Unknown types default to comparative, which is the safer wrong answer: it says a
+ * baseline is expected and absent, rather than asserting none applies to a rule the
+ * UI knows nothing about.
+ */
+const ABSOLUTE_TYPES: ReadonlySet<string> = new Set<FindingType>([
+  'dead_host',
+  'stalled_host',
+  'system_alert',
+]);
+
+export function comparesToBaseline(type: string): boolean {
+  return !ABSOLUTE_TYPES.has(type);
+}
