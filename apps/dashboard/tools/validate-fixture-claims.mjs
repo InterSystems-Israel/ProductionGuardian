@@ -21,7 +21,9 @@
  * silently stops matching the engine is the thing being guarded against.
  *
  * Thresholds are read from the detection-engine directory when present and skipped
- * when it is not, so this stays useful in a dashboard-only checkout.
+ * when it is not, so this stays useful in a dashboard-only checkout. Pass `--strict`
+ * to make that skip a failure instead: CI needs to know the check actually ran, and a
+ * step that silently validates nothing is the failure mode this file exists to catch.
  */
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
@@ -53,9 +55,17 @@ const METRIC_FOR = {
   growing_queue_wait: 'avgQueueingTime',
 };
 
+const STRICT = process.argv.includes('--strict');
+
 const thresholds = existsSync(THRESHOLDS)
   ? JSON.parse(readFileSync(THRESHOLDS, 'utf8'))
   : null;
+
+if (thresholds === null && STRICT) {
+  console.error(`FAIL  --strict, but no thresholds at ${THRESHOLDS}`);
+  console.error('        the engine-emittable checks cannot run, so this is a failure');
+  process.exit(1);
+}
 
 /** Host overrides win over the base rule, exactly as `configFor` resolves them. */
 function ruleFor(type, host) {

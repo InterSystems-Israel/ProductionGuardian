@@ -62,10 +62,19 @@ cannot, because a fixture can be perfectly *shaped* and still be false:
   `stalled_host` and `system_alert` can appear during warm-up.
 
 That second check caught two findings in this set that validated fine and the
-engine would never have produced. It skips the threshold half when there is no
-`services/detection-engine/` checkout, and reproducing the engine's logic means it
-drifts if Dev B retunes — which is the point, since a fixture that silently stops
-matching the engine is exactly what is being guarded against.
+engine would never have produced. Reproducing the engine's logic means it drifts if
+Dev B retunes — which is the point, since a fixture that silently stops matching the
+engine is exactly what is being guarded against.
+
+Both checks **skip cleanly** when the thing they need is absent: `contracts/` and
+`services/detection-engine/` each land via their own PR, so neither may fail a
+dashboard branch that simply predates them. That leniency is wrong for CI, where a
+step reporting success while validating nothing is the failure mode being guarded
+against — so use the strict form there:
+
+```bash
+npm run validate:fixtures:strict   # a missing contract or thresholds file FAILS
+```
 
 ## The files
 

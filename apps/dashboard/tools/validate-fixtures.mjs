@@ -12,9 +12,12 @@
  * fixture as *served* is, and the latter is what Dev B's engine has to match.
  *
  * Skips (exit 0) when the contract is not present, since `contracts/` lands via a
- * separate PR and this must not fail a branch that simply predates it.
+ * separate PR and this must not fail a branch that simply predates it. Pass
+ * `--strict` to make that skip a failure instead — CI needs to know the check
+ * actually ran, and a step that silently validates nothing reports success for a
+ * state nobody verified.
  *
- *   node tools/validate-fixtures.mjs
+ *   node tools/validate-fixtures.mjs [--strict]
  */
 
 import Ajv from 'ajv';
@@ -27,7 +30,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(HERE, '..', 'fixtures');
 const SCHEMA = join(HERE, '..', '..', '..', 'contracts', 'healthscan.schema.json');
 
+const STRICT = process.argv.includes('--strict');
+
 if (!existsSync(SCHEMA)) {
+  if (STRICT) {
+    console.error(`FAIL  --strict, but no contract at ${SCHEMA}`);
+    process.exit(1);
+  }
   console.log(`skipped — no contract at ${SCHEMA}`);
   process.exit(0);
 }
