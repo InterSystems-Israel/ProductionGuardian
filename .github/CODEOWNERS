@@ -1,0 +1,37 @@
+# Ownership, enforced mechanically rather than promised. CONTRIBUTING.md §4.
+#
+# Handles are placeholders where a developer is not yet onboarded. GitHub silently
+# ignores an unknown handle rather than erroring, so an unresolved name means reviews
+# are NOT requested for that path -- fix the handle, do not assume it works.
+
+# ---- Dev A -- IRIS and metrics ingestion ----
+# TODO: replace @devA with the real handle once Dev A is onboarded.
+/iris/                        @devA
+/services/metrics-proxy/      @devA
+
+# ---- Dev B -- detection engine and findings API ----
+/services/detection-engine/   @Ari-Glikman
+
+# ---- Dev C -- dashboard and demo ----
+/apps/dashboard/              @tanifgit
+/docs/demo/                   @tanifgit
+
+# ---- Shared, PR-gated ----
+# A contract change needs all three. That sounds heavy and is the point: a silent
+# contract change is the failure mode that breaks the Day-5 integration, and the
+# review takes 30 seconds.
+/contracts/                   @devA @Ari-Glikman @tanifgit
+
+# ADRs record decisions nobody should change unilaterally.
+/docs/decisions/              @devA @Ari-Glikman @tanifgit
+
+# Root config, tooling, CI.
+/tools/                       @devA @Ari-Glikman @tanifgit
+/.github/                     @devA @Ari-Glikman @tanifgit
+
+# Source material is read-only after Day 1 -- any change here wants three pairs of eyes.
+/docs/production-guardian-healthscan-mvp1.docx  @devA @Ari-Glikman @tanifgit
+/docs/production-guardian-demo.html             @devA @Ari-Glikman @tanifgit
+
+# Catch-all for anything not matched above.
+*                             @devA @Ari-Glikman @tanifgit
