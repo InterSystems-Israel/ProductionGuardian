@@ -1,0 +1,60 @@
+{
+  "_comment": "Captured from live LABDEMO with Cloud API disabled via iris_production_item. Real observed state: status Disabled, queue reached 48, elapsed 110s. Upstream hosts keep working, so the queue accumulates at the dead operation.",
+  "sampledAt": "2026-08-06T15:44:18Z",
+  "production": "LABDEMO.Production",
+  "hosts": [
+    {
+      "name": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 0,
+      "messages": 240,
+      "messagesPerSec": 0.2,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.01,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 4.284,
+      "sampleCount": 12
+    },
+    {
+      "name": "Lab Router",
+      "type": "actor",
+      "status": "OK",
+      "queued": 0,
+      "messages": 1440,
+      "messagesPerSec": 1.2,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 4.277,
+      "sampleCount": 24
+    },
+    {
+      "name": "FHIR Transform",
+      "type": "actor",
+      "status": "OK",
+      "queued": 0,
+      "messages": 1440,
+      "messagesPerSec": 1.2,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 4.275,
+      "sampleCount": 24
+    },
+    {
+      "name": "Cloud API",
+      "type": "operation",
+      "status": "Disabled",
+      "queued": 48,
+      "messages": 392,
+      "messagesPerSec": 0,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.05,
+      "avgQueueingTime": 0.02,
+      "lastActivityElapsedSeconds": 110,
+      "sampleCount": 24
+    }
+  ],
+  "alerts": []
+}

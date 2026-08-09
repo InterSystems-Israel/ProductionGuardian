@@ -1,0 +1,64 @@
+{
+  "_comment": "ADR 0003. The only place detection numbers live. Hot-reloaded on change. Defaults are conservative starting points, to be corrected once each of the eight triggers has been induced against LABDEMO.",
+
+  "sustainedSamples": 2,
+  "minBaselineSamples": 12,
+  "baselineWindowSeconds": 1800,
+
+  "rules": {
+    "dead_host": {
+      "enabled": true,
+      "severity": "critical"
+    },
+    "stalled_host": {
+      "enabled": true,
+      "inactiveSeconds": 300,
+      "requiresQueued": true,
+      "severity": "warning"
+    },
+    "queue_buildup": {
+      "enabled": true,
+      "baselineMultiplier": 5.0,
+      "absoluteFloor": 50,
+      "severityBands": { "warning": 5.0, "critical": 20.0 }
+    },
+    "elevated_error_rate": {
+      "enabled": true,
+      "errorsPerMinuteFloor": 1.0,
+      "baselineMultiplier": 3.0,
+      "severityBands": { "warning": 3.0, "critical": 10.0 }
+    },
+    "slow_processing": {
+      "enabled": true,
+      "baselineMultiplier": 3.0,
+      "absoluteFloorSeconds": 1.0,
+      "severityBands": { "warning": 3.0, "critical": 10.0 }
+    },
+    "growing_queue_wait": {
+      "enabled": true,
+      "baselineMultiplier": 3.0,
+      "absoluteFloorSeconds": 1.0,
+      "severityBands": { "warning": 3.0, "critical": 10.0 }
+    },
+    "throughput_drop": {
+      "enabled": true,
+      "baselineFraction": 0.4,
+      "minBaselineRate": 0.1,
+      "severityBands": { "warning": 0.4, "critical": 0.1 }
+    },
+    "system_alert": {
+      "enabled": true,
+      "severity": "info",
+      "criticalSeverityAtOrBelow": 1
+    }
+  },
+
+  "hostOverrides": {
+    "_comment": "Rare and always commented. Raising a bound to silence a nag also raises it for a genuine regression.",
+    "Cloud API": {
+      "slow_processing": {
+        "absoluteFloorSeconds": 2.0
+      }
+    }
+  }
+}
