@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+.claude/settings.local.json
+*.mp4
+*.mov
+*.log
+.DS_Store
+Thumbs.db

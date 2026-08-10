@@ -1,0 +1,82 @@
+[
+  {
+    "id": "f-1042",
+    "host": "Cloud API",
+    "type": "dead_host",
+    "severity": "critical",
+    "currentValue": 0,
+    "baselineValue": 0.4,
+    "detectedAt": "2026-08-06T15:44:18Z",
+    "message": "Cloud API is Disabled — no messages processed for 110s"
+  },
+  {
+    "id": "f-1041",
+    "host": "Cloud API",
+    "type": "queue_buildup",
+    "severity": "critical",
+    "currentValue": 48,
+    "baselineValue": 0,
+    "detectedAt": "2026-08-06T15:44:08Z",
+    "message": "Queue depth 48 with no active jobs to drain it"
+  },
+  {
+    "id": "f-1039",
+    "host": "Lab Router",
+    "type": "growing_queue_wait",
+    "severity": "warning",
+    "currentValue": 1.84,
+    "baselineValue": 0.02,
+    "detectedAt": "2026-08-06T15:43:51Z",
+    "message": "Average queue wait 1.84s is 92x baseline"
+  },
+  {
+    "id": "f-1038",
+    "host": "FHIR Transform",
+    "type": "slow_processing",
+    "severity": "warning",
+    "currentValue": 0.41,
+    "baselineValue": 0.08,
+    "detectedAt": "2026-08-06T15:43:40Z",
+    "message": "Average processing time 410ms is 5.1x baseline"
+  },
+  {
+    "id": "f-1036",
+    "host": "EMR Source",
+    "type": "throughput_drop",
+    "severity": "warning",
+    "currentValue": 0.2,
+    "baselineValue": 1.2,
+    "detectedAt": "2026-08-06T15:42:12Z",
+    "message": "Throughput 0.2 msg/sec is 83% below baseline"
+  },
+  {
+    "id": "f-1035",
+    "host": "Cloud API",
+    "type": "elevated_error_rate",
+    "severity": "warning",
+    "currentValue": 37,
+    "baselineValue": 0,
+    "detectedAt": "2026-08-06T15:41:05Z",
+    "message": "37 errored messages since production start, rising"
+  },
+  {
+    "id": "f-1033",
+    "host": "Lab Router",
+    "type": "stalled_host",
+    "severity": "info",
+    "currentValue": 312,
+    "baselineValue": null,
+    "detectedAt": "2026-08-06T15:39:44Z",
+    "message": "No activity for 312s while 12 messages are queued (baseline warming up)"
+  },
+  {
+    "id": "f-1031",
+    "host": "EMR Source",
+    "type": "system_alert",
+    "severity": "info",
+    "currentValue": 1,
+    "baselineValue": null,
+    "detectedAt": "2026-08-06T15:38:20Z",
+    "message": "New system alert: Previous system shutdown was abnormal"
+  }
+]

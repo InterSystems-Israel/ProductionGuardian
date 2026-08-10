@@ -1,0 +1,144 @@
+name: CI
+
+# Per-path jobs so one developer's push never goes red because another's area is
+# mid-refactor (CONTRIBUTING.md §4). Each job only runs when its own paths change.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # The job worth more than the other three combined: it validates every file in
+  # contracts/samples/ against the schemas, so a contract and the shared fixtures
+  # disagreeing is caught here rather than at the Day-5 rehearsal.
+  contracts:
+    name: contracts — samples vs schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Skip if contracts/ is absent
+        id: guard
+        run: |
+          if [ -d contracts ]; then echo "present=true" >> "$GITHUB_OUTPUT"
+          else echo "present=false" >> "$GITHUB_OUTPUT"; echo "contracts/ not present yet — skipping"; fi
+      # `npm ci` needs a lockfile; fall back to `npm install` before one is committed.
+      - name: Install
+        if: steps.guard.outputs.present == 'true'
+        working-directory: contracts
+        run: npm ci || npm install
+      # Deliberately not an ajv-cli one-liner. Three reasons, all found on PR #3:
+      #   1. validating against the root schema cannot distinguish a hosts array from
+      #      a findings array, so that check silently does not happen
+      #   2. `-r '#/definitions/...'` is rewritten into a filesystem path by Git Bash
+      #   3. `-c ajv-formats` resolves from the invocation directory and silently
+      #      ignores `format` when run elsewhere — a validator that quietly weakens
+      - name: Validate samples
+        if: steps.guard.outputs.present == 'true'
+        working-directory: contracts
+        run: npm run validate
+
+  detection-engine:
+    name: detection-engine — typecheck + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Skip if the service is absent
+        id: guard
+        run: |
+          if [ -d services/detection-engine ]; then echo "present=true" >> "$GITHUB_OUTPUT"
+          else echo "present=false" >> "$GITHUB_OUTPUT"; echo "services/detection-engine not present yet — skipping"; fi
+      - name: Install
+        if: steps.guard.outputs.present == 'true'
+        working-directory: services/detection-engine
+        run: npm ci || npm install
+      - name: Typecheck
+        if: steps.guard.outputs.present == 'true'
+        working-directory: services/detection-engine
+        run: npm run typecheck
+      - name: Test
+        if: steps.guard.outputs.present == 'true'
+        working-directory: services/detection-engine
+        run: npm test
+      # ADR 0004 is a promise the engine must keep: it has to start and serve with
+      # Dev A's proxy absent. If this step fails, mock-first is broken.
+      - name: Serves with no proxy running (ADR 0004)
+        if: steps.guard.outputs.present == 'true'
+        working-directory: services/detection-engine
+        run: |
+          PORT=3002 POLL_INTERVAL_MS=500 node src/index.ts &
+          ENGINE_PID=$!
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:3002/api/healthscan/hosts >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          HOSTS=$(curl -fsS http://127.0.0.1:3002/api/healthscan/hosts)
+          kill "$ENGINE_PID" 2>/dev/null || true
+          COUNT=$(printf '%s' "$HOSTS" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).length))')
+          echo "hosts served with no proxy: $COUNT"
+          test "$COUNT" -eq 4
+
+  dashboard:
+    name: dashboard — typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Skip if the app is absent
+        id: guard
+        run: |
+          if [ -f apps/dashboard/package.json ]; then echo "present=true" >> "$GITHUB_OUTPUT"
+          else echo "present=false" >> "$GITHUB_OUTPUT"; echo "apps/dashboard not present yet — skipping"; fi
+      - name: Install
+        if: steps.guard.outputs.present == 'true'
+        working-directory: apps/dashboard
+        run: npm ci || npm install
+      - name: Build (runs tsc --noEmit first)
+        if: steps.guard.outputs.present == 'true'
+        working-directory: apps/dashboard
+        run: npm run build
+      # Dev C's own fixture validator, if present — keeps demo fixtures honest
+      # against the published schema.
+      - name: Validate fixtures
+        if: steps.guard.outputs.present == 'true'
+        working-directory: apps/dashboard
+        run: npm run validate:fixtures --if-present
+
+  metrics-proxy:
+    name: metrics-proxy — typecheck + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # Dev A's component does not exist yet, so this job is a no-op placeholder
+      # rather than a failure. It exists so the fourth per-path job from
+      # CONTRIBUTING.md §4 is present, and starts working the moment they land code.
+      - name: Skip if the service is absent
+        id: guard
+        run: |
+          if [ -f services/metrics-proxy/package.json ]; then echo "present=true" >> "$GITHUB_OUTPUT"
+          else echo "present=false" >> "$GITHUB_OUTPUT"; echo "services/metrics-proxy not present yet — skipping"; fi
+      - name: Install
+        if: steps.guard.outputs.present == 'true'
+        working-directory: services/metrics-proxy
+        run: npm ci || npm install
+      - name: Typecheck
+        if: steps.guard.outputs.present == 'true'
+        working-directory: services/metrics-proxy
+        run: npm run typecheck --if-present
+      - name: Test
+        if: steps.guard.outputs.present == 'true'
+        working-directory: services/metrics-proxy
+        run: npm test --if-present
