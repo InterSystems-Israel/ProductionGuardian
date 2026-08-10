@@ -1,0 +1,60 @@
+{
+  "_comment": "Cloud API erroring hard while still processing. Derived from the LABDEMO capture with FailurePercent raised on LABDEMO.Operation.CloudAPI, which fails a deterministic 1-in-N calls. messagesErrored is CUMULATIVE and must RISE across consecutive polls for elevated_error_rate to fire -- the engine derives errors/min from the delta, because a counter that only rises would otherwise flag forever once it moved. Paired with error-storm-2.json, which continues the climb.",
+  "sampledAt": "2026-08-06T15:49:10Z",
+  "production": "LABDEMO.Production",
+  "hosts": [
+    {
+      "name": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 0,
+      "messages": 360,
+      "messagesPerSec": 0.2,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 3.8,
+      "sampleCount": 12
+    },
+    {
+      "name": "Lab Router",
+      "type": "actor",
+      "status": "OK",
+      "queued": 0,
+      "messages": 2160,
+      "messagesPerSec": 1.2,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 3.8,
+      "sampleCount": 24
+    },
+    {
+      "name": "FHIR Transform",
+      "type": "actor",
+      "status": "OK",
+      "queued": 0,
+      "messages": 2160,
+      "messagesPerSec": 1.2,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 3.8,
+      "sampleCount": 24
+    },
+    {
+      "name": "Cloud API",
+      "type": "operation",
+      "status": "Error",
+      "queued": 12,
+      "messages": 700,
+      "messagesPerSec": 0.35,
+      "messagesErrored": 60,
+      "avgProcessingTime": 0.06,
+      "avgQueueingTime": 0.04,
+      "lastActivityElapsedSeconds": 2.4,
+      "sampleCount": 24
+    }
+  ],
+  "alerts": []
+}

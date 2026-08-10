@@ -1,0 +1,60 @@
+{
+  "_comment": "Lab Router hung: status still OK and the host is enabled, but nothing has moved for over 6 minutes while 27 messages sit queued. This is the case dead_host cannot catch -- IRIS reports the host as fine, so only the last-activity-versus-queue combination reveals it. Reproduced on LABDEMO by suspending the Lab Router job while EMR Source kept feeding it. Requires lastActivityElapsedSeconds > stalled_host.inactiveSeconds (300) AND queued > 0; an idle host with an empty queue is healthy and must not fire.",
+  "sampledAt": "2026-08-06T15:52:40Z",
+  "production": "LABDEMO.Production",
+  "hosts": [
+    {
+      "name": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 0,
+      "messages": 420,
+      "messagesPerSec": 0.2,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 4.1,
+      "sampleCount": 12
+    },
+    {
+      "name": "Lab Router",
+      "type": "actor",
+      "status": "OK",
+      "queued": 27,
+      "messages": 2400,
+      "messagesPerSec": 0,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0.9,
+      "lastActivityElapsedSeconds": 384,
+      "sampleCount": 24
+    },
+    {
+      "name": "FHIR Transform",
+      "type": "actor",
+      "status": "OK",
+      "queued": 0,
+      "messages": 2400,
+      "messagesPerSec": 0,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 381,
+      "sampleCount": 24
+    },
+    {
+      "name": "Cloud API",
+      "type": "operation",
+      "status": "OK",
+      "queued": 0,
+      "messages": 800,
+      "messagesPerSec": 0,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.05,
+      "avgQueueingTime": 0.02,
+      "lastActivityElapsedSeconds": 379,
+      "sampleCount": 24
+    }
+  ],
+  "alerts": []
+}

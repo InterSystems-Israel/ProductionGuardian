@@ -344,27 +344,48 @@ describe('hot reload (ADR 0003)', () => {
 });
 
 describe('system_alert', () => {
-  it('fires once for an alert naming a host, then not again', () => {
-    const engine = new DetectionEngine({ ...DEFAULT_CONFIG, sustainedSamples: 1 });
+  it('keeps reporting while the alert stays in the payload, and clears when it ages out', () => {
+    // This test previously asserted the opposite — "fires once, then not again" — which
+    // was the bug: suppressing the second poll meant the registry never saw the two
+    // consecutive verdicts it needs, so with the default sustainedSamples of 2 the rule
+    // could never confirm at all. An alert reports for as long as the proxy carries it.
+    const engine = new DetectionEngine(DEFAULT_CONFIG);
     const alert = {
       time: '2026-08-06T15:58:00.000Z',
       severity: '2',
       message: 'Lab Router reported a problem',
     };
+    const alertCount = () =>
+      engine.snapshot().findings.filter((f) => f.type === 'system_alert').length;
 
     engine.applyPoll({ ...response([proxyHost()]), alerts: [alert] }, T0);
-    assert.equal(
-      engine.snapshot().findings.filter((f) => f.type === 'system_alert').length,
-      1,
-    );
+    assert.equal(alertCount(), 0, 'one sample must not confirm — sustained breach applies');
 
-    // Same alert on the next poll is not new, so the condition clears.
     engine.applyPoll({ ...response([proxyHost()]), alerts: [alert] }, T0 + POLL_MS);
-    assert.equal(
-      engine.snapshot().findings.filter((f) => f.type === 'system_alert').length,
-      0,
-      'an already-reported alert must not re-fire',
-    );
+    assert.equal(alertCount(), 1, 'confirms on the second consecutive poll');
+
+    engine.applyPoll({ ...response([proxyHost()]), alerts: [alert] }, T0 + 2 * POLL_MS);
+    assert.equal(alertCount(), 1, 'still reported while present, not duplicated');
+
+    // The alert ages out of the proxy payload — the finding clears, per contract Q4.
+    engine.applyPoll(response([proxyHost()]), T0 + 3 * POLL_MS);
+    assert.equal(alertCount(), 0, 'no tombstone once the alert is gone');
+  });
+
+  it('keeps a stable id across polls for the same alert', () => {
+    const engine = new DetectionEngine(DEFAULT_CONFIG);
+    const alert = {
+      time: '2026-08-06T15:58:00.000Z',
+      severity: '2',
+      message: 'Lab Router reported a problem',
+    };
+    const ids = new Set<string>();
+    for (let i = 0; i < 4; i += 1) {
+      engine.applyPoll({ ...response([proxyHost()]), alerts: [alert] }, T0 + i * POLL_MS);
+      const finding = engine.snapshot().findings.find((f) => f.type === 'system_alert');
+      if (finding !== undefined) ids.add(finding.id);
+    }
+    assert.equal(ids.size, 1, `id churned across polls: ${[...ids].join(', ')}`);
   });
 
   it('ignores an alert that names no known host', () => {

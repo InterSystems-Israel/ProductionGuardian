@@ -159,6 +159,33 @@ If it needs addressing later, the options are excluding breaching samples from t
 longer window, or a persisted baseline (ADR 0002's named revisit trigger). All three are out of
 scope for MVP 1.
 
+### 5.2 Severity `info` is deliberately unreachable for the seven per-host rules
+
+Each comparative rule's firing gate **equals** its `severityBands.warning` — `queue_buildup` fires
+at 5× and warns at 5× — so anything that fires is at least a warning. `dead_host` and
+`stalled_host` carry fixed severities. **`system_alert` is the only source of an `info` finding.**
+
+Do not "fix" this by lowering a warning band: reaching `info` would require lowering the firing
+**gate**, which widens what fires and reintroduces exactly the false positives MVP §6 names as the
+top risk. A quiet findings list is the point. `thresholds.json` carries the same note, and
+`test/scenario.test.ts` asserts `info` comes only from `system_alert`, so a drift fails loudly.
+
+### 5.3 An alert is an event, not a sustained condition
+
+`system_alert` is exempt from the sustained-breach *suppression* that the other rules use, though
+the registry still requires two consecutive verdicts before confirming. It reports for as long as
+the alert stays in the proxy payload and clears when it ages out.
+
+An earlier version marked an alert seen on its first poll and returned `null` afterwards, which
+made the rule **structurally unable to fire**: the registry needs `sustainedSamples` consecutive
+verdicts and only ever got one. Every rule unit test passed, because the conflict was *between*
+the rule and the registry rather than inside either. It surfaced only because Dev C observed 46
+live findings with no `system_alert` and no `info` severity among them.
+
+The lesson generalises: a rule tested in isolation can be dead once composed with the registry.
+`test/scenario.test.ts` exists to catch that class — it asserts the demo loop can actually produce
+all eight types.
+
 ## 6. Never invent data
 
 - **No fabricated hosts, metrics, or findings outside `fixtures/`.** Fixtures use the four LABDEMO

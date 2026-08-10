@@ -1,6 +1,8 @@
 {
   "_comment": "ADR 0003. The only place detection numbers live. Hot-reloaded on change. Defaults are conservative starting points, to be corrected once each of the eight triggers has been induced against LABDEMO.",
 
+  "_comment_info_severity": "DELIBERATE: severity 'info' is unreachable for the seven per-host rules, and system_alert is the only source of an info finding. Each comparative rule's firing gate equals its severityBands.warning (e.g. queue_buildup fires at 5x and warns at 5x), so anything that fires is at least a warning; dead_host and stalled_host carry fixed severities. Do NOT 'fix' this by lowering a warning band -- that would require lowering the firing GATE, which widens what fires and reintroduces exactly the false positives MVP §6 names as the top risk. A quiet findings list is the point. Raised by Dev C on #8 after observing 46 live findings with no info among them.",
+
   "sustainedSamples": 2,
   "minBaselineSamples": 12,
   "baselineWindowSeconds": 1800,

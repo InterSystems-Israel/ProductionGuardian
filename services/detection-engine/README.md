@@ -63,12 +63,23 @@ The default scenario loops healthy → degrading → dead → recovery, so findi
 | Fixture | What it shows |
 |---|---|
 | `healthy.json` | Steady state. Includes `Ens.MonitorService` to prove framework filtering. |
-| `queue-buildup.json` | Cloud API throttled: queue 486, slow, erroring. Trips four rules. |
+| `queue-buildup.json` | Cloud API throttled: queue 486, slow, waiting. Trips four rules. |
+| `error-storm{,-2,-3,-4}.json` | Errored count climbing 60 → 210 → 400 → 620 across consecutive polls. `-2` onward carry a system alert. |
+| `stalled-host.json` | Lab Router hung: status still `OK`, idle 384s, 27 queued. The case `dead_host` cannot catch. |
 | `cloud-api-dead.json` | Cloud API disabled. Real observed state — status `Disabled`, depth 48. |
 
-Note `cloud-api-dead` sits at depth **48** against an `absoluteFloor` of **50**, so it
-deliberately does *not* trip `queue_buildup`. That is the two-condition design in ADR 0003
-working, not a gap.
+**The loop reaches all eight finding types and all three severities.** `test/scenario.test.ts`
+asserts it, because an earlier version silently reached only three — every rule was unit-tested and
+passing, so nothing caught it until Dev C compared 46 live findings against the eight documented
+types.
+
+Two things that look like gaps and are not:
+
+- `cloud-api-dead` sits at depth **48** against an `absoluteFloor` of **50**, so it deliberately
+  does *not* trip `queue_buildup`. That is ADR 0003's two-condition design working.
+- The error storm uses **four fixtures at one poll each** rather than one repeated. The engine
+  derives errors/min from the *delta* between polls, so a step held for several polls has a flat
+  counter and yields a rate of zero.
 
 ## Before claiming done
 

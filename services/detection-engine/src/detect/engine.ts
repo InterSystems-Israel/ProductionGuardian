@@ -175,9 +175,21 @@ export class DetectionEngine {
   }
 
   /**
-   * system_alert — absolute, and attributed to a host only when the alert text names
-   * it. Production-wide alerts are attributed to every host, which would be noise, so
-   * we attribute them to the first host alphabetically only if none is named.
+   * system_alert — attributed to a host only when the alert text names it.
+   *
+   * An alert is a discrete EVENT, not a sustained condition, so it is deliberately
+   * exempt from the sustained-breach gate. It reports for as long as the alert stays in
+   * the proxy's payload, and clears when the alert ages out.
+   *
+   * The earlier version marked an alert seen on its first poll and returned null
+   * afterwards, which made the rule structurally unable to fire at all: the registry
+   * needs `sustainedSamples` (2) consecutive verdicts to confirm, and this only ever
+   * produced one. Found via Dev C observing 46 live findings with no `system_alert`
+   * and no `info` severity among them (#8) — every rule unit test passed, because the
+   * conflict was between the rule and the registry rather than inside either.
+   *
+   * `#seenAlerts` still exists, but now only to keep `detectedAt` anchored to the first
+   * time we saw the alert rather than resetting each poll.
    */
   #evaluateAlerts(
     hostName: string,
@@ -189,9 +201,9 @@ export class DetectionEngine {
 
     for (const alert of alerts) {
       if (!alert.message.includes(hostName)) continue;
-      const alertKey = `${alert.time}|${hostName}`;
-      if (this.#seenAlerts.has(alertKey)) continue;
-      this.#seenAlerts.add(alertKey);
+
+      // Record first sighting, but do NOT suppress subsequent polls — see above.
+      this.#seenAlerts.add(`${alert.time}|${hostName}`);
 
       // IRIS alert severity is numeric and inverted: lower means worse.
       const numeric = Number(alert.severity);
