@@ -1,18 +1,21 @@
 /// Business Process: apply the HL7ToPID DTL transform and forward the result
-/// to the PatientDemographicsOperation business operation.
+/// to the outbound HTTP operation.
 ///
-/// This replaces the old FHIRTransform routing engine in the production.
-/// It handles both ADT^A01 and ORU^R01 — both carry a PID segment.
+/// NOT A PRODUCTION ITEM. "Lab Router" applies the DTL inline on the send and
+/// targets "Cloud API" directly, so this hop no longer exists in the pipeline.
+/// Kept because it is a working reference for doing the transform in a BP rather
+/// than in the routing rule; delete it if that stops being useful.
 ///
-/// Pipeline position:
-///   LabRouter → PIDExtractProcess → PatientDemographicsOperation
+/// TargetOperation below defaults to the "Cloud API" item name. If this class is
+/// ever put back into the production, that name is the join key with the findings
+/// API — see the header of Production.cls.
 Class ProductionGuardian.LabDemo.Process.PIDExtractProcess Extends Ens.BusinessProcess [ ClassType = persistent ]
 {
 
 Parameter SETTINGS = "TargetOperation:Basic";
 
 /// Name of the business operation to forward the extracted demographics to.
-Property TargetOperation As %String [ InitialExpression = "PatientDemographicsOperation" ];
+Property TargetOperation As %String [ InitialExpression = "Cloud API" ];
 
 /// Entry point: receive an HL7 message, apply the DTL, send the result.
 Method OnRequest(

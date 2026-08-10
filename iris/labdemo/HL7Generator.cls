@@ -17,10 +17,10 @@
 Class ProductionGuardian.LabDemo.HL7Generator
 {
 
-/// Default output directory — must match EMRSource FilePath setting.
+/// Default output directory — must match the "EMR Source" FilePath setting.
 Parameter DropDir = "C:\Practice\IN\HL7\";
 
-/// Archive directory — must match EMRSource ArchivePath setting.
+/// Archive directory — must match the "EMR Source" ArchivePath setting.
 Parameter ArchiveDir = "C:\Practice\ARCHIVE\";
 
 /// Generate `count` messages with `delaySecs` between each.

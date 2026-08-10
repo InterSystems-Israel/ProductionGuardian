@@ -1,8 +1,9 @@
-/// Routing rule for the LabRouter Business Process.
-/// Routes HL7 messages by message type to PIDExtractProcess:
-///   ADT^A01 → PIDExtractProcess  (admit — always has a full PID segment)
-///   ORU^R01 → PIDExtractProcess  (lab result — also carries PID)
-///   All others → discarded (logged as unrouted by LabRouter)
+/// Routing rule for the "Lab Router" Business Process.
+///   ADT^A01 → Cloud API, via the HL7ToPID DTL (admit — always has a full PID segment)
+///   All others → discarded (logged as unrouted by Lab Router)
+///
+/// `target` is a production item NAME, and the item names carry spaces. They are the
+/// join key with the findings API — see the header of Production.cls.
 Class ProductionGuardian.LabDemo.RoutingRule Extends Ens.Rule.Definition
 {
 
@@ -19,7 +20,7 @@ XData RuleDefinition [ XMLNamespace = "http://www.intersystems.com/rule" ]
       <constraint name="docCategory" value="2.5"/>
       <constraint name="docName" value="ADT_A01"/>
       <when condition="1">
-        <send transform="ProductionGuardian.LabDemo.Transform.HL7ToPID" target="PatientDemographicsOperation"></send>
+        <send transform="ProductionGuardian.LabDemo.Transform.HL7ToPID" target="Cloud API"></send>
         <return/>
       </when>
     </rule>

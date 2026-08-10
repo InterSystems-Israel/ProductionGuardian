@@ -3,11 +3,17 @@
 The LABDEMO production models a realistic HL7 lab message pipeline that Health Scan monitors.
 
 ```
-EMRSource  →  LabRouter  →  PatientDemographicsOperation
-(HL7 file)    (routing)      (DTL: PID extract)    (HTTP POST → PatientDispatcher)
-                                                             ↓
-                                                  PatientRecord table (upsert by PatientID)
+EMR Source  →  Lab Router  →  Cloud API
+(HL7 file)     (routing +      (HTTP POST → PatientDispatcher)
+                PID extract)              ↓
+                               PatientRecord table (upsert by PatientID)
 ```
+
+**Item names carry spaces.** They are the join key between the proxy's host list and the
+findings API (`contracts/healthscan-api.md` Q8) — the `host` label in `/api/monitor/metrics`
+is the config item name verbatim, and it must stay byte-equal to
+`contracts/samples/hosts-response.json`. Renaming an item silently breaks every finding
+that refers to it.
 
 ---
 
@@ -15,14 +21,15 @@ EMRSource  →  LabRouter  →  PatientDemographicsOperation
 
 | File | Purpose |
 |---|---|
-| `Production.cls` | Production definition — 4 items + ActivityReporter |
-| `RoutingRule.cls` | Routes ADT^A01 , applies DTL, forwards PatientDemographics |
+| `Production.cls` | Production definition — 3 items + `Ens.ActivityReporter` |
+| `RoutingRule.cls` | Routes ADT^A01 to Cloud API, applying the HL7ToPID DTL on the send |
 | `Transform/HL7ToPID.cls` | DTL: HL7 PID segment → PatientDemographics message |
 | `Message/PatientDemographics.cls` | Ens.Request carrying extracted PID fields |
-| `Operation/PatientDemographicsOperation.cls` | BO: HTTP POST to REST dispatcher |
+| `Operation/PatientDemographicsOperation.cls` | BO: HTTP POST to REST dispatcher — the "Cloud API" item |
 | `REST/PatientDispatcher.cls` | %CSP.REST dispatcher — POST/GET /labdemo/patients |
 | `Data/PatientRecord.cls` | %Persistent table — upsert keyed on PatientID |
 | `HL7Generator.cls` | Writes synthetic ADT .hl7 files to drop dir |
+| `Process/PIDExtractProcess.cls` | **Not a production item** — kept as a BP-transform reference |
 
 ---
 
@@ -72,7 +79,7 @@ Or via Management Portal: Interoperability → Configure → Production → Star
 ## Start message flow
 
 ```
-// 20 messages, 2-second gaps (ADT and ORU alternating):
+// 20 messages, 2-second gaps (all ADT^A01):
 do ##class(ProductionGuardian.LabDemo.HL7Generator).Run()
 
 // Continuous until Ctrl-C:
@@ -81,9 +88,9 @@ do ##class(ProductionGuardian.LabDemo.HL7Generator).RunContinuous(2)
 
 Each message flows:
 1. Written to `C:\Practice\IN\HL7` as a `.hl7` file
-2. EMRSource picks it up and sends to LabRouter
-3. LabRouter runs the HL7ToPID DTL — extracts PatientID, name, DOB, sex, address, phone and routes it to PatientDemographicsOperation
-4. PatientDemographicsOperation HTTP-POSTs the JSON to `/labdemo/patients`
+2. EMR Source picks it up and sends to Lab Router
+3. Lab Router runs the HL7ToPID DTL — extracts PatientID, name, DOB, sex, address, phone — and routes the result to Cloud API
+4. Cloud API HTTP-POSTs the JSON to `/labdemo/patients`
 5. PatientDispatcher upserts the record in `PatientRecord` (insert first time, update thereafter)
 
 ---
@@ -131,12 +138,15 @@ write rec.LastName, " ", rec.FirstName, " (", rec.UpdateCount, " updates)"
 
 | Finding type | How to induce |
 |---|---|
-| Dead / inactive host | Disable EMRSource from Management Portal |
-| Elevated error rate | Misconfigure PatientDemographicsOperation HTTPPort to a closed port |
-| Queue buildup | Suspend PIDExtractProcess; run generator at fast rate |
-| Stalled host | Pause LabRouter from Management Portal |
-| Slow processing | Add a `hang 5` to PIDExtractProcess.OnRequest temporarily |
+| Dead / inactive host | Disable "EMR Source" from Management Portal |
+| Elevated error rate | Misconfigure "Cloud API" HTTPPort to a closed port |
+| Queue buildup | Suspend "Cloud API"; run generator at a fast rate |
+| Stalled host | Pause "Lab Router" from Management Portal |
+| Slow processing | Add a `hang 5` to `PatientDemographicsOperation.OnMessage` temporarily |
 | Throughput drop | Stop the HL7Generator |
+
+`queue_buildup` will not currently produce a finding even when the queue is genuinely
+deep — per-host queue depth is not in `/api/monitor/metrics`. See issue #12.
 
 ---
 

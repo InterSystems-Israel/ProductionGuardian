@@ -42,38 +42,55 @@ See `iris/setup/README.md` for the full walkthrough.
 The production has been fully built and extended. The pipeline is:
 
 ```
-EMRSource → LabRouter → PIDExtractProcess → PatientDemographicsOperation
-(HL7 file)  (routing)   (DTL: PID extract)  (HTTP POST)
-                                                   ↓
-                                         PatientDispatcher (REST API)
-                                                   ↓
-                                         PatientRecord table (upsert by PatientID)
+EMR Source → Lab Router → Cloud API
+(HL7 file)   (routing +    (HTTP POST)
+              PID extract)      ↓
+                          PatientDispatcher (REST API)
+                                 ↓
+                          PatientRecord table (upsert by PatientID)
 ```
 
 ### 3.1 All files and classes
 
 | File | Class | Purpose |
 |---|---|---|
-| `labdemo/Production.cls` | `ProductionGuardian.LabDemo.Production` | 4-item production + ActivityReporter |
-| `labdemo/RoutingRule.cls` | `ProductionGuardian.LabDemo.RoutingRule` | Routes ADT^A01 + ORU^R01 → PIDExtractProcess |
-| `labdemo/Process/PIDExtractProcess.cls` | `ProductionGuardian.LabDemo.Process.PIDExtractProcess` | BP: applies HL7ToPID DTL, async-forwards PatientDemographics |
+| `labdemo/Production.cls` | `ProductionGuardian.LabDemo.Production` | 3-item production + `Ens.ActivityReporter` |
+| `labdemo/RoutingRule.cls` | `ProductionGuardian.LabDemo.RoutingRule` | Routes ADT^A01 → Cloud API, applying the HL7ToPID DTL on the send |
+| `labdemo/Process/PIDExtractProcess.cls` | `ProductionGuardian.LabDemo.Process.PIDExtractProcess` | **Not a production item** — BP-transform reference, kept but unused |
 | `labdemo/Transform/HL7ToPID.cls` | `ProductionGuardian.LabDemo.Transform.HL7ToPID` | DTL: maps PID-3/5/7/8/11/13 + MSH-10 to PatientDemographics |
 | `labdemo/Message/PatientDemographics.cls` | `ProductionGuardian.LabDemo.Message.PatientDemographics` | Ens.Request: PatientID, name, DOB, sex, address, phone, sourceMessageID |
-| `labdemo/Operation/PatientDemographicsOperation.cls` | `ProductionGuardian.LabDemo.Operation.PatientDemographicsOperation` | BO: JSON POST to /labdemo/patients via EnsLib.HTTP.OutboundAdapter |
+| `labdemo/Operation/PatientDemographicsOperation.cls` | `ProductionGuardian.LabDemo.Operation.PatientDemographicsOperation` | BO: JSON POST to /labdemo/patients — runs as the `Cloud API` item |
 | `labdemo/REST/PatientDispatcher.cls` | `ProductionGuardian.LabDemo.REST.PatientDispatcher` | %CSP.REST — POST/GET /labdemo/patients |
 | `labdemo/Data/PatientRecord.cls` | `ProductionGuardian.LabDemo.Data.PatientRecord` | %Persistent table, unique index on PatientID, `Upsert()` class method |
 | `labdemo/HL7Generator.cls` | `ProductionGuardian.LabDemo.HL7Generator` | Writes synthetic ADT^A01 .hl7 files to the file drop dir |
 | `labdemo/FHIRRoutingRule.cls` | `ProductionGuardian.LabDemo.FHIRRoutingRule` | **Deprecated stub — do not load or reference** |
 
-### 3.2 Production item names (exact — these appear in proxy JSON)
+### 3.2 Production item names — THE JOIN KEY. Do not rename casually.
+
+The `host` label in `/api/monitor/metrics` is the config item name **verbatim**, and
+`contracts/healthscan-api.md` Q8 makes `host` the join key between the host list and
+findings. These strings must stay byte-equal to `contracts/samples/hosts-response.json`,
+**spaces included**. Rename an item and every finding that refers to it joins to nothing —
+which surfaces as a silently empty dashboard, not an error.
 
 | Item name | Class | Role |
 |---|---|---|
-| `EMRSource` | `EnsLib.HL7.Service.FileService` | Reads `.hl7` files from `C:\Practice\IN\HL7` |
-| `LabRouter` | `EnsLib.HL7.MsgRouter.RoutingEngine` | Routes to PIDExtractProcess |
-| `PIDExtractProcess` | `ProductionGuardian.LabDemo.Process.PIDExtractProcess` | DTL transform BP |
-| `PatientDemographicsOperation` | `ProductionGuardian.LabDemo.Operation.PatientDemographicsOperation` | REST POST to 127.0.0.1:52773 |
-| `ActivityReporter` | `Ens.Activity.Operation.Local` | Exposes processing-time metrics |
+| `EMR Source` | `EnsLib.HL7.Service.FileService` | Reads `.hl7` files from `C:\Practice\IN\HL7` |
+| `Lab Router` | `EnsLib.HL7.MsgRouter.RoutingEngine` | Routes ADT^A01, applying the DTL on the send |
+| `Cloud API` | `ProductionGuardian.LabDemo.Operation.PatientDemographicsOperation` | Outbound HTTP POST to the REST dispatcher |
+| `Ens.ActivityReporter` | `Ens.Activity.Operation.Local` | Exposes processing-time metrics |
+
+An item name and a class name are independent — `Cloud API` runs
+`PatientDemographicsOperation`, and that is deliberate.
+
+`Ens.ActivityReporter` carries the `Ens.` prefix on purpose: the detection engine filters
+framework infrastructure by prefix on the **item** name (`isFrameworkHost`, PROXY-Q5), so a
+plain `ActivityReporter` leaks through as an application host with no throughput and
+manufactures a false `dead_host`.
+
+`FHIR Transform` appears in `contracts/samples/` but has **no counterpart here** — the
+transform runs inside `Lab Router`, and nothing in this production produces FHIR. That is a
+contract-side correction, not a missing item; do not invent a component to satisfy a fixture.
 
 **File drop path (Windows):** `C:\Practice\IN\HL7` — archive: `C:\Practice\ARCHIVE`.  
 Change `FilePath` / `ArchivePath` in `Production.cls` if your path differs.
@@ -110,9 +127,9 @@ Base: `http://localhost:52773/labdemo`
 
 ### 3.6 Key design decisions
 
-- `PIDExtractProcess` uses `SendRequestAsync` — non-blocking for LabRouter throughput.
+- `Lab Router` applies the DTL inline on the send rather than routing through a BP — one fewer hop and one fewer queue for the same record.
 - `PatientRecord` upsert uses the unique index `PatientIDIndex` — one `%OpenId` call, no SQL overhead.
-- `PatientDemographicsOperation` targets `127.0.0.1:52773` — change `HTTPPort` in Production.cls if IRIS uses a different web port.
+- `Cloud API` targets `127.0.0.1` — set `HTTPPort` and the URL prefix in Production.cls to match your instance (private web server vs. a fronting web server).
 - `FHIRRoutingRule.cls` cannot be deleted from source control; it is a blank deprecated stub. Never import it.
 
 ---
@@ -132,9 +149,9 @@ Base: `http://localhost:52773/labdemo`
 {
   "hosts": [
     {
-      "host": "EMRSource",
+      "host": "EMR Source",
       "type": "service",
-      "status": "Active",
+      "status": "OK",
       "queued": 0,
       "messagesPerSec": 0.5,
       "errored": 0,
@@ -148,8 +165,12 @@ Base: `http://localhost:52773/labdemo`
 }
 ```
 
-`type` values: `"service"` | `"process"` | `"operation"` | `"unknown"` (from IRIS SAM label: BS/BP/BO).  
-`lastActivity` is ISO 8601 UTC converted from Unix epoch; never a raw integer.
+`type` values: `"service"` | `"process"` | `"operation"` | `"unknown"` — from the `hosttype` label on the
+`avg_*` families, which says `actor` where the MVP doc says `process`; we normalize.  
+`status` is the IRIS enum passed through: `OK` | `Error` | `Inactive` | `Retry` | `Stopped` |
+`Unconfigured` | `Disabled`. There is no `Active` and no `Warning`.  
+`lastActivity` is ISO 8601 UTC computed as `polledAt − elapsed`; IRIS reports elapsed seconds,
+not a timestamp.
 
 ### 4.2 Running locally
 
@@ -160,7 +181,7 @@ npm install
 npm start              # real IRIS
 
 npm run mock           # mock mode — fixture data, no IRIS needed
-node --test src/parser.test.js   # 13 unit tests, all passing
+node --test src/parser.test.js   # 22 unit tests, all passing
 ```
 
 ---
@@ -171,7 +192,7 @@ node --test src/parser.test.js   # 13 unit tests, all passing
 |---|---|---|
 | Enable + verify metrics | ✅ Done | `EnableMetrics.cls` built and tested |
 | LABDEMO production | ✅ Done | Full pipeline with patient demographics REST upsert |
-| Metrics proxy + parser | ✅ Done | All 8 metric types, 13 tests pass |
+| Metrics proxy + parser | ✅ Done | All 8 metric types against the real label shape, 22 tests pass |
 | Alerts forwarding | ✅ Done | `/proxy/alerts` endpoint live |
 | Publish proxy JSON schema to `contracts/` | ⏳ Pending | **Day 1 blocker for Dev B** — write `contracts/proxy-schema.json` |
 | Finding-trigger toggles | ⏳ Pending | `iris/labdemo/triggers/` — not yet built; needed Day 3 |
@@ -181,6 +202,6 @@ node --test src/parser.test.js   # 13 unit tests, all passing
 ## 6. Dev A acceptance criteria (from spec §3)
 
 1. Proxy returns documented per-host JSON within 2 s of poll. *(proxy built; needs live IRIS test)*
-2. Parser handles all 8 metric types listed in spec §1.3. ✅ *13 unit tests pass*
+2. Parser handles all 8 metric types listed in spec §1.3. ✅ *22 unit tests pass*
 3. Each of the 8 finding types can be induced on demand via trigger toggles. *(trigger toggles not yet built)*
 4. `/api/monitor/alerts` forwarded as JSON at `/proxy/alerts`. ✅ *wired in poller + router*
