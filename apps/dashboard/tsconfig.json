@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "useDefineForClassFields": true,
+
+    "strict": true,
+    /* Indexing a Host[] or a fixture array must surface `undefined` — that is what
+       forces the defensive rendering the dashboard CLAUDE.md §2.4 requires. */
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+
+    /* `vite.config.ts` reads process.env, so node types are needed here too —
+       one config rather than a project reference, which cannot combine
+       `composite` with `noEmit`. */
+    "types": ["node"]
+  },
+  "include": ["src", "fixtures", "vite.config.ts"]
+}

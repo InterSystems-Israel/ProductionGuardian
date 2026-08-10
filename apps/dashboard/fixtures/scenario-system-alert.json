@@ -1,0 +1,83 @@
+{
+  "id": "system-alert",
+  "label": "System alert",
+  "note": "Alerts posted to alerts.log. These come from /api/monitor/alerts rather than a per-host metric, so currentValue is IRIS's numeric alert severity — inverted, lower being worse — and there is no baseline to compare against. This is also the only scenario that can show an info finding: with the engine's shipped thresholds every comparative rule's firing gate equals its warning band, so info is unreachable for seven of the eight types and system_alert above severity 1 is the sole honest source of one.",
+  "hosts": [
+    {
+      "host": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 0,
+      "messagesPerSec": 0.2,
+      "errored": 0,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "Lab Router",
+      "type": "process",
+      "status": "OK",
+      "queued": 0,
+      "messagesPerSec": 1.2,
+      "errored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0,
+      "lastActivitySecondsAgo": 3
+    },
+    {
+      "host": "FHIR Transform",
+      "type": "process",
+      "status": "OK",
+      "queued": 1,
+      "messagesPerSec": 1.2,
+      "errored": 2,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0.01,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "Cloud API",
+      "type": "operation",
+      "status": "Retry",
+      "queued": 19,
+      "messagesPerSec": 0.3,
+      "errored": 4,
+      "avgProcessingTime": 2.4,
+      "avgQueueingTime": 0.21,
+      "lastActivitySecondsAgo": 1
+    }
+  ],
+  "findings": [
+    {
+      "id": "f-1550",
+      "host": "Cloud API",
+      "type": "system_alert",
+      "severity": "critical",
+      "currentValue": 1,
+      "baselineValue": null,
+      "detectedSecondsAgo": 28,
+      "message": "New system alert: Cloud API connection retry limit reached"
+    },
+    {
+      "id": "f-1551",
+      "host": "Cloud API",
+      "type": "slow_processing",
+      "severity": "critical",
+      "currentValue": 2.4,
+      "baselineValue": 0.05,
+      "detectedSecondsAgo": 15,
+      "message": "Average processing time 2.40s is 48x baseline"
+    },
+    {
+      "id": "f-1552",
+      "host": "Lab Router",
+      "type": "system_alert",
+      "severity": "info",
+      "currentValue": 2,
+      "baselineValue": null,
+      "detectedSecondsAgo": 6,
+      "message": "New system alert: Lab Router resent a message after a transient failure"
+    }
+  ]
+}

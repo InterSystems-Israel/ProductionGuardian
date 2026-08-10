@@ -1,0 +1,93 @@
+{
+  "id": "error-storm",
+  "label": "Error storm",
+  "note": "Cloud API is rejecting messages and FHIR Transform is retrying behind it. host.errored stays the cumulative count IRIS reports, while the finding's currentValue is errors/min — the engine compares a rate, because a cumulative counter only ever rises and would flag forever once it moved.",
+  "hosts": [
+    {
+      "host": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 0,
+      "messagesPerSec": 0.2,
+      "errored": 0,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
+      "lastActivitySecondsAgo": 1
+    },
+    {
+      "host": "Lab Router",
+      "type": "process",
+      "status": "OK",
+      "queued": 2,
+      "messagesPerSec": 1.2,
+      "errored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0.03,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "FHIR Transform",
+      "type": "process",
+      "status": "Retry",
+      "queued": 22,
+      "messagesPerSec": 0.9,
+      "errored": 34,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0.09,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "Cloud API",
+      "type": "operation",
+      "status": "Error",
+      "queued": 61,
+      "messagesPerSec": 0.1,
+      "errored": 218,
+      "avgProcessingTime": 0.05,
+      "avgQueueingTime": 0.84,
+      "lastActivitySecondsAgo": 1
+    }
+  ],
+  "findings": [
+    {
+      "id": "f-1210",
+      "host": "Cloud API",
+      "type": "elevated_error_rate",
+      "severity": "critical",
+      "currentValue": 24.6,
+      "baselineValue": 0,
+      "detectedSecondsAgo": 72,
+      "message": "24.6 errors/min against a clean baseline"
+    },
+    {
+      "id": "f-1213",
+      "host": "Cloud API",
+      "type": "dead_host",
+      "severity": "critical",
+      "currentValue": 0,
+      "baselineValue": 0.4,
+      "detectedSecondsAgo": 80,
+      "message": "Cloud API is Error with 61 message(s) queued"
+    },
+    {
+      "id": "f-1212",
+      "host": "Cloud API",
+      "type": "throughput_drop",
+      "severity": "warning",
+      "currentValue": 0.1,
+      "baselineValue": 0.4,
+      "detectedSecondsAgo": 25,
+      "message": "Throughput 0.1 msg/sec is 75% below baseline"
+    },
+    {
+      "id": "f-1211",
+      "host": "FHIR Transform",
+      "type": "elevated_error_rate",
+      "severity": "warning",
+      "currentValue": 4.2,
+      "baselineValue": 1.1,
+      "detectedSecondsAgo": 41,
+      "message": "4.2 errors/min, 3.8x baseline"
+    }
+  ]
+}

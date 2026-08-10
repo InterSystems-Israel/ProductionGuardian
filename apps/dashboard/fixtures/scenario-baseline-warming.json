@@ -1,0 +1,73 @@
+{
+  "id": "baseline-warming",
+  "label": "Baseline warming up",
+  "note": "The engine has just started, so there is no rolling baseline and comparisons render as absent rather than as zero. Only the absolute rules can fire in this state: every comparative rule returns nothing while its baseline is null, so a warm-up fixture showing queue_buildup or slow_processing would be unproducible by the real engine.",
+  "hosts": [
+    {
+      "host": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 0,
+      "messagesPerSec": 0.2,
+      "errored": 0,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "Lab Router",
+      "type": "process",
+      "status": "OK",
+      "queued": 0,
+      "messagesPerSec": 1.2,
+      "errored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0,
+      "lastActivitySecondsAgo": 1
+    },
+    {
+      "host": "FHIR Transform",
+      "type": "process",
+      "status": "OK",
+      "queued": 12,
+      "messagesPerSec": 0,
+      "errored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0.31,
+      "lastActivitySecondsAgo": 312
+    },
+    {
+      "host": "Cloud API",
+      "type": "operation",
+      "status": "Disabled",
+      "queued": 44,
+      "messagesPerSec": 0,
+      "errored": 3,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
+      "lastActivitySecondsAgo": 168
+    }
+  ],
+  "findings": [
+    {
+      "id": "f-1660",
+      "host": "Cloud API",
+      "type": "dead_host",
+      "severity": "critical",
+      "currentValue": 0,
+      "baselineValue": null,
+      "detectedSecondsAgo": 20,
+      "message": "Cloud API is Disabled with 44 message(s) queued"
+    },
+    {
+      "id": "f-1661",
+      "host": "FHIR Transform",
+      "type": "stalled_host",
+      "severity": "warning",
+      "currentValue": 312,
+      "baselineValue": null,
+      "detectedSecondsAgo": 12,
+      "message": "No activity for 312s while 12 message(s) are queued"
+    }
+  ]
+}
