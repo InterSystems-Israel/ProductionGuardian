@@ -10,16 +10,26 @@ Every contract change, dated, with the reason. Newest first.
 `enum`, so this is samples plus one prose sentence. Consumers that read `host` as an opaque string
 need no edit.
 
-**Why:** the LABDEMO production has no FHIR Transform host. It never did. The HL7→PID transform is
-a DTL applied *inside* Lab Router's process, so it produces no config item and therefore no
-`host` label in `/api/monitor/metrics`. §2 of `healthscan-api.md` says only application config
-items appear; a host that IRIS cannot emit does not belong in a sample that Dev B and Dev C mock
-against. Verified against `iris/labdemo/Production.cls`: the items are `EMR Source`, `Lab Router`,
-`Cloud API`, plus the framework-filtered `Ens.ActivityReporter`.
+**Why:** the LABDEMO production no longer has a FHIR Transform host, so IRIS cannot emit that
+`host` label. §2 of `healthscan-api.md` says only application config items appear; a host the
+production cannot produce does not belong in a sample Dev B and Dev C mock against. Verified
+against `iris/labdemo/Production.cls`: the items are `EMR Source`, `Lab Router`, `Cloud API`, plus
+the framework-filtered `Ens.ActivityReporter`.
 
-The alternative — adding a fourth component so the fixture becomes true — would be inventing a
-production host to satisfy a fixture. Nothing in the pipeline produces FHIR, and the root
-`CLAUDE.md` forbids fabricated demo data.
+**It was real when the samples were written — this is a removal, not a correction of a fabrication.**
+Worth stating plainly, because Dev B's live capture in issue #10 does show
+`host="FHIR Transform"`. It was an `EnsLib.MsgRouter.RoutingEngine` whose rule forwarded everything
+straight to CloudAPI: no DTL, and nothing FHIR, as its own class comment said. It existed to
+generate metric activity. Keren removed it in `1801a50` when the pipeline became HL7→PID, and
+PR #14 settled on the three hosts above. The samples are simply older than that change.
+
+Restoring it instead would mean re-adding a pass-through host to the production for no reason
+other than making a fixture true. Nothing in the pipeline produces FHIR — that name was aspirational
+from the start.
+
+**Dev B's instance still runs the older production definition,** so a fresh capture there will show
+four hosts until it is reloaded from `iris/labdemo/`. That is expected and breaks nothing: an extra
+host is over-coverage, and the parser reads whatever `host` labels arrive.
 
 **Changes:**
 
@@ -38,11 +48,11 @@ Verified: `node validate.mjs` passes; both samples still valid.
 
 ### Follow-up outside `contracts/`, not part of this PR
 
-`FHIR Transform` also appears in `services/detection-engine/fixtures/proxy/*.json` (8 files),
-`services/metrics-proxy/fixtures/metrics.txt`, and the four-component sentence in the root
-`CLAUDE.md`, `apps/dashboard/CLAUDE.md`, `services/detection-engine/CLAUDE.md`. Those are each in
-their owner's area. Dev A will fix the metrics-proxy fixture; the rest is on the owning developer.
-Nothing breaks meanwhile — an extra host in a fixture is over-coverage, not a failure.
+`FHIR Transform` also appears in `services/detection-engine/fixtures/proxy/*.json` (8 files) and the
+four-component sentence in the root `CLAUDE.md`, `apps/dashboard/CLAUDE.md`,
+`services/detection-engine/CLAUDE.md`. Those are each in their owner's area, so they are not touched
+here. `services/metrics-proxy/fixtures/metrics.txt` is Dev A's and is already done on the PR #13
+branch. Nothing breaks meanwhile — an extra host in a fixture is over-coverage, not a failure.
 
 ## 2026-08-09 — Schema fixes from Dev C's review (Dev B)
 
