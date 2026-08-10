@@ -66,17 +66,17 @@ ClassMethod UpsertPatient() As %Status
         // Upsert into the persistent table.
         set sc = ##class(ProductionGuardian.LabDemo.Data.PatientRecord).Upsert(
             patientID,
-            $get(dyn.LastName),
-            $get(dyn.FirstName),
-            $get(dyn.MiddleName),
-            $get(dyn.DateOfBirth),
-            $get(dyn.Sex),
-            $get(dyn.AddressStreet),
-            $get(dyn.AddressCity),
-            $get(dyn.AddressState),
-            $get(dyn.AddressZip),
-            $get(dyn.HomePhone),
-            $get(dyn.SourceMessageID),
+            dyn.LastName,
+            dyn.FirstName,
+            dyn.MiddleName,
+            dyn.DateOfBirth,
+            dyn.Sex,
+            dyn.AddressStreet,
+            dyn.AddressCity,
+            dyn.AddressState,
+            dyn.AddressZip,
+            dyn.HomePhone,
+            dyn.SourceMessageID,
             .rec)
 
         if $$$ISERR(sc) {
@@ -174,7 +174,7 @@ ClassMethod RecordToDynamic(rec As ProductionGuardian.LabDemo.Data.PatientRecord
 ClassMethod WriteJSON(dyn As %DynamicObject) [ Private ]
 {
     set %response.ContentType = "application/json"
-    do dyn.%ToJSON(%response.Output)
+    do dyn.%ToJSON()
 }
 
 /// Write a JSON error response.
@@ -182,7 +182,9 @@ ClassMethod WriteErrorResponse(httpStatus As %Integer, message As %String) [ Pri
 {
     set %response.Status = httpStatus _ " Error"
     set %response.ContentType = "application/json"
-    do {"error": (message)}.%ToJSON(%response.Output)
+    // Bind to a variable first — a JSON literal is not a valid method-call target.
+    set err = {"error": (message)}
+    do err.%ToJSON()
 }
 
 }

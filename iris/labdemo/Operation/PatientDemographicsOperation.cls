@@ -20,15 +20,10 @@ Parameter INVOCATION = "Queue";
 /// HTTP adapter — surfaced here so the Management Portal shows them.
 Property Adapter As EnsLib.HTTP.OutboundAdapter;
 
-/// Dispatch path on the REST server.
-Property URL As %String [ InitialExpression = "/labdemo/patients" ];
-
-Parameter SETTINGS = "URL:Basic";
-
 /// Handle a PatientDemographics request: serialise to JSON and POST.
 Method OnMessage(
     pRequest As ProductionGuardian.LabDemo.Message.PatientDemographics,
-    Output pResponse As Ens.Response) As %Status
+    Output pResponse As Ens.StringResponse) As %Status
 {
     set sc = $$$OK
     try {
@@ -60,19 +55,20 @@ Method OnMessage(
         do httpReq.EntityBody.CopyFrom(stream)
 
         // POST via the adapter (handles retries, error logging, keepalive).
-        set sc = ..Adapter.SendFormDataArray(.httpResp, "POST", httpReq, , , ..URL)
+        set sc = ..Adapter.SendFormDataArray(.httpResp, "POST", httpReq, , , )
         if $$$ISERR(sc) quit
 
+        set pResponse = ##class(Ens.StringResponse).%New()
         // Log a non-200 HTTP response as a warning but don't fail — the
         // production will show it in the message log without stopping flow.
         if $isobject(httpResp) && (httpResp.StatusCode '= 200) {
-            $$$LOGWARNING("PatientDemographicsOperation: HTTP " _ httpResp.StatusCode
-                          _ " for PatientID=" _ pRequest.PatientID)
+            set str="PatientDemographicsOperation: HTTP " _ httpResp.StatusCode _ " for PatientID=" _ pRequest.PatientID
+            $$$LOGWARNING(str)
         } else {
-            $$$LOGINFO("PatientDemographicsOperation: upserted PatientID=" _ pRequest.PatientID)
+	        set str="PatientDemographicsOperation: upserted PatientID=" _ pRequest.PatientID
+            $$$LOGINFO(str)
         }
-
-        set pResponse = ##class(Ens.Response).%New()
+        set pResponse.StringValue=str
 
     } catch ex {
         set sc = ex.AsStatus()

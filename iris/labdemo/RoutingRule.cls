@@ -19,18 +19,7 @@ XData RuleDefinition [ XMLNamespace = "http://www.intersystems.com/rule" ]
       <constraint name="docCategory" value="2.5"/>
       <constraint name="docName" value="ADT_A01"/>
       <when condition="1">
-        <send transform="" target="PIDExtractProcess"/>
-        <return/>
-      </when>
-    </rule>
-
-    <!-- ORU^R01 lab results: also carry PID — upsert patient demographics -->
-    <rule name="Route ORU R01">
-      <constraint name="msgClass" value="EnsLib.HL7.Message"/>
-      <constraint name="docCategory" value="2.5"/>
-      <constraint name="docName" value="ORU_R01"/>
-      <when condition="1">
-        <send transform="" target="PIDExtractProcess"/>
+        <send transform="ProductionGuardian.LabDemo.Transform.HL7ToPID" target="PatientDemographicsOperation"></send>
         <return/>
       </when>
     </rule>

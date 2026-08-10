@@ -41,8 +41,7 @@ Method OnRequest(
 
         // Reject records with no PatientID — nothing meaningful to store.
         if demographics.PatientID = "" {
-            $$$LOGWARNING("PIDExtractProcess: empty PatientID after transform for msg "
-                          _ pRequest.GetValueAt("MSH:10") _ " — skipped")
+            $$$LOGWARNING("PIDExtractProcess: empty PatientID after transform for msg "_ pRequest.GetValueAt("MSH:10") _ " — skipped")
             set pResponse = ##class(Ens.Response).%New()
             quit
         }
@@ -51,8 +50,7 @@ Method OnRequest(
         set sc = ..SendRequestAsync(..TargetOperation, demographics)
         if $$$ISERR(sc) quit
 
-        $$$LOGINFO("PIDExtractProcess: forwarded PatientID=" _ demographics.PatientID
-                   _ " from " _ pRequest.GetValueAt("MSH:10"))
+        $$$LOGINFO("PIDExtractProcess: forwarded PatientID=" _ demographics.PatientID_ " from " _ pRequest.GetValueAt("MSH:10"))
 
         set pResponse = ##class(Ens.Response).%New()
 
@@ -83,6 +81,6 @@ Storage Default
 </Data>
 <DefaultData>PIDExtractProcessDefaultData</DefaultData>
 <Type>%Storage.Persistent</Type>
-</Storage>
+}
 
 }

@@ -38,9 +38,9 @@ XData ProductionDefinition
         Comment="Inbound HL7 v2 messages from the EMR system (file drop)"
         LogTraceEvents="false"
         Schedule="">
-    <Setting Target="Adapter" Name="FilePath">/tmp/labdemo/hl7-in/</Setting>
+    <Setting Target="Adapter" Name="FilePath">C:\Practice\IN\HL7</Setting>
     <Setting Target="Adapter" Name="FileSpec">*.hl7</Setting>
-    <Setting Target="Adapter" Name="ArchivePath">/tmp/labdemo/hl7-archive/</Setting>
+    <Setting Target="Adapter" Name="ArchivePath">C:\Practice\ARCHIVE</Setting>
     <Setting Target="Adapter" Name="PollInterval">2</Setting>
     <Setting Target="Host"    Name="TargetConfigNames">LabRouter</Setting>
     <Setting Target="Host"    Name="MessageSchemaCategory">2.5</Setting>
@@ -64,23 +64,6 @@ XData ProductionDefinition
   </Item>
 
   <!-- ============================================================
-       Business Process — PIDExtractProcess
-       Applies the HL7ToPID DTL transform and forwards the resulting
-       PatientDemographics message to PatientDemographicsOperation.
-       ============================================================ -->
-  <Item Name="PIDExtractProcess"
-        Category="LabDemo"
-        ClassName="ProductionGuardian.LabDemo.Process.PIDExtractProcess"
-        PoolSize="1"
-        Enabled="true"
-        Foreground="false"
-        Comment="Extracts PID segment via DTL; forwards PatientDemographics to REST operation"
-        LogTraceEvents="false"
-        Schedule="">
-    <Setting Target="Host" Name="TargetOperation">PatientDemographicsOperation</Setting>
-  </Item>
-
-  <!-- ============================================================
        Business Operation — PatientDemographicsOperation
        HTTP POSTs the PatientDemographics message as JSON to the
        PatientDispatcher REST API (same IRIS instance, /labdemo/patients).
@@ -95,10 +78,9 @@ XData ProductionDefinition
         LogTraceEvents="false"
         Schedule="">
     <Setting Target="Adapter" Name="HTTPServer">127.0.0.1</Setting>
-    <Setting Target="Adapter" Name="HTTPPort">52773</Setting>
-    <Setting Target="Adapter" Name="URL">/labdemo/patients</Setting>
-    <Setting Target="Host"    Name="URL">/labdemo/patients</Setting>
-  </Item>
+    <Setting Target="Adapter" Name="HTTPPort">80</Setting>
+    <Setting Target="Adapter" Name="URL">/iris4health_2024_1/labdemo/patients</Setting>
+   </Item>
 
   <!-- ============================================================
        Activity Reporter — required for iris_interop_avg_processing_time.

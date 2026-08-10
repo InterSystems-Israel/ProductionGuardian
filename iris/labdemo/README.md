@@ -3,7 +3,7 @@
 The LABDEMO production models a realistic HL7 lab message pipeline that Health Scan monitors.
 
 ```
-EMRSource  →  LabRouter  →  PIDExtractProcess  →  PatientDemographicsOperation
+EMRSource  →  LabRouter  →  PatientDemographicsOperation
 (HL7 file)    (routing)      (DTL: PID extract)    (HTTP POST → PatientDispatcher)
                                                              ↓
                                                   PatientRecord table (upsert by PatientID)
@@ -16,14 +16,13 @@ EMRSource  →  LabRouter  →  PIDExtractProcess  →  PatientDemographicsOpera
 | File | Purpose |
 |---|---|
 | `Production.cls` | Production definition — 4 items + ActivityReporter |
-| `RoutingRule.cls` | Routes ADT^A01 and ORU^R01 to PIDExtractProcess |
-| `Process/PIDExtractProcess.cls` | BP: applies DTL, forwards PatientDemographics |
+| `RoutingRule.cls` | Routes ADT^A01 , applies DTL, forwards PatientDemographics |
 | `Transform/HL7ToPID.cls` | DTL: HL7 PID segment → PatientDemographics message |
 | `Message/PatientDemographics.cls` | Ens.Request carrying extracted PID fields |
 | `Operation/PatientDemographicsOperation.cls` | BO: HTTP POST to REST dispatcher |
 | `REST/PatientDispatcher.cls` | %CSP.REST dispatcher — POST/GET /labdemo/patients |
 | `Data/PatientRecord.cls` | %Persistent table — upsert keyed on PatientID |
-| `HL7Generator.cls` | Writes synthetic ADT/ORU .hl7 files to drop dir |
+| `HL7Generator.cls` | Writes synthetic ADT .hl7 files to drop dir |
 
 ---
 
@@ -47,7 +46,7 @@ Click **Save**. The API is now live at `http://localhost:52773/labdemo/patients`
 
 ```
 // From a Terminal in the LABDEMO namespace:
-do $system.OBJ.LoadDir("/path/to/iris/labdemo/", "ckr")
+do $system.OBJ.LoadDir("/path/to/iris/labdemo/", "ckr",,1)
 ```
 
 The `r` flag recurses into subdirectories (Message/, Process/, Transform/, etc.).
@@ -81,12 +80,11 @@ do ##class(ProductionGuardian.LabDemo.HL7Generator).RunContinuous(2)
 ```
 
 Each message flows:
-1. Written to `/tmp/labdemo/hl7-in/` as a `.hl7` file
+1. Written to `C:\Practice\IN\HL7` as a `.hl7` file
 2. EMRSource picks it up and sends to LabRouter
-3. LabRouter routes it to PIDExtractProcess
-4. PIDExtractProcess runs the HL7ToPID DTL — extracts PatientID, name, DOB, sex, address, phone
-5. PatientDemographicsOperation HTTP-POSTs the JSON to `/labdemo/patients`
-6. PatientDispatcher upserts the record in `PatientRecord` (insert first time, update thereafter)
+3. LabRouter runs the HL7ToPID DTL — extracts PatientID, name, DOB, sex, address, phone and routes it to PatientDemographicsOperation
+4. PatientDemographicsOperation HTTP-POSTs the JSON to `/labdemo/patients`
+5. PatientDispatcher upserts the record in `PatientRecord` (insert first time, update thereafter)
 
 ---
 

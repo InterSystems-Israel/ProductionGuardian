@@ -107,13 +107,17 @@ ClassMethod Verify() As %Status
     // Build an HTTP request to the local /api/monitor/metrics endpoint.
     set req = ##class(%Net.HttpRequest).%New()
     set req.Server = "127.0.0.1"
-    set req.Port = $get(^%SYS("WebServer","Port"), 52773)  // default IRIS web port
+    set req.Port = $get(^%SYS("WebServer","Port"), 52773)  // default IRIS private web server port
     set req.Https = 0
     // Use the _SYSTEM account only for local verification — never in production code.
     set req.Username = $get(^ProductionGuardian.Setup("IRISUser"), "_SYSTEM")
     set req.Password = $get(^ProductionGuardian.Setup("IRISPass"), "SYS")
 
-    set sc = req.Get("/api/monitor/metrics")
+    // Instances fronted by a web server serve the API under an instance prefix
+    // (e.g. /iris4health_2024_1/api/monitor/...). Set this global to that prefix
+    // if Verify() reports 404 against the bare path.
+    set prefix = $get(^ProductionGuardian.Setup("WebAppPrefix"), "")
+    set sc = req.Get(prefix _ "/api/monitor/metrics")
     if $$$ISERR(sc) {
         write "HTTP request failed: "
         do $system.Status.DisplayError(sc)
@@ -151,7 +155,7 @@ ClassMethod Verify() As %Status
     set req2.Https = 0
     set req2.Username = req.Username
     set req2.Password = req.Password
-    set sc2 = req2.Get("/api/monitor/alerts")
+    set sc2 = req2.Get(prefix _ "/api/monitor/alerts")
     if $$$ISERR(sc2) {
         write "  FAILED to reach /api/monitor/alerts",!
     } else {
