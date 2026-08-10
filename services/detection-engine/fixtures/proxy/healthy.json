@@ -1,0 +1,74 @@
+{
+  "_comment": "Captured from live LABDEMO, 2026-08-06. Steady state, all four hosts OK. avgProcessingTime 0.08 for the two processes is the real measured value.",
+  "sampledAt": "2026-08-06T15:47:52Z",
+  "production": "LABDEMO.Production",
+  "hosts": [
+    {
+      "name": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 0,
+      "messages": 196,
+      "messagesPerSec": 0.2,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.01,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 4.083,
+      "sampleCount": 12
+    },
+    {
+      "name": "Lab Router",
+      "type": "actor",
+      "status": "OK",
+      "queued": 0,
+      "messages": 1176,
+      "messagesPerSec": 1.2,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 3.966,
+      "sampleCount": 24
+    },
+    {
+      "name": "FHIR Transform",
+      "type": "actor",
+      "status": "OK",
+      "queued": 0,
+      "messages": 1176,
+      "messagesPerSec": 1.2,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 3.968,
+      "sampleCount": 24
+    },
+    {
+      "name": "Cloud API",
+      "type": "operation",
+      "status": "OK",
+      "queued": 0,
+      "messages": 392,
+      "messagesPerSec": 0.4,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.05,
+      "avgQueueingTime": 0.02,
+      "lastActivityElapsedSeconds": 3.973,
+      "sampleCount": 24
+    },
+    {
+      "_comment": "Framework host, present to prove the engine filters it out (PROXY-Q5).",
+      "name": "Ens.MonitorService",
+      "type": "service",
+      "status": "OK",
+      "queued": 0,
+      "messages": 12,
+      "messagesPerSec": 0.2,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 1.2,
+      "sampleCount": 12
+    }
+  ],
+  "alerts": []
+}

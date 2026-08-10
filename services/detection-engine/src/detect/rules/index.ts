@@ -1,0 +1,228 @@
+/**
+ * The eight detection rules — MVP §1.3.
+ *
+ * Two are absolute (dead_host, system_alert): they fire without a baseline.
+ * Six are comparative: they stay silent until the baseline is warm (ADR 0002).
+ *
+ * Every rule is a pure function. Thresholds come from config, never from literals
+ * here (ADR 0003).
+ */
+
+import { configFor } from '../../config/thresholds.ts';
+import { DEAD_STATUSES } from '../../types/healthscan.ts';
+import type { Rule, RuleInput, RuleVerdict } from './types.ts';
+import {
+  formatDuration,
+  formatRatio,
+  severityFromFraction,
+  severityFromRatio,
+} from './types.ts';
+
+/**
+ * dead_host — absolute. The host is not doing work.
+ *
+ * 'Retry' is excluded from DEAD_STATUSES on purpose: a retrying host is degraded but
+ * alive, and calling it dead would be wrong.
+ */
+const deadHost: Rule = {
+  type: 'dead_host',
+  absolute: true,
+  evaluate({ host, config }: RuleInput): RuleVerdict | null {
+    const rule = configFor(config, 'dead_host', host.host);
+    if (!rule.enabled) return null;
+    if (!DEAD_STATUSES.includes(host.status)) return null;
+
+    const queueNote = host.queued > 0 ? ` with ${host.queued} message(s) queued` : '';
+    return {
+      type: 'dead_host',
+      severity: rule.severity,
+      currentValue: 0,
+      baselineValue: null,
+      message: `${host.host} is ${host.status}${queueNote}`,
+    };
+  },
+};
+
+/**
+ * stalled_host — the host is nominally OK but has stopped moving messages.
+ *
+ * Absolute in the sense that it needs no baseline, but it is NOT in the absolute set:
+ * it requires a queue, so it cannot fire on a legitimately idle host.
+ */
+const stalledHost: Rule = {
+  type: 'stalled_host',
+  absolute: true,
+  evaluate({ host, config, now }: RuleInput): RuleVerdict | null {
+    const rule = configFor(config, 'stalled_host', host.host);
+    if (!rule.enabled) return null;
+
+    // A dead host is reported as dead, not stalled — one condition, one finding.
+    if (DEAD_STATUSES.includes(host.status)) return null;
+    if (rule.requiresQueued && host.queued <= 0) return null;
+
+    const idleSeconds = (now - Date.parse(host.lastActivity)) / 1000;
+    if (!Number.isFinite(idleSeconds) || idleSeconds < rule.inactiveSeconds) return null;
+
+    return {
+      type: 'stalled_host',
+      severity: rule.severity,
+      currentValue: Math.round(idleSeconds),
+      baselineValue: null,
+      message:
+        `No activity for ${Math.round(idleSeconds)}s while ${host.queued} message(s) are queued`,
+    };
+  },
+};
+
+/**
+ * queue_buildup — comparative. Needs BOTH the multiplier and the absolute floor,
+ * because 1 -> 5 is 5x baseline and not a problem (ADR 0003).
+ */
+const queueBuildup: Rule = {
+  type: 'queue_buildup',
+  absolute: false,
+  evaluate({ host, baselines, config }: RuleInput): RuleVerdict | null {
+    const rule = configFor(config, 'queue_buildup', host.host);
+    if (!rule.enabled) return null;
+
+    const baseline = baselines.baseline(host.host, 'queued');
+    if (baseline === null) return null;
+    if (host.queued < rule.absoluteFloor) return null;
+
+    // A zero baseline makes any ratio infinite, so treat the floor as the whole test.
+    const ratio = baseline > 0 ? host.queued / baseline : Number.POSITIVE_INFINITY;
+    if (ratio < rule.baselineMultiplier) return null;
+
+    const severity = Number.isFinite(ratio)
+      ? severityFromRatio(ratio, rule.severityBands)
+      : 'critical';
+    const comparison = Number.isFinite(ratio)
+      ? `is ${formatRatio(ratio)} baseline`
+      : 'with no baseline queue';
+
+    return {
+      type: 'queue_buildup',
+      severity,
+      currentValue: host.queued,
+      baselineValue: baseline,
+      message: `Queue depth ${host.queued} ${comparison}`,
+    };
+  },
+};
+
+/**
+ * elevated_error_rate — comparative on errors-per-minute rather than the cumulative
+ * counter, because the counter only ever rises and would flag forever once it moved.
+ */
+const elevatedErrorRate: Rule = {
+  type: 'elevated_error_rate',
+  absolute: false,
+  evaluate({ host, errorsPerMinute, baselines, config }: RuleInput): RuleVerdict | null {
+    const rule = configFor(config, 'elevated_error_rate', host.host);
+    if (!rule.enabled) return null;
+    if (errorsPerMinute === null) return null;
+    if (errorsPerMinute < rule.errorsPerMinuteFloor) return null;
+
+    const baseline = baselines.baseline(host.host, 'errorsPerMinute');
+    if (baseline === null) return null;
+
+    const ratio = baseline > 0 ? errorsPerMinute / baseline : Number.POSITIVE_INFINITY;
+    if (ratio < rule.baselineMultiplier) return null;
+
+    const severity = Number.isFinite(ratio)
+      ? severityFromRatio(ratio, rule.severityBands)
+      : 'critical';
+    const rate = errorsPerMinute.toFixed(1);
+    const comparison = Number.isFinite(ratio)
+      ? `, ${formatRatio(ratio)} baseline`
+      : ' against a clean baseline';
+
+    return {
+      type: 'elevated_error_rate',
+      severity,
+      currentValue: Number(rate),
+      baselineValue: baseline,
+      message: `${rate} errors/min${comparison}`,
+    };
+  },
+};
+
+/** slow_processing and growing_queue_wait share shape — one factory, two metrics. */
+function durationRule(
+  type: 'slow_processing' | 'growing_queue_wait',
+  metric: 'avgProcessingTime' | 'avgQueueingTime',
+  label: string,
+): Rule {
+  return {
+    type,
+    absolute: false,
+    evaluate({ host, baselines, config }: RuleInput): RuleVerdict | null {
+      const rule = configFor(config, type, host.host);
+      if (!rule.enabled) return null;
+
+      const current = host[metric];
+      const baseline = baselines.baseline(host.host, metric);
+      if (baseline === null) return null;
+      if (current < rule.absoluteFloorSeconds) return null;
+
+      const ratio = baseline > 0 ? current / baseline : Number.POSITIVE_INFINITY;
+      if (ratio < rule.baselineMultiplier) return null;
+
+      const severity = Number.isFinite(ratio)
+        ? severityFromRatio(ratio, rule.severityBands)
+        : 'critical';
+      const comparison = Number.isFinite(ratio) ? ` is ${formatRatio(ratio)} baseline` : '';
+
+      return {
+        type,
+        severity,
+        currentValue: current,
+        baselineValue: baseline,
+        message: `${label} ${formatDuration(current)}${comparison}`,
+      };
+    },
+  };
+}
+
+/**
+ * throughput_drop — inverted: LOWER is worse.
+ *
+ * `minBaselineRate` guards the degenerate case. A host whose normal rate is 0.05/sec
+ * is too quiet to judge a "drop" against, and would otherwise flag constantly.
+ */
+const throughputDrop: Rule = {
+  type: 'throughput_drop',
+  absolute: false,
+  evaluate({ host, baselines, config }: RuleInput): RuleVerdict | null {
+    const rule = configFor(config, 'throughput_drop', host.host);
+    if (!rule.enabled) return null;
+
+    const baseline = baselines.baseline(host.host, 'messagesPerSec');
+    if (baseline === null) return null;
+    if (baseline < rule.minBaselineRate) return null;
+
+    const fraction = host.messagesPerSec / baseline;
+    if (fraction > rule.baselineFraction) return null;
+
+    const percentBelow = Math.round((1 - fraction) * 100);
+    return {
+      type: 'throughput_drop',
+      severity: severityFromFraction(fraction, rule.severityBands),
+      currentValue: host.messagesPerSec,
+      baselineValue: baseline,
+      message:
+        `Throughput ${host.messagesPerSec.toFixed(1)} msg/sec is ${percentBelow}% below baseline`,
+    };
+  },
+};
+
+/** The seven per-host rules, in the order MVP §1.3 lists them. */
+export const HOST_RULES: readonly Rule[] = [
+  deadHost,
+  stalledHost,
+  queueBuildup,
+  elevatedErrorRate,
+  durationRule('slow_processing', 'avgProcessingTime', 'Average processing time'),
+  durationRule('growing_queue_wait', 'avgQueueingTime', 'Average queue wait'),
+  throughputDrop,
+] as const;

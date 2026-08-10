@@ -1,0 +1,66 @@
+{
+  "_comment": "Continuation of the error storm: messagesErrored climbs to 400 on the next consecutive poll. The engine derives errors/min from the delta between polls, so the count must keep rising for sustainedSamples consecutive readings before elevated_error_rate confirms.",
+  "sampledAt": "2026-08-06T15:49:30Z",
+  "production": "LABDEMO.Production",
+  "hosts": [
+    {
+      "name": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 0,
+      "messages": 362,
+      "messagesPerSec": 0.2,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 3.9,
+      "sampleCount": 12
+    },
+    {
+      "name": "Lab Router",
+      "type": "actor",
+      "status": "OK",
+      "queued": 0,
+      "messages": 2790,
+      "messagesPerSec": 1.2,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 3.9,
+      "sampleCount": 24
+    },
+    {
+      "name": "FHIR Transform",
+      "type": "actor",
+      "status": "OK",
+      "queued": 0,
+      "messages": 2790,
+      "messagesPerSec": 1.2,
+      "messagesErrored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0,
+      "lastActivityElapsedSeconds": 3.9,
+      "sampleCount": 24
+    },
+    {
+      "name": "Cloud API",
+      "type": "operation",
+      "status": "Error",
+      "queued": 24,
+      "messages": 2790,
+      "messagesPerSec": 0.28,
+      "messagesErrored": 400,
+      "avgProcessingTime": 0.06,
+      "avgQueueingTime": 0.05,
+      "lastActivityElapsedSeconds": 2.2,
+      "sampleCount": 24
+    }
+  ],
+  "alerts": [
+    {
+      "time": "2026-08-06T15:49:14Z",
+      "severity": "2",
+      "message": "Cloud API returned HTTP 503 (simulated) on 3 consecutive attempts"
+    }
+  ]
+}

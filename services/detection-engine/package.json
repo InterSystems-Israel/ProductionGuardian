@@ -1,0 +1,20 @@
+{
+  "name": "@production-guardian/detection-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Health Scan detection engine and findings API (Dev B)",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "node --watch src/index.ts",
+    "start": "node src/index.ts",
+    "test": "node --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  }
+}
