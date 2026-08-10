@@ -3,9 +3,11 @@
 Operator-facing frontend for Production Guardian MVP 1. React 18 + Vite +
 TypeScript, no runtime dependencies beyond React itself.
 
-**Current state:** host grid, findings list and severity summary, with live
-polling and a demo/live toggle. The finding detail drawer is not built yet — see
-[Not built yet](#not-built-yet).
+**Current state:** host grid, findings list, severity summary, finding detail
+drawer, live polling and a demo/live toggle — tasks 1–3 of `CLAUDE.md` §8, plus
+the static fallback build. Outstanding: the screencast and the presenter cue
+sheet, both of which need a human rather than code — see
+[Status by phase](#status-by-phase).
 
 ---
 
@@ -200,7 +202,7 @@ Fixtures pass through the same guards as live data. **If a guard drops a fixture
 entry, the transcription is wrong** — that is why fixture validation is worth
 watching in the console.
 
-## Not built yet
+## Status by phase
 
 | Phase | Work | Status |
 |---|---|---|
