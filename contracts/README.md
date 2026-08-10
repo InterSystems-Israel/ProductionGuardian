@@ -31,6 +31,29 @@ for Lab Router is what IRIS actually reported, not a plausible-looking number.
 The reason for the heavy process on a 5-day project: a silent contract change is the failure mode
 that breaks the Day-5 integration, and the review takes 30 seconds.
 
+### Estimating what a change costs
+
+When proposing a change, do not estimate the cost from the size of the edit. **The question is not
+how many lines reference a value, it's whether anything *means* something in terms of it.** Cost
+scales with attached meaning, not with characters.
+
+The worked example from this sprint: removing `Warning` from `HostStatus` was one line in a union,
+and it was published as "roughly one line" of consumer impact. The actual reconciliation was **83
+insertions across 10 files** — because seven demo fixtures used `status: "Warning"` to *mean* "this
+host is degraded", so narrowing the enum made a concept the dashboard had built on
+**unrepresentable**. Every one had to be rewritten to signal degradation through findings instead.
+
+Two practices contained it, and they do different jobs:
+
+- **Greppable assumption markers** (`// CONTRACT-Q<n>: assumed OK | Warning | Error | Inactive`)
+  made reconciliation *findable*. State the assumption inline — a marker naming only a question
+  number sends the reader back to the question list.
+- **Defensive rendering** made it *bounded*. Unknown values went down a neutral path from the first
+  commit, so the wrong assumption never spread past fixtures and one tone map.
+
+Only the second limits blast radius. A contract change with perfect markers and no defensive
+handling still reaches every consumer.
+
 ## Validating
 
 The `contracts` CI job validates every file in `samples/` against the schemas. If a contract and
