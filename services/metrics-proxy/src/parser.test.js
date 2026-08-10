@@ -28,8 +28,8 @@ describe('parseLabels', () => {
     assert.equal(result.text, 'say "hello"');
   });
   it('keeps spaces and dots inside label values', () => {
-    const result = parseLabels('host="FHIR Transform",production="LABDEMO.Production"');
-    assert.equal(result.host, 'FHIR Transform');
+    const result = parseLabels('host="Lab Router",production="LABDEMO.Production"');
+    assert.equal(result.host, 'Lab Router');
     assert.equal(result.production, 'LABDEMO.Production');
   });
 });
@@ -166,10 +166,10 @@ iris_system_alerts_new 2
     const raw = parsePrometheusText(fixtureText);
     const snapshot = buildSnapshot(raw);
 
-    // The four LABDEMO hosts, under their real spaced display names.
+    // The three LABDEMO hosts, under their real spaced display names.
     const hostNames = snapshot.hosts.map(h => h.host);
-    assert.deepEqual(hostNames, ['Cloud API', 'EMR Source', 'FHIR Transform', 'Lab Router']);
-    assert.equal(snapshot.hosts.length, 4, 'no extra host may appear');
+    assert.deepEqual(hostNames, ['Cloud API', 'EMR Source', 'Lab Router']);
+    assert.equal(snapshot.hosts.length, 3, 'no extra host may appear');
 
     // hosttype rides on the avg_* families only, so type must survive from there.
     const types = {};
@@ -177,8 +177,7 @@ iris_system_alerts_new 2
     assert.deepEqual(types, {
       'Cloud API': 'operation',
       'EMR Source': 'service',
-      'FHIR Transform': 'process',   // IRIS says `actor`; we normalize to the doc's word
-      'Lab Router': 'process',
+      'Lab Router': 'process',   // IRIS says `actor`; we normalize to the doc's word
     });
   });
 

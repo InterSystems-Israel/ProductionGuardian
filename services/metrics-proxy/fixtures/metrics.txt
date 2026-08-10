@@ -1,14 +1,26 @@
 # Sample /api/monitor/metrics output — REAL LABEL SHAPE.
 #
-# Provenance: the label names, metric names, status values, host display names and
-# multi-series structure below are taken from a real 1249-line capture against a live
-# LABDEMO production, reported by Dev B in issue #10. The previous version of this file
-# was hand-written and disagreed with real IRIS in six places, which is exactly the
-# failure ADR 0004 warns about.
+# Provenance, in two parts — they come from different places, and the difference matters:
 #
-# This is a REPRESENTATIVE EXCERPT, not the full capture. The full capture lands as
-# contracts/samples/metrics-dump.txt (Dev B is pasting it — only their instance can
-# produce it). Do not add invented hosts or numbers here.
+#   SHAPE (label names, metric names, status values, spaced display names, the
+#   multi-series structure) is from a real 1249-line capture against a live LABDEMO
+#   production, reported by Dev B in issue #10. The previous version of this file was
+#   hand-written and disagreed with real IRIS in six places — the failure ADR 0004 warns
+#   about. Do not "tidy" any of it.
+#
+#   HOST SET is the production as of PR #14: EMR Source, Lab Router, Cloud API. Dev B's
+#   capture also showed a fourth host, `FHIR Transform` — it was real then. It was an
+#   EnsLib.MsgRouter.RoutingEngine with a pass-through rule that forwarded everything to
+#   CloudAPI; no DTL and nothing FHIR, as its own class comment said. Keren removed it in
+#   1801a50 when the pipeline became HL7→PID, and PR #14 settled on the three above.
+#
+# So this file is NOT a byte-faithful excerpt of that capture, and should not be read as
+# one. It is the real label shape carrying the current host set. Dev B's instance still
+# runs the older production definition, so a fresh capture there will still show four
+# hosts until it is reloaded.
+#
+# The full capture lands as contracts/samples/metrics-dump.txt (Dev B is pasting it —
+# only their instance can produce it). Do not add invented hosts or numbers here.
 #
 # Note the things that break a naive parser:
 #   - the host label is `host`, not `name`; `id` is the NAMESPACE, not a host
@@ -22,7 +34,6 @@
 # TYPE iris_interop_hosts gauge
 iris_interop_hosts{id="LABDEMO",status="OK",host="EMR Source",production="LABDEMO.Production"} 1
 iris_interop_hosts{id="LABDEMO",status="OK",host="Lab Router",production="LABDEMO.Production"} 1
-iris_interop_hosts{id="LABDEMO",status="OK",host="FHIR Transform",production="LABDEMO.Production"} 1
 iris_interop_hosts{id="LABDEMO",status="OK",host="Cloud API",production="LABDEMO.Production"} 1
 
 # HELP iris_interop_queued Queue depth for the production as a whole
@@ -33,14 +44,12 @@ iris_interop_queued{id="LABDEMO",production="LABDEMO.Production"} 0
 # TYPE iris_interop_messages_per_sec gauge
 iris_interop_messages_per_sec{id="LABDEMO",host="EMR Source",production="LABDEMO.Production"} 0.5
 iris_interop_messages_per_sec{id="LABDEMO",host="Lab Router",production="LABDEMO.Production"} 0.5
-iris_interop_messages_per_sec{id="LABDEMO",host="FHIR Transform",production="LABDEMO.Production"} 0.48
 iris_interop_messages_per_sec{id="LABDEMO",host="Cloud API",production="LABDEMO.Production"} 0.48
 
 # HELP iris_interop_messages_errored Total errored messages per host
 # TYPE iris_interop_messages_errored counter
 iris_interop_messages_errored{id="LABDEMO",host="EMR Source",production="LABDEMO.Production"} 0
 iris_interop_messages_errored{id="LABDEMO",host="Lab Router",production="LABDEMO.Production"} 0
-iris_interop_messages_errored{id="LABDEMO",host="FHIR Transform",production="LABDEMO.Production"} 0
 iris_interop_messages_errored{id="LABDEMO",host="Cloud API",production="LABDEMO.Production"} 0
 
 # HELP iris_interop_avg_processing_time Average message processing time in seconds
@@ -48,14 +57,12 @@ iris_interop_messages_errored{id="LABDEMO",host="Cloud API",production="LABDEMO.
 iris_interop_avg_processing_time{hosttype="service",host="EMR Source",messagetype="ADT_A01",id="LABDEMO",production="LABDEMO.Production"} .012
 iris_interop_avg_processing_time{hosttype="actor",host="Lab Router",messagetype="ADT_A01",id="LABDEMO",production="LABDEMO.Production"} .08
 iris_interop_avg_processing_time{hosttype="actor",host="Lab Router",messagetype="ORM_O01",id="LABDEMO",production="LABDEMO.Production"} .04
-iris_interop_avg_processing_time{hosttype="actor",host="FHIR Transform",messagetype="ADT_A01",id="LABDEMO",production="LABDEMO.Production"} .045
 iris_interop_avg_processing_time{hosttype="operation",host="Cloud API",messagetype="Ens.StringRequest",id="LABDEMO",production="LABDEMO.Production"} .05
 
 # HELP iris_interop_avg_queueing_time Average queue wait time in seconds
 # TYPE iris_interop_avg_queueing_time gauge
 iris_interop_avg_queueing_time{hosttype="service",host="EMR Source",messagetype="ADT_A01",id="LABDEMO",production="LABDEMO.Production"} .001
 iris_interop_avg_queueing_time{hosttype="actor",host="Lab Router",messagetype="ADT_A01",id="LABDEMO",production="LABDEMO.Production"} .002
-iris_interop_avg_queueing_time{hosttype="actor",host="FHIR Transform",messagetype="ADT_A01",id="LABDEMO",production="LABDEMO.Production"} .003
 iris_interop_avg_queueing_time{hosttype="operation",host="Cloud API",messagetype="Ens.StringRequest",id="LABDEMO",production="LABDEMO.Production"} .004
 
 # HELP iris_interop_sample_count Samples behind the avg_* figures
@@ -63,14 +70,12 @@ iris_interop_avg_queueing_time{hosttype="operation",host="Cloud API",messagetype
 iris_interop_sample_count{hosttype="service",host="EMR Source",messagetype="ADT_A01",id="LABDEMO",production="LABDEMO.Production"} 20
 iris_interop_sample_count{hosttype="actor",host="Lab Router",messagetype="ADT_A01",id="LABDEMO",production="LABDEMO.Production"} 15
 iris_interop_sample_count{hosttype="actor",host="Lab Router",messagetype="ORM_O01",id="LABDEMO",production="LABDEMO.Production"} 5
-iris_interop_sample_count{hosttype="actor",host="FHIR Transform",messagetype="ADT_A01",id="LABDEMO",production="LABDEMO.Production"} 19
 iris_interop_sample_count{hosttype="operation",host="Cloud API",messagetype="Ens.StringRequest",id="LABDEMO",production="LABDEMO.Production"} 19
 
 # HELP iris_interop_last_activity Seconds elapsed since the host last processed a message
 # TYPE iris_interop_last_activity gauge
 iris_interop_last_activity{id="LABDEMO",host="EMR Source",production="LABDEMO.Production"} .021
 iris_interop_last_activity{id="LABDEMO",host="Lab Router",production="LABDEMO.Production"} .019
-iris_interop_last_activity{id="LABDEMO",host="FHIR Transform",production="LABDEMO.Production"} .020
 iris_interop_last_activity{id="LABDEMO",host="Cloud API",production="LABDEMO.Production"} .018
 
 # HELP iris_system_alerts_new Number of new system alerts since last check
