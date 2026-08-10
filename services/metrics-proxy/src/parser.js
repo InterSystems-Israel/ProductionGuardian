@@ -3,16 +3,23 @@
 /**
  * parser.js — Prometheus text format → structured per-host JS objects.
  *
- * Handles the 8 IRIS interop metric families Health Scan requires:
+ * Handles the 8 IRIS interop metric families Health Scan requires. Names, labels and
+ * units below are verified against a real capture from a live LABDEMO production
+ * (issue #10) — an earlier version of this file encoded what IRIS was expected to
+ * emit, and disagreed with it in six places:
  *
- *   iris_interop_hosts              — host status (Inactive/Error/Active)
- *   iris_interop_queued             — queue depth per host
- *   iris_interop_messages_per_sec   — throughput per host
- *   iris_interop_messages_errored   — error count per host
- *   iris_interop_avg_processing_time — avg processing time (ms) per host
- *   iris_interop_avg_queueing_time  — avg queue wait time (ms) per host
- *   iris_last_activity              — Unix timestamp of last activity per host
- *   iris_system_alerts_new          — count of new system alerts
+ *   iris_interop_hosts               — status via a `status` LABEL (OK/Error/Inactive/
+ *                                      Retry/Stopped/Unconfigured/Disabled). No `type`.
+ *   iris_interop_queued              — PER PRODUCTION ONLY; carries no host label
+ *   iris_interop_messages_per_sec    — throughput per host
+ *   iris_interop_messages_errored    — cumulative error count per host
+ *   iris_interop_avg_processing_time — SECONDS; one series per (host, messagetype)
+ *   iris_interop_avg_queueing_time   — SECONDS; one series per (host, messagetype)
+ *   iris_interop_last_activity       — ELAPSED SECONDS since last activity
+ *   iris_system_alerts_new           — count of new system alerts (scalar)
+ *
+ * The host label is `host` and holds a display name with spaces ("EMR Source").
+ * `id` is the namespace, NOT a host — treating it as one invented a phantom host.
  *
  * Prometheus text format reference:
  *   https://prometheus.io/docs/instrumenting/exposition_formats/#text-format-details
@@ -88,18 +95,42 @@ function parsePrometheusText(body) {
 
 /**
  * The metric families we care about, mapped to the field name they populate
- * on the per-host output object.  The value at polledAt is ISO 8601 UTC.
+ * on the per-host output object.
+ *
+ * Names and labels verified against a real 1249-line /api/monitor/metrics capture
+ * from a live LABDEMO production (issue #10). Two families were wrong before that:
+ * `iris_last_activity` does not exist (it is `iris_interop_last_activity`, and it
+ * holds ELAPSED SECONDS, not a Unix timestamp), and `iris_interop_queued` carries
+ * no per-host label at all.
+ *
+ * Units are SECONDS throughout — confirmed empirically, not assumed: a host
+ * configured with 0.05s latency reports `.05`.
  */
 const METRIC_MAP = {
-  iris_interop_hosts:               'status',               // value: 1 for active; label: status="Active"|"Inactive"|"Error"
-  iris_interop_queued:              'queued',               // integer queue depth
+  iris_interop_hosts:               'status',               // status carried as a label; the value is not the status
   iris_interop_messages_per_sec:    'messagesPerSec',       // float
-  iris_interop_messages_errored:    'errored',              // integer
-  iris_interop_avg_processing_time: 'avgProcessingTime',    // float, seconds or ms depending on IRIS version
-  iris_interop_avg_queueing_time:   'avgQueueingTime',      // float
-  iris_last_activity:               'lastActivityTs',       // Unix timestamp (seconds)
-  iris_system_alerts_new:           null,                   // scalar, not per-host; stored separately
+  iris_interop_messages_errored:    'errored',              // integer, cumulative
+  iris_interop_avg_processing_time: 'avgProcessingTime',    // seconds; multi-series per messagetype
+  iris_interop_avg_queueing_time:   'avgQueueingTime',      // seconds; multi-series per messagetype
+  iris_interop_last_activity:       'lastActivityElapsedSeconds',  // SECONDS SINCE last activity
 };
+
+/**
+ * The two `avg_*` families are emitted once per (host, messagetype), so a host
+ * handling two message types produces two series. They must be averaged weighted
+ * by `iris_interop_sample_count` — a plain mean is wrong when one message type
+ * dominates, and last-write-wins (the previous behaviour) is wrong always.
+ */
+const WEIGHTED_FAMILIES = new Set([
+  'iris_interop_avg_processing_time',
+  'iris_interop_avg_queueing_time',
+]);
+
+/** Per-production scalars: real, but not per-host. Never let these invent a host. */
+const SCALAR_FAMILIES = new Set([
+  'iris_interop_queued',    // per-production only; per-host depth needs EnumerateHostStatus
+  'iris_system_alerts_new',
+]);
 
 /**
  * Convert raw parsed metrics into the per-host object array required by
@@ -125,24 +156,53 @@ const METRIC_MAP = {
  */
 function buildSnapshot(rawMetrics, polledAt) {
   const ts = polledAt || new Date().toISOString();
-  const hostMap = {};  // key: host name → accumulated fields
+  const polledAtMs = Date.parse(ts);
+  const hostMap = {};   // key: host name → accumulated fields
+  // host name -> field -> { sum, weight }. Nested rather than a joined string
+  // key: real host names contain spaces ("EMR Source"), so any delimiter is unsafe.
+  const weighted = {};
 
   let systemAlertsNew = null;
+  let productionQueued = null;
+  let production = null;
+
+  // Pre-pass: iris_interop_sample_count is its own metric family, emitted once per
+  // (host, messagetype) alongside the avg_* series rather than as a label on them.
+  // It has to be indexed before the main loop, because the avg_* line for a given
+  // messagetype may arrive before its matching sample_count line.
+  const sampleCounts = new Map();
+  for (const { name, labels, value } of rawMetrics) {
+    if (name !== 'iris_interop_sample_count' || value === null) continue;
+    const h = labels['host'] || labels['name'];
+    if (!h) continue;
+    // JSON key rather than a joined string: both parts can contain spaces and dots.
+    sampleCounts.set(JSON.stringify([h, labels['messagetype'] || '']), value);
+  }
 
   for (const { name, labels, value } of rawMetrics) {
-    if (!(name in METRIC_MAP)) continue;  // not a metric we track
+    // Track the production name where IRIS offers it; it is the same on every line.
+    if (production === null && labels['production']) production = labels['production'];
 
-    if (name === 'iris_system_alerts_new') {
-      if (value !== null) systemAlertsNew = value;
+    if (SCALAR_FAMILIES.has(name)) {
+      if (value === null) continue;
+      if (name === 'iris_system_alerts_new') systemAlertsNew = value;
+      else productionQueued = value;
       continue;
     }
 
-    // All remaining metrics are per-host; the host label is 'name' in IRIS SAM.
-    const hostName = labels['name'] || labels['host'] || labels['id'] || '(unknown)';
+    if (!(name in METRIC_MAP)) continue;  // not a metric we track
+
+    // Real IRIS labels the host `host`; there is no `name` label. `id` is the
+    // namespace ("LABDEMO"), so falling back to it invented a phantom host from
+    // every per-production line — which then tripped dead_host downstream (#10).
+    // No host label means the series is not per-host. Skip it.
+    const hostName = labels['host'] || labels['name'];
+    if (!hostName) continue;
+
     if (!hostMap[hostName]) {
       hostMap[hostName] = {
         host: hostName,
-        type: _hostType(labels),
+        type: 'unknown',
         status: 'Unknown',
         queued: 0,
         messagesPerSec: 0,
@@ -150,44 +210,81 @@ function buildSnapshot(rawMetrics, polledAt) {
         avgProcessingTime: 0,
         avgQueueingTime: 0,
         lastActivity: null,
+        lastActivityElapsedSeconds: null,
       };
     }
+    const host = hostMap[hostName];
 
+    // `hosttype` rides on the avg_* families rather than iris_interop_hosts, so
+    // take it wherever it appears and never downgrade a known type to unknown.
+    const derivedType = _hostType(labels);
+    if (derivedType !== 'unknown') host.type = derivedType;
+
+    if (value === null) continue;
     const field = METRIC_MAP[name];
+
     if (name === 'iris_interop_hosts') {
-      // Status is carried as a label, not the numeric value.
-      hostMap[hostName].status = labels['status'] || (value === 1 ? 'Active' : 'Inactive');
-    } else if (name === 'iris_last_activity') {
-      // Convert Unix epoch seconds to ISO 8601 string.
-      if (value !== null) {
-        hostMap[hostName].lastActivity = new Date(value * 1000).toISOString();
-        hostMap[hostName].lastActivityTs = value;
-      }
+      // Status is a label. The old `value === 1 ? 'Active' : 'Inactive'` fallback
+      // invented a value outside the real enum (OK | Error | Inactive | Retry |
+      // Stopped | Unconfigured | Disabled) — pass through, or leave Unknown.
+      if (labels['status']) host.status = labels['status'];
+    } else if (name === 'iris_interop_last_activity') {
+      // Elapsed seconds since last activity — NOT an epoch timestamp.
+      host.lastActivityElapsedSeconds = value;
+      host.lastActivity = new Date(polledAtMs - value * 1000).toISOString();
+    } else if (WEIGHTED_FAMILIES.has(name)) {
+      // Defer: needs every series for this host before it can be averaged.
+      // A missing sample count means weight 1, so a host IRIS reports no counts for
+      // still yields a plain mean rather than dropping out of the snapshot.
+      const w = sampleCounts.get(JSON.stringify([hostName, labels['messagetype'] || ''])) ?? 1;
+      if (!weighted[hostName]) weighted[hostName] = {};
+      if (!weighted[hostName][field]) weighted[hostName][field] = { sum: 0, weight: 0 };
+      weighted[hostName][field].sum += value * w;
+      weighted[hostName][field].weight += w;
     } else {
-      if (value !== null) hostMap[hostName][field] = value;
+      host[field] = value;
     }
   }
 
-  const hosts = Object.values(hostMap).map(h => {
-    delete h.lastActivityTs;  // internal; not in contract
-    return h;
-  });
+  // Resolve the weighted averages now that every series has been seen.
+  for (const [hostName, fields] of Object.entries(weighted)) {
+    for (const [field, { sum, weight }] of Object.entries(fields)) {
+      if (hostMap[hostName] && weight > 0) hostMap[hostName][field] = sum / weight;
+    }
+  }
+
+  // Stable alphabetical order by host, matching the findings API convention so
+  // the dashboard never reorders rows between polls.
+  const hosts = Object.values(hostMap).sort((a, b) => a.host.localeCompare(b.host));
 
   return {
     hosts,
     systemAlertsNew,
-    _meta: { polledAt: ts },
+    _meta: {
+      polledAt: ts,
+      production,
+      // Per-production total. Per-host depth is NOT in the Prometheus text — it
+      // requires Ens.Util.Statistics:EnumerateHostStatus (issue #12, ADR 0001).
+      productionQueued,
+    },
   };
 }
 
 /**
  * Derive the host type ('service'|'process'|'operation'|'unknown') from labels.
- * IRIS SAM uses a 'type' label on iris_interop_hosts.
+ *
+ * The label is `hosttype` and it rides on the avg_* families — `iris_interop_hosts`
+ * carries no type label at all (its labels are exactly id, status, host, production).
+ * IRIS says `actor` where the MVP doc says `process`; we normalize so the published
+ * vocabulary is the doc's and the IRIS word never reaches a consumer.
+ *
+ * `type` and the BS/BP/BO forms are kept only so the hand-written fixture shape and
+ * any older capture still resolve rather than silently degrading to 'unknown'.
  */
 function _hostType(labels) {
-  const raw = (labels['type'] || '').toLowerCase();
+  const raw = (labels['hosttype'] || labels['type'] || '').toLowerCase();
   if (raw === 'bs' || raw === 'service') return 'service';
-  if (raw === 'bp' || raw === 'process') return 'process';
+  if (raw === 'bp' || raw === 'process' || raw === 'actor') return 'process';
   if (raw === 'bo' || raw === 'operation') return 'operation';
   return 'unknown';
 }
