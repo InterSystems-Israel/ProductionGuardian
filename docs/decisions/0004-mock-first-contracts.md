@@ -117,9 +117,10 @@ work alone and none together.
 
 Each developer confirms they are building against mocked contracts, not waiting on real endpoints:
 
-- [ ] **Dev A** — metrics proxy, `iris/**` (not yet onboarded; box left for them to tick rather
-      than filled in on their behalf)
+- [ ] **Dev A** — metrics proxy, `iris/**` (onboarded 2026-08-10 as @kskubach; box left for them
+      to tick rather than filled in on their behalf)
 - [x] **Dev B** — detection engine, findings API (confirmed: contract published and validated
       against captured metrics before the proxy existed)
-- [x] **Dev C** — dashboard (confirmed: built against a transcription of §5 from Day 1, never
-      waited on `:3002`, and runs against a throwaway local stub until the real endpoints exist)
+- [x] **Dev C** — dashboard (confirmed: built against a transcription of §5 from Day 1 and never
+      waited on `:3002` — a throwaway local stub stood in until the real endpoints existed, then
+      was deleted once they did, which is the mock-first cycle completing rather than persisting)
