@@ -1,0 +1,84 @@
+/// Business Operation: POST patient demographics to the REST dispatcher.
+///
+/// Receives a ProductionGuardian.LabDemo.Message.PatientDemographics request,
+/// serialises it to JSON, and HTTP-POSTs it to the PatientDispatcher REST API.
+///
+/// Configuration settings (set in the production or Management Portal):
+///   HTTPServer   — hostname of the REST dispatcher (default: 127.0.0.1)
+///   HTTPPort     — port (default: 52773, the IRIS web server port)
+///   URL          — base path (default: /labdemo/patients)
+///
+/// The dispatcher runs in the same IRIS instance, so the default settings
+/// point to localhost and use the same web server.
+Class ProductionGuardian.LabDemo.Operation.PatientDemographicsOperation Extends Ens.BusinessOperation
+{
+
+Parameter ADAPTER = "EnsLib.HTTP.OutboundAdapter";
+
+Parameter INVOCATION = "Queue";
+
+/// HTTP adapter — surfaced here so the Management Portal shows them.
+Property Adapter As EnsLib.HTTP.OutboundAdapter;
+
+/// Dispatch path on the REST server.
+Property URL As %String [ InitialExpression = "/labdemo/patients" ];
+
+Parameter SETTINGS = "URL:Basic";
+
+/// Handle a PatientDemographics request: serialise to JSON and POST.
+Method OnMessage(
+    pRequest As ProductionGuardian.LabDemo.Message.PatientDemographics,
+    Output pResponse As Ens.Response) As %Status
+{
+    set sc = $$$OK
+    try {
+        // Build the JSON payload from the request message.
+        set payload = {
+            "PatientID":       (pRequest.PatientID),
+            "LastName":        (pRequest.LastName),
+            "FirstName":       (pRequest.FirstName),
+            "MiddleName":      (pRequest.MiddleName),
+            "DateOfBirth":     (pRequest.DateOfBirth),
+            "Sex":             (pRequest.Sex),
+            "AddressStreet":   (pRequest.AddressStreet),
+            "AddressCity":     (pRequest.AddressCity),
+            "AddressState":    (pRequest.AddressState),
+            "AddressZip":      (pRequest.AddressZip),
+            "HomePhone":       (pRequest.HomePhone),
+            "SourceMessageID": (pRequest.SourceMessageID),
+            "ExtractedAt":     (pRequest.ExtractedAt)
+        }
+
+        // Write JSON to a stream for the HTTP adapter.
+        set stream = ##class(%Stream.TmpCharacter).%New()
+        do payload.%ToJSON(stream)
+        do stream.Rewind()
+
+        // Build the HTTP request object.
+        set httpReq = ##class(%Net.HttpRequest).%New()
+        set httpReq.ContentType = "application/json"
+        do httpReq.EntityBody.CopyFrom(stream)
+
+        // POST via the adapter (handles retries, error logging, keepalive).
+        set sc = ..Adapter.SendFormDataArray(.httpResp, "POST", httpReq, , , ..URL)
+        if $$$ISERR(sc) quit
+
+        // Log a non-200 HTTP response as a warning but don't fail — the
+        // production will show it in the message log without stopping flow.
+        if $isobject(httpResp) && (httpResp.StatusCode '= 200) {
+            $$$LOGWARNING("PatientDemographicsOperation: HTTP " _ httpResp.StatusCode
+                          _ " for PatientID=" _ pRequest.PatientID)
+        } else {
+            $$$LOGINFO("PatientDemographicsOperation: upserted PatientID=" _ pRequest.PatientID)
+        }
+
+        set pResponse = ##class(Ens.Response).%New()
+
+    } catch ex {
+        set sc = ex.AsStatus()
+        $$$LOGERROR("PatientDemographicsOperation exception: " _ ex.DisplayString())
+    }
+    quit sc
+}
+
+}

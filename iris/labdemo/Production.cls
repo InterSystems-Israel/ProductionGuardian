@@ -1,14 +1,14 @@
 /// LABDEMO production for Production Guardian Health Scan.
 ///
-/// Four components that model a realistic HL7 lab message pipeline:
+/// Pipeline:
+///   EMRSource  →  LabRouter  →  PIDExtractProcess  →  PatientDemographicsOperation
+///   (HL7 file)    (routing)      (DTL: HL7→PID msg)    (REST POST → PatientDispatcher)
 ///
-///   EMRSource       — Business Service  — inbound HL7 v2 (file or TCP)
-///   LabRouter       — Business Process  — routes by message type
-///   FHIRTransform   — Business Process  — transforms HL7 → FHIR R4
-///   CloudAPI        — Business Operation — HTTP forward to downstream
+/// PatientDispatcher upserts patient demographics into:
+///   ProductionGuardian.LabDemo.Data.PatientRecord (persistent table)
 ///
 /// To load this production:
-///   do $system.OBJ.Load("/path/to/iris/labdemo/Production.cls", "ck")
+///   do $system.OBJ.LoadDir("/path/to/iris/labdemo/", "ck")
 ///
 /// Then start it from the Management Portal or:
 ///   do ##class(Ens.Director).StartProduction("ProductionGuardian.LabDemo.Production")
@@ -22,13 +22,12 @@ XData ProductionDefinition
 
   <Description>
     LABDEMO production for Production Guardian Health Scan MVP 1.
-    Simulates a lab message pipeline: inbound HL7 → routing → FHIR transform → cloud HTTP.
+    Inbound HL7 v2 messages → PID extraction → patient demographics REST upsert.
   </Description>
 
   <!-- ============================================================
        Business Service — EMRSource
-       Reads HL7 v2 messages from a local file drop directory.
-       In a real deployment this would be an HL7 TCP listener.
+       Reads HL7 v2 files dropped by the HL7Generator.
        ============================================================ -->
   <Item Name="EMRSource"
         Category="LabDemo"
@@ -36,7 +35,7 @@ XData ProductionDefinition
         PoolSize="1"
         Enabled="true"
         Foreground="false"
-        Comment="Inbound HL7 v2 messages from the EMR system (file drop for demo)"
+        Comment="Inbound HL7 v2 messages from the EMR system (file drop)"
         LogTraceEvents="false"
         Schedule="">
     <Setting Target="Adapter" Name="FilePath">/tmp/labdemo/hl7-in/</Setting>
@@ -49,7 +48,8 @@ XData ProductionDefinition
 
   <!-- ============================================================
        Business Process — LabRouter
-       Routes messages by type: ADT goes to FHIRTransform, others dropped.
+       Routes ADT^A01 and ORU^R01 to PIDExtractProcess.
+       Rule: ProductionGuardian.LabDemo.RoutingRule
        ============================================================ -->
   <Item Name="LabRouter"
         Category="LabDemo"
@@ -57,49 +57,51 @@ XData ProductionDefinition
         PoolSize="1"
         Enabled="true"
         Foreground="false"
-        Comment="Routes HL7 messages by type to the appropriate downstream"
+        Comment="Routes HL7 by message type to PIDExtractProcess"
         LogTraceEvents="false"
         Schedule="">
     <Setting Target="Host" Name="BusinessRuleName">ProductionGuardian.LabDemo.RoutingRule</Setting>
   </Item>
 
   <!-- ============================================================
-       Business Process — FHIRTransform
-       Transforms HL7 v2 ADT/ORU messages to FHIR R4 resources.
-       Uses a simple DTL for demo purposes.
+       Business Process — PIDExtractProcess
+       Applies the HL7ToPID DTL transform and forwards the resulting
+       PatientDemographics message to PatientDemographicsOperation.
        ============================================================ -->
-  <Item Name="FHIRTransform"
+  <Item Name="PIDExtractProcess"
         Category="LabDemo"
-        ClassName="EnsLib.MsgRouter.RoutingEngine"
+        ClassName="ProductionGuardian.LabDemo.Process.PIDExtractProcess"
         PoolSize="1"
         Enabled="true"
         Foreground="false"
-        Comment="Transforms HL7 v2 to FHIR R4 JSON"
+        Comment="Extracts PID segment via DTL; forwards PatientDemographics to REST operation"
         LogTraceEvents="false"
         Schedule="">
-    <Setting Target="Host" Name="BusinessRuleName">ProductionGuardian.LabDemo.FHIRRoutingRule</Setting>
+    <Setting Target="Host" Name="TargetOperation">PatientDemographicsOperation</Setting>
   </Item>
 
   <!-- ============================================================
-       Business Operation — CloudAPI
-       Sends FHIR JSON to a downstream HTTP endpoint.
-       In demo mode, target is localhost:9999 (which may not be running —
-       intentional: we want to be able to induce errors for Health Scan testing).
+       Business Operation — PatientDemographicsOperation
+       HTTP POSTs the PatientDemographics message as JSON to the
+       PatientDispatcher REST API (same IRIS instance, /labdemo/patients).
        ============================================================ -->
-  <Item Name="CloudAPI"
+  <Item Name="PatientDemographicsOperation"
         Category="LabDemo"
-        ClassName="Ens.BusinessOperation"
+        ClassName="ProductionGuardian.LabDemo.Operation.PatientDemographicsOperation"
         PoolSize="1"
         Enabled="true"
         Foreground="false"
-        Comment="HTTP forward to downstream cloud FHIR API"
+        Comment="POSTs patient demographics JSON to the PatientDispatcher REST API"
         LogTraceEvents="false"
-             Schedule="">
+        Schedule="">
+    <Setting Target="Adapter" Name="HTTPServer">127.0.0.1</Setting>
+    <Setting Target="Adapter" Name="HTTPPort">52773</Setting>
+    <Setting Target="Adapter" Name="URL">/labdemo/patients</Setting>
+    <Setting Target="Host"    Name="URL">/labdemo/patients</Setting>
   </Item>
 
   <!-- ============================================================
        Activity Reporter — required for iris_interop_avg_processing_time.
-       Add via Management Portal if not already present.
        ============================================================ -->
   <Item Name="ActivityReporter"
         Category="LabDemo"
@@ -107,7 +109,7 @@ XData ProductionDefinition
         PoolSize="1"
         Enabled="true"
         Foreground="false"
-        Comment="Required: exposes per-host processing-time metrics to /api/monitor/metrics"
+        Comment="Exposes per-host processing-time metrics to /api/monitor/metrics"
         LogTraceEvents="false"
         Schedule="">
   </Item>
