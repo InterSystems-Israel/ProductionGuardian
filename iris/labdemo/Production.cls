@@ -88,17 +88,13 @@ XData ProductionDefinition
        ============================================================ -->
   <Item Name="CloudAPI"
         Category="LabDemo"
-        ClassName="EnsLib.HTTP.OutboundAdapter"
+        ClassName="Ens.BusinessOperation"
         PoolSize="1"
         Enabled="true"
         Foreground="false"
         Comment="HTTP forward to downstream cloud FHIR API"
         LogTraceEvents="false"
-        Schedule="">
-    <Setting Target="Adapter" Name="HTTPServer">localhost</Setting>
-    <Setting Target="Adapter" Name="HTTPPort">9999</Setting>
-    <Setting Target="Adapter" Name="URL">/fhir/r4</Setting>
-    <Setting Target="Adapter" Name="SSLConfig"></Setting>
+             Schedule="">
   </Item>
 
   <!-- ============================================================

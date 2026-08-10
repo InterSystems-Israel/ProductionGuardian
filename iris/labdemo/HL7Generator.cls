@@ -125,16 +125,18 @@ ClassMethod WriteFile(path As %String, content As %String) As %Status [ Private 
 /// Create the drop directory and archive directory if they don't exist.
 ClassMethod EnsureDropDir() As %Status [ Private ]
 {
+    set tStatus = $$$OK
     set dirs = $listbuild(..#DropDir, "/tmp/labdemo/hl7-archive/")
     set ptr = 0
     while $listnext(dirs, ptr, dir) {
         if '##class(%File).DirectoryExists(dir) {
             if '##class(%File).CreateDirectoryChain(dir) {
-                quit $$$ERROR($$$GeneralError, "Could not create directory: " _ dir)
+                set tStatus = $$$ERROR($$$GeneralError, "Could not create directory: " _ dir)
+                quit
             }
         }
     }
-    quit $$$OK
+    quit tStatus
 }
 
 }
