@@ -4,6 +4,46 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-08-10 — `FHIR Transform` removed from the samples (Dev A)
+
+**No schema change and no field change.** `host` is `{"type": "string", "minLength": 1}` with no
+`enum`, so this is samples plus one prose sentence. Consumers that read `host` as an opaque string
+need no edit.
+
+**Why:** the LABDEMO production has no FHIR Transform host. It never did. The HL7→PID transform is
+a DTL applied *inside* Lab Router's process, so it produces no config item and therefore no
+`host` label in `/api/monitor/metrics`. §2 of `healthscan-api.md` says only application config
+items appear; a host that IRIS cannot emit does not belong in a sample that Dev B and Dev C mock
+against. Verified against `iris/labdemo/Production.cls`: the items are `EMR Source`, `Lab Router`,
+`Cloud API`, plus the framework-filtered `Ens.ActivityReporter`.
+
+The alternative — adding a fourth component so the fixture becomes true — would be inventing a
+production host to satisfy a fixture. Nothing in the pipeline produces FHIR, and the root
+`CLAUDE.md` forbids fabricated demo data.
+
+**Changes:**
+
+- `samples/hosts-response.json` — the `FHIR Transform` entry is gone. Three hosts remain, still in
+  stable alphabetical order per §1.
+- `samples/findings-response.json` — finding `f-1038` (`slow_processing`) **reassigned** to
+  `Lab Router`, not deleted. The samples carry exactly one finding per type; deleting it would
+  have zeroed `slow_processing` coverage for everyone mocking against these bytes. The reassignment
+  invents nothing: the finding cites `baselineValue: 0.08`, which is already Lab Router's measured
+  `avgProcessingTime` in `hosts-response.json`. Its `host` is now a host that exists, and its
+  baseline still agrees with that host's row — it agrees *better* than before.
+- `healthscan-api.md` §2 — "exactly four: EMR Source, Lab Router, FHIR Transform, Cloud API" →
+  "exactly three: EMR Source, Lab Router, Cloud API".
+
+Verified: `node validate.mjs` passes; both samples still valid.
+
+### Follow-up outside `contracts/`, not part of this PR
+
+`FHIR Transform` also appears in `services/detection-engine/fixtures/proxy/*.json` (8 files),
+`services/metrics-proxy/fixtures/metrics.txt`, and the four-component sentence in the root
+`CLAUDE.md`, `apps/dashboard/CLAUDE.md`, `services/detection-engine/CLAUDE.md`. Those are each in
+their owner's area. Dev A will fix the metrics-proxy fixture; the rest is on the owning developer.
+Nothing breaks meanwhile — an extra host in a fixture is over-coverage, not a failure.
+
 ## 2026-08-09 — Schema fixes from Dev C's review (Dev B)
 
 Two **schema** defects found by Dev C reviewing PR #3, both with reproductions, both confirmed

@@ -31,7 +31,7 @@
   },
   {
     "id": "f-1038",
-    "host": "FHIR Transform",
+    "host": "Lab Router",
     "type": "slow_processing",
     "severity": "warning",
     "currentValue": 0.41,
