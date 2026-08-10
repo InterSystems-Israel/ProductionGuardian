@@ -1,0 +1,59 @@
+# HELP iris_interop_hosts Interoperability host status (1=active)
+# TYPE iris_interop_hosts gauge
+iris_interop_hosts{name="EMRSource",type="BS",status="Active"} 1
+iris_interop_hosts{name="LabRouter",type="BP",status="Active"} 1
+iris_interop_hosts{name="FHIRTransform",type="BP",status="Active"} 1
+iris_interop_hosts{name="CloudAPI",type="BO",status="Error"} 0
+iris_interop_hosts{name="ActivityReporter",type="BO",status="Active"} 1
+
+# HELP iris_interop_queued Current queue depth per host
+# TYPE iris_interop_queued gauge
+iris_interop_queued{name="EMRSource"} 0
+iris_interop_queued{name="LabRouter"} 3
+iris_interop_queued{name="FHIRTransform"} 1
+iris_interop_queued{name="CloudAPI"} 14
+iris_interop_queued{name="ActivityReporter"} 0
+
+# HELP iris_interop_messages_per_sec Messages processed per second
+# TYPE iris_interop_messages_per_sec gauge
+iris_interop_messages_per_sec{name="EMRSource"} 0.5
+iris_interop_messages_per_sec{name="LabRouter"} 0.5
+iris_interop_messages_per_sec{name="FHIRTransform"} 0.48
+iris_interop_messages_per_sec{name="CloudAPI"} 0.0
+iris_interop_messages_per_sec{name="ActivityReporter"} 0.0
+
+# HELP iris_interop_messages_errored Total errored messages per host
+# TYPE iris_interop_messages_errored counter
+iris_interop_messages_errored{name="EMRSource"} 0
+iris_interop_messages_errored{name="LabRouter"} 0
+iris_interop_messages_errored{name="FHIRTransform"} 0
+iris_interop_messages_errored{name="CloudAPI"} 42
+iris_interop_messages_errored{name="ActivityReporter"} 0
+
+# HELP iris_interop_avg_processing_time Average message processing time in seconds
+# TYPE iris_interop_avg_processing_time gauge
+iris_interop_avg_processing_time{name="EMRSource"} 0.012
+iris_interop_avg_processing_time{name="LabRouter"} 0.008
+iris_interop_avg_processing_time{name="FHIRTransform"} 0.045
+iris_interop_avg_processing_time{name="CloudAPI"} 0.0
+iris_interop_avg_processing_time{name="ActivityReporter"} 0.001
+
+# HELP iris_interop_avg_queueing_time Average queue wait time in seconds
+# TYPE iris_interop_avg_queueing_time gauge
+iris_interop_avg_queueing_time{name="EMRSource"} 0.001
+iris_interop_avg_queueing_time{name="LabRouter"} 0.002
+iris_interop_avg_queueing_time{name="FHIRTransform"} 0.003
+iris_interop_avg_queueing_time{name="CloudAPI"} 3.21
+iris_interop_avg_queueing_time{name="ActivityReporter"} 0.0
+
+# HELP iris_last_activity Unix timestamp of last activity per host
+# TYPE iris_last_activity gauge
+iris_last_activity{name="EMRSource"} 1754700000
+iris_last_activity{name="LabRouter"} 1754700000
+iris_last_activity{name="FHIRTransform"} 1754700000
+iris_last_activity{name="CloudAPI"} 1754699700
+iris_last_activity{name="ActivityReporter"} 1754700000
+
+# HELP iris_system_alerts_new Number of new system alerts since last check
+# TYPE iris_system_alerts_new gauge
+iris_system_alerts_new 0

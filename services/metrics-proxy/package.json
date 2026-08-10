@@ -1,0 +1,17 @@
+{
+  "name": "metrics-proxy",
+  "version": "0.1.0",
+  "description": "Polls IRIS /api/monitor/metrics and /api/monitor/alerts; exposes per-host JSON for the detection engine.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "mock": "node mock-server.js",
+    "test": "node --test src/parser.test.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

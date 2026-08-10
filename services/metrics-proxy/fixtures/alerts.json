@@ -1,0 +1,9 @@
+[
+  {
+    "id": "alert-001",
+    "severity": "warning",
+    "text": "CloudAPI: connection refused to localhost:9999 — downstream unavailable",
+    "timestamp": "2026-08-09T10:05:33Z",
+    "source": "CloudAPI"
+  }
+]
