@@ -1,0 +1,14 @@
+{
+  "name": "@production-guardian/contracts",
+  "version": "0.1.1",
+  "private": true,
+  "description": "API contracts, schemas, and shared sample payloads",
+  "type": "module",
+  "scripts": {
+    "validate": "node validate.mjs"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^2.1.1"
+  }
+}
