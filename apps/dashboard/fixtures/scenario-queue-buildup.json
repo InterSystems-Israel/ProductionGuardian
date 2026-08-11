@@ -1,7 +1,7 @@
 {
   "id": "queue-buildup",
   "label": "Queue buildup",
-  "note": "Cloud API has slowed, so Lab Router's queue climbs behind it while throughput holds — the classic downstream bottleneck. LABDEMO's measured queue baseline is 0, so the buildup has no ratio to quote and the absolute depth is the whole signal.",
+  "note": "Cloud API has slowed, so Lab Router's queue climbs behind it while throughput holds — the classic downstream bottleneck. LABDEMO's measured queue baseline is 0, so the buildup has no ratio to quote and the absolute depth is the whole signal. Lab Router's 620ms queue wait sits just 20ms above the critical bound for a zero-baseline duration rule (growing_queue_wait's 0.15s floor x criticalFloorMultiple 4.0 = 0.6s), so this finding is the closest in the set to flipping severity if Dev B retunes. validate-fixture-claims.mjs is what will catch that rather than a reader noticing.",
   "hosts": [
     {
       "host": "EMR Source",
@@ -47,6 +47,16 @@
       "baselineValue": 0,
       "detectedSecondsAgo": 45,
       "message": "Queue depth 486 with no baseline queue"
+    },
+    {
+      "id": "f-1044",
+      "host": "Lab Router",
+      "type": "growing_queue_wait",
+      "severity": "critical",
+      "currentValue": 0.62,
+      "baselineValue": 0,
+      "detectedSecondsAgo": 38,
+      "message": "Average queue wait 620ms"
     },
     {
       "id": "f-1043",

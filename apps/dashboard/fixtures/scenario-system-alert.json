@@ -59,6 +59,16 @@
       "message": "Average processing time 2.40s is 48x baseline"
     },
     {
+      "id": "f-1553",
+      "host": "Cloud API",
+      "type": "growing_queue_wait",
+      "severity": "critical",
+      "currentValue": 0.21,
+      "baselineValue": 0.02,
+      "detectedSecondsAgo": 10,
+      "message": "Average queue wait 210ms is 11x baseline"
+    },
+    {
       "id": "f-1552",
       "host": "Lab Router",
       "type": "system_alert",

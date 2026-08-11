@@ -122,7 +122,27 @@ function checkEmittable(finding) {
   const { currentValue: current, baselineValue: baseline, severity } = finding;
   const infinite = typeof baseline !== 'number' || baseline === 0;
   const ratio = infinite ? Number.POSITIVE_INFINITY : current / baseline;
-  const expectRatio = () => (Number.isFinite(ratio) ? fromRatio(ratio, rule.severityBands) : 'critical');
+
+  /*
+   * An infinite ratio cannot be graded by a ratio band, and the two rule families
+   * resolve it differently — so this cannot be one shared expression.
+   *
+   * The duration rules judge absolute magnitude against the floor:
+   * `criticalFloorMultiple` x floor earns critical, above the floor alone is a
+   * warning (Dev B's fbb34da, from the review on #20). `queue_buildup` still
+   * hardcodes critical on that branch, which is defensible where the duration
+   * version was not — a floor of 50 queued messages is a meaningful absolute
+   * quantity, whereas 150ms of queue wait is not.
+   */
+  const expectRatio = () => {
+    if (Number.isFinite(ratio)) return fromRatio(ratio, rule.severityBands);
+    if (finding.type === 'slow_processing' || finding.type === 'growing_queue_wait') {
+      return current >= rule.absoluteFloorSeconds * rule.criticalFloorMultiple
+        ? 'critical'
+        : 'warning';
+    }
+    return 'critical';
+  };
 
   switch (finding.type) {
     case 'queue_buildup':
@@ -208,6 +228,115 @@ function checkWarmUp(finding) {
   return [`${finding.type} is comparative, so it cannot fire with baselineValue null`];
 }
 
+/* ── The reverse direction ───────────────────────────────────────────────────────
+ *
+ * Everything above walks the FINDINGS and asks "would the engine emit this?". That
+ * misses the opposite error: a host row the engine WOULD flag, with no finding for
+ * it. A fixture like that understates the product — the grid shows a host quietly
+ * breaching a rule and the findings list says nothing.
+ *
+ * It is the same class as the two checks Dev B added upstream: a check that gets
+ * quietly weaker rather than failing. It went unnoticed because `dead-host`'s
+ * 41.6s queue wait was already far above the old 1.0s floor and slipped through
+ * anyway, so this was never really about the #20 retune.
+ *
+ * Baselines come from `scenario-healthy.json`, which `fixtures/README.md` declares
+ * as the measured LABDEMO steady state every other scenario departs from. Deriving
+ * them beats a table of host names in here — #19 removed a hardcoded host count for
+ * exactly that reason, and a fourth copy of the host list is what went stale when
+ * FHIR Transform was removed.
+ */
+
+/** Statuses `stalled_host` defers on, since a dead host is reported as dead. */
+const RULES_REVERSE_CHECKED = [
+  'dead_host',
+  'stalled_host',
+  'queue_buildup',
+  'slow_processing',
+  'growing_queue_wait',
+  'throughput_drop',
+];
+
+/* Two rules cannot be judged from a single host row, and saying so beats implying
+   coverage this does not have. `elevated_error_rate` compares errors-per-MINUTE
+   derived across consecutive polls; `host.errored` is a cumulative counter and one
+   snapshot cannot yield a rate. `system_alert` comes from the proxy's alerts
+   payload, which a scenario file does not carry at all. */
+const RULES_NOT_REVERSE_CHECKABLE = ['elevated_error_rate', 'system_alert'];
+
+/** The healthy fixture IS the baseline, so its own rows must never breach. */
+function baselineHosts() {
+  const healthy = JSON.parse(readFileSync(join(FIXTURES, 'scenario-healthy.json'), 'utf8'));
+  return new Map(healthy.hosts.map((host) => [host.host, host]));
+}
+
+/**
+ * Which rules would fire for this host row — mirroring each rule's branches in
+ * `detect/rules/index.ts`, in the same order, including the early returns.
+ */
+function wouldEmit(host, base, warming) {
+  const hit = [];
+  const rule = (type) => ruleFor(type, host.host);
+
+  const deadHost = rule('dead_host');
+  if (deadHost?.enabled !== false && DEAD_STATUSES.includes(host.status)) hit.push('dead_host');
+
+  // stalled_host defers to dead_host — one condition, one finding.
+  const stalled = rule('stalled_host');
+  if (
+    stalled?.enabled !== false &&
+    !DEAD_STATUSES.includes(host.status) &&
+    !(stalled.requiresQueued && host.queued <= 0) &&
+    host.lastActivitySecondsAgo >= stalled.inactiveSeconds
+  ) {
+    hit.push('stalled_host');
+  }
+
+  // Everything below is comparative, so a warming baseline silences all of it.
+  if (warming || base === undefined) return hit;
+
+  /** Both gates, in the engine's order: the floor first, then the multiplier. */
+  const overBoth = (current, baseline, floor, multiplier) => {
+    if (current < floor) return false;
+    const ratio = baseline > 0 ? current / baseline : Number.POSITIVE_INFINITY;
+    return ratio >= multiplier;
+  };
+
+  const queue = rule('queue_buildup');
+  if (
+    queue?.enabled !== false &&
+    overBoth(host.queued, base.queued, queue.absoluteFloor, queue.baselineMultiplier)
+  ) {
+    hit.push('queue_buildup');
+  }
+
+  for (const [type, metric] of [
+    ['slow_processing', 'avgProcessingTime'],
+    ['growing_queue_wait', 'avgQueueingTime'],
+  ]) {
+    const duration = rule(type);
+    if (
+      duration?.enabled !== false &&
+      overBoth(host[metric], base[metric], duration.absoluteFloorSeconds, duration.baselineMultiplier)
+    ) {
+      hit.push(type);
+    }
+  }
+
+  const throughput = rule('throughput_drop');
+  if (
+    throughput?.enabled !== false &&
+    base.messagesPerSec >= throughput.minBaselineRate &&
+    host.messagesPerSec / base.messagesPerSec <= throughput.baselineFraction
+  ) {
+    hit.push('throughput_drop');
+  }
+
+  return hit;
+}
+
+const BASELINE = baselineHosts();
+
 let failures = 0;
 for (const file of readdirSync(FIXTURES).filter((f) => f.startsWith('scenario-'))) {
   const scenario = JSON.parse(readFileSync(join(FIXTURES, file), 'utf8'));
@@ -228,6 +357,36 @@ for (const file of readdirSync(FIXTURES).filter((f) => f.startsWith('scenario-')
       for (const problem of problems) console.error(`        ${problem}`);
     }
   }
+
+  // A fixture that declares itself warming must mean it — the reverse check silences
+  // every comparative rule on the strength of this flag, so a wrong flag would hide
+  // real omissions rather than report them.
+  const warming = scenario.baselineWarming === true;
+  if (warming) {
+    const dated = scenario.findings.filter((f) => f.baselineValue !== null);
+    if (dated.length > 0) {
+      failures += 1;
+      console.error(`FAIL  ${file} — baselineWarming is true but these carry a baseline:`);
+      for (const f of dated) console.error(`        ${f.id} ${f.type} baselineValue ${f.baselineValue}`);
+    }
+  }
+
+  if (thresholds !== null) {
+    for (const host of scenario.hosts) {
+      const present = new Set(
+        scenario.findings.filter((f) => f.host === host.host).map((f) => f.type),
+      );
+      const missing = wouldEmit(host, BASELINE.get(host.host), warming).filter(
+        (type) => !present.has(type),
+      );
+
+      if (missing.length > 0) {
+        failures += 1;
+        console.error(`FAIL  ${file} — ${host.host} breaches a rule with no finding to show it`);
+        for (const type of missing) console.error(`        ${type} would fire, but no finding of that type names this host`);
+      }
+    }
+  }
 }
 
 if (failures > 0) {
@@ -235,10 +394,17 @@ if (failures > 0) {
   process.exit(1);
 }
 
-/* Say which checks actually ran. Claiming "engine-emittable" when thresholds.json
-   was absent would report a check that did not happen as a pass. */
-console.log(
-  thresholds === null
-    ? 'All fixture findings are self-consistent.\nnote  no services/detection-engine/ checkout — the engine-emittable checks did NOT run'
-    : 'All fixture findings are self-consistent and engine-emittable.',
-);
+/* Say which checks actually ran, and which rules the reverse direction cannot judge.
+   Claiming "engine-emittable" when thresholds.json was absent would report a check
+   that did not happen as a pass — and so would letting "no missing findings" imply
+   all eight rules were swept when two of them cannot be. */
+if (thresholds === null) {
+  console.log('All fixture findings are self-consistent.');
+  console.log('note  no services/detection-engine/ checkout — the engine-emittable checks did NOT run');
+  console.log('note  the missing-finding sweep did NOT run either; it needs the same thresholds');
+} else {
+  console.log('All fixture findings are self-consistent and engine-emittable.');
+  console.log(`      no host breaches a rule silently, across ${RULES_REVERSE_CHECKED.length} of the 8 rules`);
+  console.log(`note  ${RULES_NOT_REVERSE_CHECKABLE.join(' and ')} are NOT swept — neither is derivable`);
+  console.log('      from a single host row, so a fixture could omit one and this would not say so');
+}
