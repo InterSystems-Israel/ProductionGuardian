@@ -26,9 +26,12 @@ services/metrics-proxy/
     cache.js         latest metrics snapshot; ACCUMULATING alerts buffer
     *.test.js        node --test, one file per module
   index.js           Entry point: wires poller → cache → HTTP server; holds the routes
-  mock-server.js     Standalone mock: serves fixture data, no IRIS needed
+  mock-server.js     Standalone mock: serves fixture data, no IRIS needed — must match
+                     index.js field for field (see Testing)
+  smoke-test.js      HTTP checks against a running proxy; npm run smoke
   fixtures/          see fixtures/README.md for provenance — which are real captures
-    metrics-live-capture.txt   real 313-line /api/monitor/metrics body (default mock)
+    metrics-live-capture.txt   real 310-line /api/monitor/metrics body (default mock)
+    metrics-live-capture-preRename.txt  real, 313 lines, pre-rename host spellings
     alerts-live-capture.json   real /api/monitor/alerts body
     metrics.txt      hand-trimmed 3-host excerpt (MOCK_FIXTURE=metrics.txt)
     alerts.json      hand-written; its field names do NOT match upstream
@@ -43,6 +46,7 @@ npm ci
 npm run mock        # mock mode — no IRIS required, serves fixtures/
 npm start           # real IRIS (needs .env)
 npm test            # unit tests
+npm run smoke       # HTTP checks against a RUNNING proxy (mock or real)
 ```
 
 ### Pointing it at a real IRIS
@@ -56,13 +60,65 @@ yours is:
 | `http://localhost:52773/api/monitor/metrics` | `IRIS_PORT=52773`, `IRIS_BASE_PATH=` |
 | `http://localhost/iris4health_2024_1/api/monitor/metrics` | `IRIS_PORT=80`, `IRIS_BASE_PATH=/iris4health_2024_1` |
 
-Getting `IRIS_BASE_PATH` wrong is quiet: the request lands on the web server's 404 page,
-which parses as zero metric lines and reads as an idle production rather than a bad URL.
-If `/proxy/metrics` reports `hostCount: 0` against a running production, suspect this
-before suspecting the parser.
+Getting `IRIS_BASE_PATH` wrong is quiet, and worse than a 404. Measured 2026-08-11:
+omitting the prefix on port 80 reaches the **`%SYS` namespace's** `/api/monitor/` web app,
+which answers **HTTP 200 with 906 lines of perfectly real metrics and not one
+`iris_interop_*` family**. The poll succeeds, so nothing looks broken — you just get
+`hostCount: 0`, indistinguishable from a stopped production. `/proxy/health` detects this
+case by name and prints a `hint`; check it first, before suspecting the parser.
 
 `/api/monitor/metrics` on the verified 2024.1 instance answers **without**
 authentication, so a wrong password may not be what is failing.
+
+## Testing
+
+Three layers, cheapest first. All three verified green on 2026-08-11.
+
+```bash
+npm test            # 71 unit tests: parser, alerts, cache, poller. No network, no IRIS.
+npm run mock &      # then, in the same or another shell:
+npm run smoke       # 15 HTTP checks against whatever is on port 3001
+```
+
+`npm test` covers the modules in isolation, both fixture captures included.
+`npm run smoke` covers what unit tests cannot: that the process starts, reaches IRIS, and
+publishes a payload a consumer can actually use. It exits non-zero, so it can gate a demo,
+and prints the values it saw — a green tick with no numbers is not evidence.
+
+Run smoke in **both** modes; they catch different things:
+
+| Mode | Command | Catches |
+|---|---|---|
+| Mock | `npm run mock` then `npm run smoke` | parser/route regressions, without needing IRIS |
+| Real | `npm start` then `npm run smoke` | wrong `IRIS_BASE_PATH`, stopped production, credentials, a namespace with no interop |
+
+The mock deliberately mirrors the real routes **field for field**, including `_meta` and
+the health `hint`. Keep it that way: when the mock published a narrower `_meta` than the
+live route, smoke passed against it while reporting `newInLastPoll: undefined` — the mock
+was certifying a shape the real proxy does not serve, which is precisely what ADR 0004
+exists to prevent. If you add a field to a route in `index.js`, add it to
+`mock-server.js` in the same commit.
+
+What smoke does **not** assert: which hosts exist. The production changes; the proxy is
+correct as long as it reports what IRIS said. The only structural claim is that an
+interop-enabled instance yields at least one host.
+
+To confirm the failure detection actually works, misconfigure it on purpose:
+
+```bash
+IRIS_BASE_PATH=wrongprefix npm start   # note: no leading slash — Git Bash rewrites /wrongprefix
+```
+
+A wrong prefix 404s, so no poll ever completes: smoke fails 7 of 15 and exits 1, starting
+with `a poll has completed — status: starting`. Drop `IRIS_BASE_PATH` entirely instead and
+you get the 200-with-no-interop case, where health reports
+`reachable, but no interop metrics` plus the `hint`. A test suite that has never been seen
+to fail is not known to be testing anything — both of these were run, and the second one
+found two real bugs in the smoke test itself.
+
+Note the alerts count in smoke output is usually `0` against live IRIS even when
+`alerts.log` holds entries — consume-on-read, see below. Smoke prints that explanation
+rather than failing.
 
 ### `/api/monitor/alerts` is consume-on-read — do not curl it casually
 

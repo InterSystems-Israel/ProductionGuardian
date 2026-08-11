@@ -117,13 +117,42 @@ app.get('/proxy/alerts', (req, res) => {
   });
 });
 
-// Simple liveness / readiness check.
+// Liveness / readiness check.
+//
+// `status: 'ok'` used to mean only "a poll succeeded", which was not enough to be worth
+// checking. Measured 2026-08-11: pointing the proxy at port 80 with no IRIS_BASE_PATH
+// reaches the /api/monitor/ web app of the %SYS namespace instead of the instance's own.
+// That answers HTTP 200 with 906 lines of perfectly real metrics and NOT ONE
+// iris_interop_* family — so the poll succeeds, health said "ok", and /proxy/metrics
+// reports zero hosts. Indistinguishable from a stopped production unless you already
+// suspected the URL.
+//
+// So health now reports whether the response actually described a production, and names
+// the likely cause when it did not. This is the endpoint a smoke test should assert on.
 app.get('/proxy/health', (req, res) => {
   const snapshot = getMetricsSnapshot();
+  if (!snapshot) {
+    return res.json({ status: 'starting', uptime: process.uptime(), lastPoll: null });
+  }
+
+  // The interop families are the reason this proxy exists. Their total absence means the
+  // response came from somewhere that is not an interoperability-enabled namespace.
+  const noInteropData = snapshot._meta.absentFamilies.includes('iris_interop_hosts');
+
   res.json({
-    status: snapshot ? 'ok' : 'starting',
+    status: noInteropData ? 'reachable, but no interop metrics' : 'ok',
     uptime: process.uptime(),
-    lastPoll: snapshot ? snapshot._meta.polledAt : null,
+    lastPoll: snapshot._meta.polledAt,
+    production: snapshot._meta.production,
+    hostCount: snapshot._meta.hostCount,
+    applicationHostCount: snapshot._meta.applicationHostCount,
+    ...(noInteropData && {
+      hint: 'IRIS answered but sent no iris_interop_* families. Usual cause is a wrong '
+          + 'IRIS_BASE_PATH: the request reached a different namespace\'s /api/monitor/ '
+          + 'web app (%SYS answers 200 with system metrics only). Compare IRIS_BASE_PATH '
+          + 'against the URL that works in your browser. Otherwise the namespace is not '
+          + 'interoperability-enabled, or the production is not running.',
+    }),
   });
 });
 
