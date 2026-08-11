@@ -12,6 +12,8 @@ import {
   ConfigValidationError,
   DEFAULT_CONFIG,
   configFor,
+  declaredOverrideHosts,
+  inertOverrideHosts,
   validateConfig,
 } from '../src/config/thresholds.ts';
 
@@ -148,5 +150,41 @@ describe('per-host overrides', () => {
       configFor(config, 'queue_buildup', 'Lab Router'),
       DEFAULT_CONFIG.rules.queue_buildup,
     );
+  });
+});
+
+describe('inert host overrides (#25)', () => {
+  // hostOverrides is keyed by a literal host name, so pointing the engine at another
+  // production makes every override inert -- silently. The tuning stops applying and
+  // nothing says so, which is the same silent-weakening shape as `npm test --if-present`
+  // reporting green on nothing.
+  const config = validateConfig({
+    hostOverrides: { 'Cloud API': { slow_processing: { absoluteFloorSeconds: 0.3 } } },
+  });
+
+  it('ignores _comment keys when listing declared overrides', () => {
+    const documented = validateConfig({
+      hostOverrides: {
+        _comment: 'rare and always commented',
+        'Cloud API': { slow_processing: { absoluteFloorSeconds: 0.3 } },
+      },
+    });
+    assert.deepEqual(declaredOverrideHosts(documented), ['Cloud API']);
+  });
+
+  it('reports an override that matches no observed host', () => {
+    assert.deepEqual(inertOverrideHosts(config, ['Tick Feed', 'Risk Filter']), ['Cloud API']);
+  });
+
+  it('reports nothing when the override does apply', () => {
+    assert.deepEqual(inertOverrideHosts(config, ['Cloud API', 'Lab Router']), []);
+  });
+
+  it('reports every declared override when no hosts have been seen at all', () => {
+    assert.deepEqual(inertOverrideHosts(config, []), ['Cloud API']);
+  });
+
+  it('does not report anything when no overrides are declared', () => {
+    assert.deepEqual(inertOverrideHosts(validateConfig({}), ['Tick Feed']), []);
   });
 });

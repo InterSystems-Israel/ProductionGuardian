@@ -10,7 +10,7 @@
 
 import { BaselineStore } from '../baseline/window.ts';
 import type { ThresholdConfig } from '../config/thresholds.ts';
-import { configFor } from '../config/thresholds.ts';
+import { configFor, inertOverrideHosts } from '../config/thresholds.ts';
 import type {
   Finding,
   HealthScanState,
@@ -51,10 +51,14 @@ export class DetectionEngine {
   #seenAlerts = new Set<string>();
   #lastPollAt: number | null = null;
   #stale = false;
+  /** Inert-override warnings already emitted, so the log is not repeated per poll. */
+  #warnedOverrides = new Set<string>();
+  readonly #log: (msg: string) => void;
 
   #config: ThresholdConfig;
 
-  constructor(config: ThresholdConfig) {
+  constructor(config: ThresholdConfig, log: (msg: string) => void = console.error) {
+    this.#log = log;
     this.#config = config;
     this.#baselines = new BaselineStore(config.baselineWindowSeconds, config.minBaselineSamples);
     this.#registry = new FindingRegistry(config.sustainedSamples);
@@ -72,6 +76,7 @@ export class DetectionEngine {
       next.sustainedSamples !== this.#config.sustainedSamples;
 
     this.#config = next;
+    this.#warnedOverrides.clear();
     if (structural) {
       this.#baselines = new BaselineStore(next.baselineWindowSeconds, next.minBaselineSamples);
       this.#registry = new FindingRegistry(next.sustainedSamples);
@@ -132,6 +137,8 @@ export class DetectionEngine {
       this.#priorErrored.delete(known);
     }
 
+    this.#warnInertOverrides(seenHosts);
+
     this.#lastPollAt = now;
     this.#stale = false;
   }
@@ -144,6 +151,26 @@ export class DetectionEngine {
       state: this.#state(hosts),
       lastPollAt: this.#lastPollAt,
     };
+  }
+
+  /**
+   * Warn once per (config, host-set) when a hostOverrides key matches nothing we have
+   * seen. The override is simply inert -- the tuning stops applying and nothing says so
+   * -- which is exactly the silent-weakening failure #25 raised.
+   *
+   * Not an error: a host can be legitimately absent from a running production, and
+   * refusing to start would be worse than reporting it.
+   */
+  #warnInertOverrides(seenHosts: ReadonlySet<string>): void {
+    for (const host of inertOverrideHosts(this.#config, seenHosts)) {
+      const key = `${host}|${[...seenHosts].sort().join(',')}`;
+      if (this.#warnedOverrides.has(key)) continue;
+      this.#warnedOverrides.add(key);
+      this.#log(
+        `thresholds: hostOverrides["${host}"] matches no observed host, so its tuning is ` +
+          `inert. Observed: ${[...seenHosts].sort().join(', ') || '(none)'}`,
+      );
+    }
   }
 
   #state(hosts: readonly Host[]): HealthScanState {
