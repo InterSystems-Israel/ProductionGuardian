@@ -29,13 +29,8 @@ ClassMethod Run(count As %Integer = 20, delaySecs As %Double = 2) As %Status
     write "Generating ", count, " HL7 messages to ", ..#DropDir, " ...", !
     for i = 1:1:count {
         // Alternate between ADT^A01 (admit) and ORU^R01 (lab result).
-        if i # 2 = 1 {
-            set msg = ..BuildADTA01(i)
-            set msgType = "ADT_A01"
-        } else {
-            set msg = ..BuildORUR01(i)
-            set msgType = "ORU_R01"
-        }
+        set msg = ..BuildADTA01(i)
+        set msgType = "ADT_A01"
         set filename = ..#DropDir _ msgType _ "_" _ $translate($horolog, ",", "_") _ "_" _ i _ ".hl7"
         set sc = ..WriteFile(filename, msg)
         if $$$ISERR(sc) {
@@ -61,13 +56,8 @@ ClassMethod RunContinuous(delaySecs As %Double = 2)
     write "Continuous HL7 generation started (Ctrl-C to stop). Interval: ", delaySecs, "s",!
     set i = 1
     for {
-        if i # 2 = 1 {
-            set msg = ..BuildADTA01(i)
-            set msgType = "ADT_A01"
-        } else {
-            set msg = ..BuildORUR01(i)
-            set msgType = "ORU_R01"
-        }
+        set msg = ..BuildADTA01(i)
+        set msgType = "ADT_A01"
         set filename = ..#DropDir _ msgType _ "_" _ $translate($horolog, ",", "_") _ "_" _ i _ ".hl7"
         do ..WriteFile(filename, filename)  // errors are silent in continuous mode
         write $zdatetime($ztimestamp, 3, 1), "  ", msgType, !
@@ -91,25 +81,6 @@ ClassMethod BuildADTA01(seq As %Integer) As %String [ Private ]
         "EVN|A01|" _ ts _ cr _
         "PID|1||" _ pid _ "^^^LABDEMO^MR||DOE^JOHN^A||19800101|M|||123 MAIN ST^^SPRINGFIELD^IL^62701||555-555-" _ $translate($justify($random(9999), 4), " ", "0") _ cr _
         "PV1|1|I|3W^301^A^LABDEMO|||||||MED||||1|||" _ pid _ "^^^LABDEMO^VN|" _ cr
-    quit msg
-}
-
-/// Build an ORU^R01 (Lab Result) message.
-ClassMethod BuildORUR01(seq As %Integer) As %String [ Private ]
-{
-    set ts = $translate($zdatetime($ztimestamp, 8), "-:T ", "")
-    set ts = $extract(ts, 1, 14)
-    set pid = $random(899999) + 100000
-    set msgCtrl = "MSG" _ $extract(ts, 1, 8) _ $translate($justify(seq, 5), " ", "0")
-    // Sodium value: normal range 136–145, occasionally outside to simulate findings.
-    set naValue = 130 + $random(25)  // 130–154
-
-    set cr = $char(13)
-    set msg =
-        "MSH|^~\&|LABSYSTEM|LABDEMO|LABROUTER|LABDEMO|" _ ts _ "||ORU^R01^ORU_R01|" _ msgCtrl _ "|P|2.5" _ cr _
-        "PID|1||" _ pid _ "^^^LABDEMO^MR||SMITH^JANE^B||19750315|F" _ cr _
-        "OBR|1|||80048^Basic Metabolic Panel^L|||" _ ts _ cr _
-        "OBX|1|NM|2951-2^SODIUM^LN||" _ naValue _ "|mmol/L|136-145||||F|||" _ ts _ cr
     quit msg
 }
 
