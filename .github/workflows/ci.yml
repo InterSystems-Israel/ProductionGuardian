@@ -70,6 +70,14 @@ jobs:
         run: npm test
       # ADR 0004 is a promise the engine must keep: it has to start and serve with
       # Dev A's proxy absent. If this step fails, mock-first is broken.
+      #
+      # Asserts "serves at least one host", not an exact count. An earlier version
+      # hardcoded 4 and went red when FHIR Transform was legitimately removed from the
+      # production (#14) -- the engine was right and the assertion was stale. The host
+      # count belongs to iris/labdemo/Production.cls, which this job does not own;
+      # coupling CI to it makes a correct change look like a regression.
+      # Coverage of *which* hosts and findings appear is asserted properly in
+      # test/scenario.test.ts, against the fixtures, where it can be kept honest.
       - name: Serves with no proxy running (ADR 0004)
         if: steps.guard.outputs.present == 'true'
         working-directory: services/detection-engine
@@ -84,7 +92,7 @@ jobs:
           kill "$ENGINE_PID" 2>/dev/null || true
           COUNT=$(printf '%s' "$HOSTS" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).length))')
           echo "hosts served with no proxy: $COUNT"
-          test "$COUNT" -eq 4
+          test "$COUNT" -ge 1
 
   dashboard:
     name: dashboard — typecheck + build
