@@ -42,6 +42,13 @@ export interface DurationRuleConfig {
   enabled: boolean;
   baselineMultiplier: number;
   absoluteFloorSeconds: number;
+  /**
+   * Zero-baseline hosts only. An infinite ratio cannot be graded by the bands, so
+   * severity comes from absolute magnitude: this many times the floor earns `critical`,
+   * anything above the floor alone is a `warning`. Without it the floor becomes a
+   * critical trigger and there is no warning tier at all.
+   */
+  criticalFloorMultiple: number;
   severityBands: { warning: number; critical: number };
 }
 
@@ -111,12 +118,14 @@ export const DEFAULT_CONFIG: ThresholdConfig = {
       enabled: true,
       baselineMultiplier: 3.0,
       absoluteFloorSeconds: 1.0,
+      criticalFloorMultiple: 4.0,
       severityBands: { warning: 3.0, critical: 10.0 },
     },
     growing_queue_wait: {
       enabled: true,
       baselineMultiplier: 3.0,
       absoluteFloorSeconds: 1.0,
+      criticalFloorMultiple: 4.0,
       severityBands: { warning: 3.0, critical: 10.0 },
     },
     throughput_drop: {
