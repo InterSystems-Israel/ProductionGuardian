@@ -1,0 +1,93 @@
+{
+  "id": "dead-host",
+  "label": "Dead host",
+  "note": "Cloud API is Disabled. Nothing drains downstream, so FHIR Transform stalls behind it — the critical scenario and the demo headline. dead_host is absolute, so it stays trustworthy even as the rolling baseline drifts (engine CLAUDE.md §5.1).",
+  "hosts": [
+    {
+      "host": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 0,
+      "messagesPerSec": 0.2,
+      "errored": 0,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "Lab Router",
+      "type": "process",
+      "status": "OK",
+      "queued": 212,
+      "messagesPerSec": 1.2,
+      "errored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 2.1,
+      "lastActivitySecondsAgo": 3
+    },
+    {
+      "host": "FHIR Transform",
+      "type": "process",
+      "status": "OK",
+      "queued": 338,
+      "messagesPerSec": 0,
+      "errored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 41.6,
+      "lastActivitySecondsAgo": 402
+    },
+    {
+      "host": "Cloud API",
+      "type": "operation",
+      "status": "Disabled",
+      "queued": 154,
+      "messagesPerSec": 0,
+      "errored": 0,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
+      "lastActivitySecondsAgo": 486
+    }
+  ],
+  "findings": [
+    {
+      "id": "f-1101",
+      "host": "Cloud API",
+      "type": "dead_host",
+      "severity": "critical",
+      "currentValue": 0,
+      "baselineValue": 0.4,
+      "detectedSecondsAgo": 95,
+      "message": "Cloud API is Disabled with 154 message(s) queued"
+    },
+    {
+      "id": "f-1104",
+      "host": "FHIR Transform",
+      "type": "throughput_drop",
+      "severity": "critical",
+      "currentValue": 0,
+      "baselineValue": 1.2,
+      "detectedSecondsAgo": 66,
+      "message": "Throughput 0.0 msg/sec is 100% below baseline"
+    },
+    {
+      "id": "f-1102",
+      "host": "FHIR Transform",
+      "type": "stalled_host",
+      "severity": "warning",
+      "currentValue": 402,
+      "baselineValue": null,
+      "detectedSecondsAgo": 60,
+      "message": "No activity for 402s while 338 message(s) are queued"
+    },
+    {
+      "id": "f-1103",
+      "host": "Lab Router",
+      "type": "queue_buildup",
+      "severity": "critical",
+      "currentValue": 212,
+      "baselineValue": 0,
+      "detectedSecondsAgo": 38,
+      "message": "Queue depth 212 with no baseline queue"
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "id": "queue-buildup",
+  "label": "Queue buildup",
+  "note": "Cloud API has slowed, so Lab Router's queue climbs behind it while throughput holds — the classic downstream bottleneck. LABDEMO's measured queue baseline is 0, so the buildup has no ratio to quote and the absolute depth is the whole signal.",
+  "hosts": [
+    {
+      "host": "EMR Source",
+      "type": "service",
+      "status": "OK",
+      "queued": 0,
+      "messagesPerSec": 0.2,
+      "errored": 0,
+      "avgProcessingTime": 0,
+      "avgQueueingTime": 0,
+      "lastActivitySecondsAgo": 2
+    },
+    {
+      "host": "Lab Router",
+      "type": "process",
+      "status": "OK",
+      "queued": 486,
+      "messagesPerSec": 1.2,
+      "errored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0.62,
+      "lastActivitySecondsAgo": 1
+    },
+    {
+      "host": "FHIR Transform",
+      "type": "process",
+      "status": "OK",
+      "queued": 4,
+      "messagesPerSec": 1.2,
+      "errored": 0,
+      "avgProcessingTime": 0.08,
+      "avgQueueingTime": 0.05,
+      "lastActivitySecondsAgo": 3
+    },
+    {
+      "host": "Cloud API",
+      "type": "operation",
+      "status": "OK",
+      "queued": 14,
+      "messagesPerSec": 0.4,
+      "errored": 0,
+      "avgProcessingTime": 0.05,
+      "avgQueueingTime": 1.84,
+      "lastActivitySecondsAgo": 4
+    }
+  ],
+  "findings": [
+    {
+      "id": "f-1042",
+      "host": "Lab Router",
+      "type": "queue_buildup",
+      "severity": "critical",
+      "currentValue": 486,
+      "baselineValue": 0,
+      "detectedSecondsAgo": 45,
+      "message": "Queue depth 486 with no baseline queue"
+    },
+    {
+      "id": "f-1043",
+      "host": "Cloud API",
+      "type": "growing_queue_wait",
+      "severity": "critical",
+      "currentValue": 1.84,
+      "baselineValue": 0.02,
+      "detectedSecondsAgo": 30,
+      "message": "Average queue wait 1.84s is 92x baseline"
+    }
+  ]
+}

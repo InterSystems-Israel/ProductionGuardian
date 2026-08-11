@@ -29,7 +29,7 @@ XData ProductionDefinition
        Business Service — EMRSource
        Reads HL7 v2 files dropped by the HL7Generator.
        ============================================================ -->
-  <Item Name="EMRSource"
+  <Item Name="EMR Source"
         Category="LabDemo"
         ClassName="EnsLib.HL7.Service.FileService"
         PoolSize="1"
@@ -42,42 +42,25 @@ XData ProductionDefinition
     <Setting Target="Adapter" Name="FileSpec">*.hl7</Setting>
     <Setting Target="Adapter" Name="ArchivePath">/tmp/labdemo/hl7-archive/</Setting>
     <Setting Target="Adapter" Name="PollInterval">2</Setting>
-    <Setting Target="Host"    Name="TargetConfigNames">LabRouter</Setting>
+    <Setting Target="Host"    Name="TargetConfigNames">Lab Router</Setting>
     <Setting Target="Host"    Name="MessageSchemaCategory">2.5</Setting>
   </Item>
 
   <!-- ============================================================
        Business Process — LabRouter
-       Routes ADT^A01 and ORU^R01 to PIDExtractProcess.
+       Routes ADT^A01 to Cloud API.
        Rule: ProductionGuardian.LabDemo.RoutingRule
        ============================================================ -->
-  <Item Name="LabRouter"
+  <Item Name="Lab Router"
         Category="LabDemo"
         ClassName="EnsLib.HL7.MsgRouter.RoutingEngine"
         PoolSize="1"
         Enabled="true"
         Foreground="false"
-        Comment="Routes HL7 by message type to PIDExtractProcess"
+        Comment="Routes and transforms HL7 by message type to Cloud API"
         LogTraceEvents="false"
         Schedule="">
     <Setting Target="Host" Name="BusinessRuleName">ProductionGuardian.LabDemo.RoutingRule</Setting>
-  </Item>
-
-  <!-- ============================================================
-       Business Process — PIDExtractProcess
-       Applies the HL7ToPID DTL transform and forwards the resulting
-       PatientDemographics message to PatientDemographicsOperation.
-       ============================================================ -->
-  <Item Name="PIDExtractProcess"
-        Category="LabDemo"
-        ClassName="ProductionGuardian.LabDemo.Process.PIDExtractProcess"
-        PoolSize="1"
-        Enabled="true"
-        Foreground="false"
-        Comment="Extracts PID segment via DTL; forwards PatientDemographics to REST operation"
-        LogTraceEvents="false"
-        Schedule="">
-    <Setting Target="Host" Name="TargetOperation">PatientDemographicsOperation</Setting>
   </Item>
 
   <!-- ============================================================
@@ -85,7 +68,7 @@ XData ProductionDefinition
        HTTP POSTs the PatientDemographics message as JSON to the
        PatientDispatcher REST API (same IRIS instance, /labdemo/patients).
        ============================================================ -->
-  <Item Name="PatientDemographicsOperation"
+  <Item Name="Cloud API"
         Category="LabDemo"
         ClassName="ProductionGuardian.LabDemo.Operation.PatientDemographicsOperation"
         PoolSize="1"
@@ -97,13 +80,12 @@ XData ProductionDefinition
     <Setting Target="Adapter" Name="HTTPServer">127.0.0.1</Setting>
     <Setting Target="Adapter" Name="HTTPPort">52773</Setting>
     <Setting Target="Adapter" Name="URL">/labdemo/patients</Setting>
-    <Setting Target="Host"    Name="URL">/labdemo/patients</Setting>
   </Item>
 
   <!-- ============================================================
        Activity Reporter — required for iris_interop_avg_processing_time.
        ============================================================ -->
-  <Item Name="ActivityReporter"
+  <Item Name="Ens.Activity.Operation.Local"
         Category="LabDemo"
         ClassName="Ens.Activity.Operation.Local"
         PoolSize="1"

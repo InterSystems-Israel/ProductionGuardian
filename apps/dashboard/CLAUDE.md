@@ -87,8 +87,12 @@ Keep `src/types/healthscan.ts` as a direct transcription of the contract. Every 
 ```ts
 export type Severity = 'info' | 'warning' | 'critical';
 
-/** Confirm the exact set with Dev B on Day 1 — see §2.5 Q1. */
-export type HostStatus = 'OK' | 'Warning' | 'Error' | 'Inactive';
+/**
+ * The real IRIS enum (contract §4 Q1). There is no `Warning` — a struggling host
+ * still reports `OK`, and the *finding* carries the alarm.
+ */
+export type HostStatus =
+  | 'OK' | 'Error' | 'Inactive' | 'Retry' | 'Stopped' | 'Unconfigured' | 'Disabled';
 
 export type FindingType =
   | 'dead_host'            // iris_interop_hosts status Inactive/Error
@@ -118,11 +122,13 @@ export interface Finding {
   type: FindingType;
   severity: Severity;
   currentValue: number;
-  baselineValue: number;
-  detectedAt: string;          // ISO 8601 UTC
+  baselineValue: number | null;  // null while the baseline is warming up
+  detectedAt: string;          // ISO 8601 UTC, second precision, Z-suffixed
   message: string;             // human-readable, render as-is
 }
 ```
+
+**Timestamps are second-precision `Z`-suffixed** (`2026-08-06T15:47:52Z`). `Date.prototype.toISOString()` is **not** conforming — it always emits milliseconds (`…52.000Z`), which the contract's pattern rejects. Use `toContractIso` in `src/api/scenarios.ts` when producing them.
 
 ### 2.4 Defensive rendering — required, not optional
 
@@ -135,19 +141,30 @@ The contract will drift during the sprint. The UI must never crash or blank out 
 - **`message` is authoritative.** Render Dev B's `message` string as the finding's primary text. Do not reconstruct your own sentence from `currentValue`/`baselineValue` — you will disagree with the engine.
 - Validate the response shape at the API boundary (one small guard function per endpoint) and log-and-skip malformed array entries rather than rejecting the whole payload.
 
-### 2.5 Day-1 questions to settle with Dev B
+### 2.5 The Day-1 questions — answered
 
-Ask these on Day 1 and record the answers in `contracts/healthscan-api.md`. Until answered, code against the assumption in brackets and leave a `// CONTRACT-Q1:` comment at the site.
+All twelve are settled in **`contracts/healthscan-api.md` §4** (issue #1, PR #3). That document is the source of record; this is the summary.
 
-1. **Exact `status` enum** for hosts. [assume `OK | Warning | Error | Inactive`]
-2. **Exact `type` strings** for findings — confirm the eight snake_case names in §2.3. [assume as listed]
-3. **Baseline warm-up representation.** Is it a top-level flag, a per-host field, `baselineValue: null`, or a separate endpoint? MVP 1 explicitly needs a "baseline warming up" state. [assume `baselineValue` may be `null` during warm-up]
-4. **Finding lifecycle.** Do findings disappear when resolved, or gain a `resolvedAt`/`status`? Is `id` stable across polls for the same ongoing condition? This decides whether the list can animate/dedupe or must re-render wholesale. [assume: ids are stable while the condition persists; findings vanish when cleared]
-5. **Ordering.** Is `findings` sorted by `detectedAt` desc server-side, or must the UI sort? [assume UI sorts]
-6. **Units.** `avgProcessingTime` / `avgQueueingTime` in **seconds** (schema shows `0.08`) — confirm, since the display formats as ms.
-7. **Errors and empty states.** What does the API return with zero findings (`[]` vs `404`) and while the engine is starting up?
-8. **Host↔finding join key.** Is `finding.host` always exactly equal to a `host.host` value? [assume yes]
-9. **CORS.** Will the findings API send `Access-Control-Allow-Origin`? If not, you use the Vite dev proxy (§4.3) — either is fine, just confirm which.
+Eight of the nine original assumptions held. **Only Q1 was wrong**, and it is fixed:
+
+| # | Answer |
+|---|---|
+| **Q1** | ❌ **The one correction.** No `Warning`. Real enum: `OK`, `Error`, `Inactive`, `Retry`, `Stopped`, `Unconfigured`, `Disabled`. |
+| Q2 | Eight snake_case names, unchanged. |
+| Q3 | `baselineValue: number \| null`. Also an advisory `X-Healthscan-State: warming` header, deliberately ignored — `null` is sufficient and one source of truth beats two. |
+| Q4 | ids **stable** while the condition persists; findings **disappear** when cleared. The highlight animation and poll-surviving drawer are sound. |
+| Q5 | Sorted server-side too. The client sort stays as cheap insurance. |
+| Q6 | **Seconds**, confirmed empirically. `0.08 → "80 ms"` is right. |
+| Q7 | `200` + `[]`, never `404`, including during startup. |
+| Q8 | `finding.host` is always exactly a `host.host` value. |
+| Q9 | CORS `*` is sent; the dev proxy is optional, kept as the default anyway. |
+| Q10 | IRIS says `actor` for business processes; Dev B normalizes to `process`. |
+| Q11 | `lastActivity` is derived from elapsed seconds — trust it to ±10s, not for sub-second ordering. |
+| Q12 | `avgProcessingTime` is a sample-count-weighted aggregate across message types. |
+
+**Keep the `// CONTRACT-Q<n>` convention** for future contract-dependent work. Tagging each assumption site with a greppable marker made reconciliation a `grep` rather than an audit — ADR 0004 recommends promoting it to practice.
+
+Two open items raised back to Dev B on PR #3: the schema rejects the empty array `[]` that §3 mandates as the normal "no findings" response, and its timestamp `pattern` rejects `toISOString()` output.
 
 ---
 
