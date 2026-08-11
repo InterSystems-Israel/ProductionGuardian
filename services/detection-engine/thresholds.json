@@ -1,12 +1,9 @@
 {
-  "_comment": "ADR 0003. The only place detection numbers live. Hot-reloaded on change. Defaults are conservative starting points, to be corrected once each of the eight triggers has been induced against LABDEMO.",
-
-  "_comment_info_severity": "DELIBERATE: severity 'info' is unreachable for the seven per-host rules, and system_alert is the only source of an info finding. Each comparative rule's firing gate equals its severityBands.warning (e.g. queue_buildup fires at 5x and warns at 5x), so anything that fires is at least a warning; dead_host and stalled_host carry fixed severities. Do NOT 'fix' this by lowering a warning band -- that would require lowering the firing GATE, which widens what fires and reintroduces exactly the false positives MVP §6 names as the top risk. A quiet findings list is the point. Raised by Dev C on #8 after observing 46 live findings with no info among them.",
-
+  "_comment": "ADR 0003. The only place detection numbers live. Hot-reloaded on change. Floors were tuned 2026-08-11 against measured LABDEMO steady state (proc: Lab Router .08s, Cloud API .05s, EMR Source 0; queue wait: only Cloud API at .03s) -- the original 1.0s floors were 12-33x those baselines, so the floor bound instead of the multiplier and a 10x regression produced no finding at all.",
+  "_comment_info_severity": "DELIBERATE: severity 'info' is unreachable for the seven per-host rules, and system_alert is the only source of an info finding. Each comparative rule's firing gate equals its severityBands.warning (e.g. queue_buildup fires at 5x and warns at 5x), so anything that fires is at least a warning; dead_host and stalled_host carry fixed severities. Do NOT 'fix' this by lowering a warning band -- that would require lowering the firing GATE, which widens what fires and reintroduces exactly the false positives MVP \u00a76 names as the top risk. A quiet findings list is the point. Raised by Dev C on #8 after observing 46 live findings with no info among them.",
   "sustainedSamples": 2,
   "minBaselineSamples": 12,
   "baselineWindowSeconds": 1800,
-
   "rules": {
     "dead_host": {
       "enabled": true,
@@ -22,31 +19,46 @@
       "enabled": true,
       "baselineMultiplier": 5.0,
       "absoluteFloor": 50,
-      "severityBands": { "warning": 5.0, "critical": 20.0 }
+      "severityBands": {
+        "warning": 5.0,
+        "critical": 20.0
+      }
     },
     "elevated_error_rate": {
       "enabled": true,
       "errorsPerMinuteFloor": 1.0,
       "baselineMultiplier": 3.0,
-      "severityBands": { "warning": 3.0, "critical": 10.0 }
+      "severityBands": {
+        "warning": 3.0,
+        "critical": 10.0
+      }
     },
     "slow_processing": {
       "enabled": true,
       "baselineMultiplier": 3.0,
-      "absoluteFloorSeconds": 1.0,
-      "severityBands": { "warning": 3.0, "critical": 10.0 }
+      "absoluteFloorSeconds": 0.2,
+      "severityBands": {
+        "warning": 3.0,
+        "critical": 10.0
+      }
     },
     "growing_queue_wait": {
       "enabled": true,
       "baselineMultiplier": 3.0,
-      "absoluteFloorSeconds": 1.0,
-      "severityBands": { "warning": 3.0, "critical": 10.0 }
+      "absoluteFloorSeconds": 0.15,
+      "severityBands": {
+        "warning": 3.0,
+        "critical": 10.0
+      }
     },
     "throughput_drop": {
       "enabled": true,
       "baselineFraction": 0.4,
       "minBaselineRate": 0.1,
-      "severityBands": { "warning": 0.4, "critical": 0.1 }
+      "severityBands": {
+        "warning": 0.4,
+        "critical": 0.1
+      }
     },
     "system_alert": {
       "enabled": true,
@@ -54,12 +66,12 @@
       "criticalSeverityAtOrBelow": 1
     }
   },
-
   "hostOverrides": {
     "_comment": "Rare and always commented. Raising a bound to silence a nag also raises it for a genuine regression.",
     "Cloud API": {
+      "_comment": "Outbound operation: its latency includes a simulated remote call, so it tolerates more than the in-process hosts. 0.3s is ~6x its measured 0.05s.",
       "slow_processing": {
-        "absoluteFloorSeconds": 2.0
+        "absoluteFloorSeconds": 0.3
       }
     }
   }
