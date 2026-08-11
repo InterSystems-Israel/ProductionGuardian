@@ -188,9 +188,11 @@ all eight types.
 
 ## 6. Never invent data
 
-- **No fabricated hosts, metrics, or findings outside `fixtures/`.** Fixtures use the four LABDEMO
-  components — **EMR Source** (service), **Lab Router** (process), **FHIR Transform** (process),
-  **Cloud API** (operation) — and the eight real finding types.
+- **No fabricated hosts, metrics, or findings outside `fixtures/`.** Fixtures use the LABDEMO
+  application components — **EMR Source** (service), **Lab Router** (process), **Cloud API**
+  (operation) — and the eight real finding types. The authoritative list is the `<Item>` set in
+  `iris/labdemo/Production.cls`; do not restate it here beyond this note, because a host list
+  duplicated across areas is exactly what went stale when `FHIR Transform` was removed.
 - Fixture values should be **captured from live LABDEMO**, not invented. Real numbers catch real
   problems; `contracts/samples/` was built that way.
 - If the proxy is unreachable, serve last-known findings and report `X-Healthscan-State: stale`.

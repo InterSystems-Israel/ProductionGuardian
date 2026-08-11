@@ -1,5 +1,5 @@
 {
-  "_comment": "Captured from live LABDEMO, 2026-08-06. Steady state, all four hosts OK. avgProcessingTime 0.08 for the two processes is the real measured value.",
+  "_comment": "Captured from live LABDEMO, 2026-08-06. Steady state, all application hosts OK. avgProcessingTime 0.08 for Lab Router is the real measured value. Includes Ens.MonitorService to prove the framework filter drops it. FHIR Transform was removed here when it ceased to be a production item (see contracts/CHANGELOG.md); the remaining values are unchanged from the capture.",
   "sampledAt": "2026-08-06T15:47:52Z",
   "production": "LABDEMO.Production",
   "hosts": [
@@ -27,19 +27,6 @@
       "avgProcessingTime": 0.08,
       "avgQueueingTime": 0,
       "lastActivityElapsedSeconds": 3.966,
-      "sampleCount": 24
-    },
-    {
-      "name": "FHIR Transform",
-      "type": "actor",
-      "status": "OK",
-      "queued": 0,
-      "messages": 1176,
-      "messagesPerSec": 1.2,
-      "messagesErrored": 0,
-      "avgProcessingTime": 0.08,
-      "avgQueueingTime": 0,
-      "lastActivityElapsedSeconds": 3.968,
       "sampleCount": 24
     },
     {

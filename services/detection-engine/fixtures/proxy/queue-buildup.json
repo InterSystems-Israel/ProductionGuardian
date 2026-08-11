@@ -1,5 +1,5 @@
 {
-  "_comment": "Cloud API alive but throttled: it still processes, slowly, so the queue climbs past the absoluteFloor of 50 while status stays OK. Derived from the same LABDEMO capture as cloud-api-dead, with Latency raised rather than the host disabled — this is what the FailurePercent/Latency triggers on LABDEMO.Operation.CloudAPI produce. Distinct from cloud-api-dead on purpose: that one stops at depth 48 and correctly does NOT trip queue_buildup.",
+  "_comment": "Cloud API alive but throttled: it still processes, slowly, so the queue climbs past the absoluteFloor of 50 while status stays OK. Derived from the same LABDEMO capture as cloud-api-dead, with Latency raised rather than the host disabled \u2014 this is what the FailurePercent/Latency triggers on LABDEMO.Operation.CloudAPI produce. Distinct from cloud-api-dead on purpose: that one stops at depth 48 and correctly does NOT trip queue_buildup.",
   "sampledAt": "2026-08-06T15:46:02Z",
   "production": "LABDEMO.Production",
   "hosts": [
@@ -18,19 +18,6 @@
     },
     {
       "name": "Lab Router",
-      "type": "actor",
-      "status": "OK",
-      "queued": 0,
-      "messages": 1800,
-      "messagesPerSec": 1.2,
-      "messagesErrored": 0,
-      "avgProcessingTime": 0.08,
-      "avgQueueingTime": 0,
-      "lastActivityElapsedSeconds": 3.9,
-      "sampleCount": 24
-    },
-    {
-      "name": "FHIR Transform",
       "type": "actor",
       "status": "OK",
       "queued": 0,

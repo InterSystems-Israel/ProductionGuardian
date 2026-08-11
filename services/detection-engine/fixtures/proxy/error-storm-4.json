@@ -30,19 +30,6 @@
       "sampleCount": 24
     },
     {
-      "name": "FHIR Transform",
-      "type": "actor",
-      "status": "OK",
-      "queued": 0,
-      "messages": 2802,
-      "messagesPerSec": 1.2,
-      "messagesErrored": 0,
-      "avgProcessingTime": 0.08,
-      "avgQueueingTime": 0,
-      "lastActivityElapsedSeconds": 3.9,
-      "sampleCount": 24
-    },
-    {
       "name": "Cloud API",
       "type": "operation",
       "status": "Error",
