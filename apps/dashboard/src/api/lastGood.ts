@@ -14,6 +14,19 @@ import type { FindingView, HostView } from '../types/healthscan';
 
 const KEY = 'pg.healthscan.lastGood.v1';
 
+/*
+ * How many hosts the monitored production last reported.
+ *
+ * Its own key, not part of `LastGood`, because the two have different rules: the
+ * payload is live-mode-only (caching demo fixtures would let a stale scenario
+ * resurface as real data), whereas this is a layout hint worth keeping in both
+ * modes. An integer cannot resurface as anything.
+ *
+ * Exists so the loading skeletons match whatever production this is pointed at
+ * rather than a number compiled in. See issue #25.
+ */
+const HOST_COUNT_KEY = 'pg.healthscan.hostCount.v1';
+
 export interface LastGood {
   hosts: HostView[];
   findings: FindingView[];
@@ -46,6 +59,31 @@ export function writeLastGood(value: LastGood): void {
   } catch (cause) {
     // Quota or a disabled store — not worth surfacing to the operator.
     console.warn('[healthscan] could not write the last-good cache', cause);
+  }
+}
+
+/** Last observed host count, or null if this browser has never seen a payload. */
+export function readHostCountHint(): number | null {
+  try {
+    const raw = window.localStorage.getItem(HOST_COUNT_KEY);
+    if (raw === null) return null;
+    const count = Number(raw);
+    // A non-integer or a zero tells us nothing useful, so treat it as unknown
+    // rather than rendering no skeletons at all.
+    return Number.isInteger(count) && count > 0 ? count : null;
+  } catch (cause) {
+    console.warn('[healthscan] could not read the host-count hint', cause);
+    return null;
+  }
+}
+
+export function writeHostCountHint(count: number): void {
+  if (!Number.isInteger(count) || count <= 0) return;
+  try {
+    window.localStorage.setItem(HOST_COUNT_KEY, String(count));
+  } catch {
+    // A missing layout hint costs one frame of a mismatched skeleton row. Not
+    // worth a console line on every poll.
   }
 }
 

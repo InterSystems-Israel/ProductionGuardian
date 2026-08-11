@@ -16,7 +16,27 @@ export interface HostGridProps {
   findings: readonly FindingView[];
   now: number;
   loading: boolean;
+  /**
+   * How many loading skeletons to draw — the host count this browser last saw.
+   * `null` on a first-ever visit, when nothing legitimately knows the answer.
+   */
+  skeletonCount?: number | null;
 }
+
+/*
+ * Used only until the first response of a browser's first-ever session, after which
+ * the observed count takes over.
+ *
+ * Deliberately not "the LABDEMO host count": this file used to hardcode 4, then 3
+ * when a component was removed from the production, which is a UI component
+ * tracking someone else's config (issue #25). Any value here is a guess, so it is
+ * named as one and it self-corrects after one poll.
+ */
+const FIRST_VISIT_SKELETONS = 3;
+
+/* A production with 200 hosts should not paint 200 placeholder cards. Two rows'
+   worth is enough to show the shape of what is coming. */
+const MAX_SKELETONS = 12;
 
 /** `finding.host` is always exactly a `host.host` value — same string, same case (§4 Q8). */
 function severityByHost(
@@ -48,13 +68,20 @@ function HostSkeleton(): JSX.Element {
   );
 }
 
-export function HostGrid({ hosts, findings, now, loading }: HostGridProps): JSX.Element {
-  // Skeletons, not spinners (§7.3) — three, matching the LABDEMO host count, so
-  // the layout does not jump when real data lands.
+export function HostGrid({
+  hosts,
+  findings,
+  now,
+  loading,
+  skeletonCount = null,
+}: HostGridProps): JSX.Element {
+  // Skeletons, not spinners (§7.3), as many as this production last reported, so the
+  // layout does not jump when real data lands — whatever production that is.
   if (loading && hosts.length === 0) {
+    const count = Math.min(skeletonCount ?? FIRST_VISIT_SKELETONS, MAX_SKELETONS);
     return (
       <div className="pg-grid">
-        {[0, 1, 2].map((index) => (
+        {Array.from({ length: count }, (_, index) => (
           <HostSkeleton key={index} />
         ))}
       </div>

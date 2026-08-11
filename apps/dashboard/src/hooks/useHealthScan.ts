@@ -11,7 +11,7 @@
 
 import { useCallback, useRef, useState } from 'react';
 import type { HealthScanApi } from '../api/HealthScanApi';
-import { readLastGood, writeLastGood } from '../api/lastGood';
+import { readHostCountHint, readLastGood, writeHostCountHint, writeLastGood } from '../api/lastGood';
 import type { FindingView, HostView } from '../types/healthscan';
 import { compareSeverity, toSeverity } from '../lib/severity';
 import { parseTimestamp } from '../lib/format';
@@ -57,6 +57,13 @@ export interface UseHealthScanResult extends HealthScanState {
   refresh: (signal?: AbortSignal) => Promise<void>;
   /** Drops cached ids so the next refresh treats everything as pre-existing. */
   resetSeen: () => void;
+  /**
+   * How many hosts this browser last saw, or null if it never has. Sizes the
+   * loading skeletons to the production actually being monitored rather than to a
+   * count compiled in (issue #25). Read once: after the first response `hosts` is
+   * populated and the skeletons are gone, so a live value would never be used.
+   */
+  hostCountHint: number | null;
 }
 
 export interface UseHealthScanOptions {
@@ -134,6 +141,10 @@ export function useHealthScan(
         if (cacheLastGood) {
           writeLastGood({ hosts, findings: sorted, at });
         }
+        // Unconditional, unlike the payload cache: the host count is a layout hint
+        // rather than data, so it is as useful in demo mode and cannot resurface as
+        // a stale finding.
+        writeHostCountHint(hosts.length);
       } catch (cause) {
         // An abort is the caller's own doing (unmount, next tick) — not an error.
         if (cause instanceof DOMException && cause.name === 'AbortError') return;
@@ -153,5 +164,7 @@ export function useHealthScan(
     seenIds.current = new Set();
   }, []);
 
-  return { ...state, refresh, resetSeen };
+  const [hostCountHint] = useState<number | null>(() => readHostCountHint());
+
+  return { ...state, refresh, resetSeen, hostCountHint };
 }

@@ -42,8 +42,17 @@ export function App(): JSX.Element {
   const liveClient = useMemo(() => createLiveClient(), []);
   const api = mode === 'live' ? liveClient : mockClient;
 
-  const { hosts, findings, loading, error, lastSuccessAt, newFindingIds, refresh, resetSeen } =
-    useHealthScan(api, { cacheLastGood: mode === 'live' });
+  const {
+    hosts,
+    findings,
+    loading,
+    error,
+    lastSuccessAt,
+    newFindingIds,
+    refresh,
+    resetSeen,
+    hostCountHint,
+  } = useHealthScan(api, { cacheLastGood: mode === 'live' });
 
   const onTick = useCallback(
     (signal: AbortSignal) => refresh(signal),
@@ -209,7 +218,13 @@ export function App(): JSX.Element {
           <h2 id="pg-hosts-heading" className="pg-section__title">
             Hosts
           </h2>
-          <HostGrid hosts={hosts} findings={findings} now={now} loading={loading} />
+          <HostGrid
+            hosts={hosts}
+            findings={findings}
+            now={now}
+            loading={loading}
+            skeletonCount={hostCountHint}
+          />
         </section>
 
         <section className="pg-section" aria-labelledby="pg-findings-heading">
