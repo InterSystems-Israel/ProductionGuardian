@@ -259,6 +259,80 @@ describe('growing_queue_wait', () => {
     assert.match(verdict.message, /Average queue wait 1\.84s/);
   });
 
+  describe('zero baseline — the infinite-ratio path', () => {
+    // A zero baseline makes every ratio infinite, so the bands cannot grade it and the
+    // floor is the whole gate. This used to hardcode `critical`, meaning a host whose
+    // normal wait is 0 went silent -> critical at the floor with no warning tier. Found
+    // by Dev C on #20. LABDEMO measures 0 here on two of three hosts, so this is the
+    // common case rather than an edge one.
+    const floor = DEFAULT_CONFIG.rules.growing_queue_wait.absoluteFloorSeconds;
+    const criticalAt = floor * DEFAULT_CONFIG.rules.growing_queue_wait.criticalFloorMultiple;
+
+    it('does NOT fire below the floor', () => {
+      const verdict = evaluate(
+        'growing_queue_wait',
+        host({ avgQueueingTime: floor * 0.5 }),
+        warmBaseline('avgQueueingTime', 0),
+      );
+      assert.equal(verdict, null);
+    });
+
+    it('warns at the floor rather than going straight to critical', () => {
+      const verdict = evaluate(
+        'growing_queue_wait',
+        host({ avgQueueingTime: floor }),
+        warmBaseline('avgQueueingTime', 0),
+      );
+      assert.ok(verdict !== null);
+      assert.equal(verdict.severity, 'warning', 'the floor must not be a critical trigger');
+    });
+
+    it('still warns just below the critical multiple', () => {
+      const verdict = evaluate(
+        'growing_queue_wait',
+        host({ avgQueueingTime: criticalAt * 0.99 }),
+        warmBaseline('avgQueueingTime', 0),
+      );
+      assert.equal(verdict?.severity, 'warning');
+    });
+
+    it('escalates to critical at the critical multiple', () => {
+      const verdict = evaluate(
+        'growing_queue_wait',
+        host({ avgQueueingTime: criticalAt }),
+        warmBaseline('avgQueueingTime', 0),
+      );
+      assert.equal(verdict?.severity, 'critical');
+    });
+
+    it('omits the ratio from the message, since there is no honest one to state', () => {
+      const verdict = evaluate(
+        'growing_queue_wait',
+        host({ avgQueueingTime: 1.0 }),
+        warmBaseline('avgQueueingTime', 0),
+      );
+      assert.ok(verdict !== null);
+      assert.doesNotMatch(verdict.message, /baseline/, 'must not claim an Infinity ratio');
+    });
+
+    it('applies the same two tiers to slow_processing', () => {
+      const procFloor = DEFAULT_CONFIG.rules.slow_processing.absoluteFloorSeconds;
+      const procCritical = procFloor * DEFAULT_CONFIG.rules.slow_processing.criticalFloorMultiple;
+      const atFloor = evaluate(
+        'slow_processing',
+        host({ avgProcessingTime: procFloor }),
+        warmBaseline('avgProcessingTime', 0),
+      );
+      const atCritical = evaluate(
+        'slow_processing',
+        host({ avgProcessingTime: procCritical }),
+        warmBaseline('avgProcessingTime', 0),
+      );
+      assert.equal(atFloor?.severity, 'warning');
+      assert.equal(atCritical?.severity, 'critical');
+    });
+  });
+
   it('does NOT fire on a healthy sub-second wait', () => {
     const verdict = evaluate(
       'growing_queue_wait',

@@ -168,9 +168,21 @@ function durationRule(
       const ratio = baseline > 0 ? current / baseline : Number.POSITIVE_INFINITY;
       if (ratio < rule.baselineMultiplier) return null;
 
+      // A zero baseline makes every ratio infinite, so the multiplier cannot bind and
+      // the floor is the entire gate. This branch previously hardcoded `critical`,
+      // which meant a host whose normal queue wait is 0 went from silent to critical
+      // at the floor with no warning tier -- and lowering the floor to 0.15s made that
+      // trigger 150ms of queue wait. MVP §6 names false positives as the top risk.
+      //
+      // Instead, judge an infinite ratio on absolute magnitude against the floor:
+      // `criticalFloorMultiple` x the floor earns `critical`, anything above the floor
+      // is a `warning`. That restores a two-tier response for zero-baseline hosts
+      // without making the floor itself a critical trigger. Found by Dev C on #20.
       const severity = Number.isFinite(ratio)
         ? severityFromRatio(ratio, rule.severityBands)
-        : 'critical';
+        : current >= rule.absoluteFloorSeconds * rule.criticalFloorMultiple
+          ? 'critical'
+          : 'warning';
       const comparison = Number.isFinite(ratio) ? ` is ${formatRatio(ratio)} baseline` : '';
 
       return {
