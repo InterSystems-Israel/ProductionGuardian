@@ -115,12 +115,24 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         working-directory: apps/dashboard
         run: npm run build
-      # Dev C's own fixture validator, if present — keeps demo fixtures honest
-      # against the published schema.
-      - name: Validate fixtures
+      # Dev C's own fixture validator — keeps demo fixtures honest against the
+      # published schema AND against Dev B's shipped thresholds.
+      #
+      # STRICT, and deliberately without `--if-present`. Both are the same reason: the
+      # plain form skips cleanly when `contracts/` or `services/detection-engine/` is
+      # absent, which is right for a local dashboard-only checkout and wrong here,
+      # because a step that validates nothing while reporting success is indistinguishable
+      # from one that validated everything. `--if-present` adds a second copy of that
+      # hole -- rename the script and the step goes quietly green.
+      #
+      # Same failure the `npm test --if-present` fix in #11 addressed, and the one
+      # `apps/dashboard/fixtures/README.md` already prescribes the strict form for. Both
+      # directories are on `main`, so this passes today; it is closing a latent hole
+      # rather than fixing a live break.
+      - name: Validate fixtures (strict)
         if: steps.guard.outputs.present == 'true'
         working-directory: apps/dashboard
-        run: npm run validate:fixtures --if-present
+        run: npm run validate:fixtures:strict
 
   metrics-proxy:
     name: metrics-proxy — typecheck + tests
