@@ -1,0 +1,1 @@
+[{"time":"2026-08-10T06:40:33.420Z","severity":"2","message":"Failed to allocate 18402MB shared memory using large pages.  Switching to small pages."},{"time":"2026-08-11T04:12:07.382Z","severity":"2","message":"^ISCSOAP in Namespace MAIN has been active for 452 day(s)."}]

@@ -21,6 +21,24 @@ const IRIS_PASS      = process.env.IRIS_PASS      || 'SYS';
 const IRIS_NAMESPACE = process.env.IRIS_NAMESPACE || 'LABDEMO';
 const USE_HTTPS      = process.env.IRIS_HTTPS === 'true';
 
+/**
+ * Path prefix in front of /api/monitor/. Empty on an instance served by its own
+ * private web server on 52773; on an instance served through an external web server
+ * the instance name is a path segment, e.g.
+ *   http://localhost/iris4health_2024_1/api/monitor/metrics
+ * Without this the poller requests /api/monitor/metrics at the web server root and
+ * gets the server's 404 page, which parses as zero metric lines — an empty snapshot
+ * that looks like an idle production rather than a misconfiguration.
+ */
+const IRIS_BASE_PATH = normalizeBasePath(process.env.IRIS_BASE_PATH || '');
+
+/** Trim to a leading-slash, no-trailing-slash form so path joining stays predictable. */
+function normalizeBasePath(raw) {
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
 const METRICS_INTERVAL = parseInt(process.env.METRICS_POLL_INTERVAL_MS || '10000', 10);
 const ALERTS_INTERVAL  = parseInt(process.env.ALERTS_POLL_INTERVAL_MS  || '30000', 10);
 
@@ -30,7 +48,8 @@ const AUTH_HEADER = 'Basic ' + Buffer.from(`${IRIS_USER}:${IRIS_PASS}`).toString
  * Make an authenticated HTTP(S) GET request to the IRIS instance.
  * Returns a promise resolving to the response body string.
  *
- * @param {string} path — e.g. '/api/monitor/metrics'
+ * @param {string} path — endpoint path, e.g. '/api/monitor/metrics'.
+ *   IRIS_BASE_PATH is prepended.
  * @returns {Promise<string>}
  */
 function irisGet(path) {
@@ -39,7 +58,7 @@ function irisGet(path) {
     const options = {
       hostname: IRIS_HOST,
       port: IRIS_PORT,
-      path: path,
+      path: IRIS_BASE_PATH + path,
       method: 'GET',
       headers: {
         'Authorization': AUTH_HEADER,

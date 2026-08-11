@@ -68,12 +68,17 @@ app.get('/proxy/metrics', (req, res) => {
   res.json(snapshot);
 });
 
-// Latest alerts from IRIS, forwarded as JSON (acceptance criterion 4).
+// Alerts from IRIS, forwarded as JSON (acceptance criterion 4).
 // Same warming contract as /proxy/metrics: 200 + empty list before the first poll.
 //
-// `_meta.shape` names how the upstream payload was interpreted — the shape of
-// /api/monitor/alerts is not yet pinned by a capture, so a consumer seeing
-// `shape: "unrecognized-object"` knows the zero is a mapping gap, not a healthy
+// This returns every alert observed SINCE THE PROXY STARTED, not just the last poll's,
+// because /api/monitor/alerts is consume-on-read — our own poll is what clears an alert
+// from IRIS, so a per-poll snapshot would expose it for one 30 s window and then lose it
+// permanently. `_meta.newInLastPoll` is the per-cycle count; `_meta.count` is the buffer
+// total. See the note at the top of src/cache.js for the evidence.
+//
+// `_meta.shape` names how the upstream payload was interpreted, so a consumer seeing
+// `shape: "unrecognized-object"` knows a zero is a mapping gap rather than a healthy
 // production. `_meta.raw` carries the payload in that case. See src/alerts.js.
 app.get('/proxy/alerts', (req, res) => {
   const alerts = getAlertsSnapshot();
@@ -81,21 +86,32 @@ app.get('/proxy/alerts', (req, res) => {
     return res.json({ alerts: [], warming: true, _meta: { polledAt: null, shape: null, count: 0 } });
   }
 
-  // Cross-check against the metrics side, which counts alerts independently via
-  // `iris_system_alerts_new`. The two are polled on different intervals (30 s vs
-  // 10 s), so a mismatch is only meaningful as a hint — but "metrics says there are
-  // alerts and this list is empty" is exactly the symptom of a wrong shape mapping,
-  // and it is far cheaper to surface here than to debug from a blank dashboard.
+  // Cross-check against the metrics side, which counts alerts independently.
+  //
+  // `iris_system_alerts_new` is NOT a useful cross-check for the buffer total: it is the
+  // same consume-on-read counter, so our own poll drives it back to 0 and it reads 0
+  // almost always. It is only meaningful against the LAST POLL's count, and even then
+  // the two families are polled 30 s and 10 s apart, so a transient disagreement is
+  // normal. Reported for diagnosis, not asserted on.
+  //
+  // `iris_system_alerts_log` is the durable count from alerts.log and does not reset.
+  // A log count above the buffer total means alerts existed before this proxy started,
+  // or were consumed by another reader — both are "you are not seeing everything",
+  // which is worth surfacing since it cannot be recovered from this endpoint.
   const metrics = getMetricsSnapshot();
   const alertsNew = metrics ? metrics.systemAlertsNew : null;
-  const suspectMismatch = alertsNew !== null && alertsNew > 0 && alerts.alerts.length === 0;
+  const alertsLog = metrics ? metrics.systemAlertsLog : null;
+  const suspectMismatch =
+    alertsNew !== null && alertsNew > 0 && alerts._meta.newInLastPoll === 0;
 
   res.json({
     ...alerts,
     _meta: {
       ...alerts._meta,
       systemAlertsNew: alertsNew,
-      // True when metrics report new alerts but this endpoint published none.
+      systemAlertsLog: alertsLog,
+      // True when metrics saw unread alerts that the last alerts poll did not return —
+      // a hint toward a shape mapping problem, not a verdict.
       suspectShapeMismatch: suspectMismatch,
     },
   });

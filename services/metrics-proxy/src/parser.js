@@ -148,6 +148,7 @@ const WEIGHTED_FAMILIES = new Set([
 const SCALAR_FAMILIES = new Set([
   'iris_interop_queued',    // per-production only; per-host depth needs EnumerateHostStatus
   'iris_system_alerts_new',
+  'iris_system_alerts_log',
 ]);
 
 /**
@@ -220,6 +221,7 @@ function buildSnapshot(rawMetrics, polledAt) {
   const weighted = {};
 
   let systemAlertsNew = null;
+  let systemAlertsLog = null;
   let productionQueued = null;
   let production = null;
 
@@ -243,6 +245,7 @@ function buildSnapshot(rawMetrics, polledAt) {
     if (SCALAR_FAMILIES.has(name)) {
       if (value === null) continue;
       if (name === 'iris_system_alerts_new') systemAlertsNew = value;
+      else if (name === 'iris_system_alerts_log') systemAlertsLog = value;
       else productionQueued = value;
       continue;
     }
@@ -328,7 +331,11 @@ function buildSnapshot(rawMetrics, polledAt) {
 
   return {
     hosts,
+    // Unread alerts. Consume-on-read: reading /api/monitor/alerts drives this to 0,
+    // so on a proxy that polls alerts it reads 0 nearly always. See src/cache.js.
     systemAlertsNew,
+    // Durable count from alerts.log; does not reset on read.
+    systemAlertsLog,
     _meta: {
       polledAt: ts,
       production,
