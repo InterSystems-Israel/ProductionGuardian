@@ -68,6 +68,30 @@ engine would never have produced. Reproducing the engine's logic means it drifts
 Dev B retunes — which is the point, since a fixture that silently stops matching the
 engine is exactly what is being guarded against.
 
+It also sweeps the **reverse** direction, which is a different mistake: a host row
+the engine *would* flag, with no finding for it. A fixture like that understates the
+product — the grid shows a host quietly breaching a rule while the findings list says
+nothing. That gap found four omissions in this set, two of them on `Cloud API` in
+`scenario-dead-host`, where a `Disabled` host with 154 queued produces `dead_host`,
+`queue_buildup` **and** `throughput_drop` rather than just the first.
+
+Two things about that sweep worth knowing:
+
+- **Baselines come from `scenario-healthy.json`**, since that file is already declared
+  above as the measured steady state everything else departs from. Deriving them beats
+  a table of host names in the tool — a duplicated host list is what went stale when
+  `FHIR Transform` was removed.
+- **It covers six of the eight rules.** `elevated_error_rate` compares
+  errors-per-*minute* derived across consecutive polls, and one host row cannot yield a
+  rate; `system_alert` comes from the proxy's alerts payload, which a scenario file does
+  not carry. The tool prints both exclusions on every run rather than letting "no
+  missing findings" imply a sweep it did not do.
+
+`scenario-baseline-warming.json` carries `"baselineWarming": true`, which is what
+silences the comparative half of the sweep for it — without the flag, two hosts at
+`0 msg/sec` read as unreported `throughput_drop`s. The flag is cross-checked: if it is
+set while any finding carries a non-null baseline, that fails too.
+
 Both checks **skip cleanly** when the thing they need is absent: `contracts/` and
 `services/detection-engine/` each land via their own PR, so neither may fail a
 dashboard branch that simply predates them. That leniency is wrong for CI, where a
@@ -97,6 +121,14 @@ Two notes on reading these, both learned from checking them against the real eng
   `avgQueueingTime: 0` on two of the three hosts, so a real buildup has no ratio
   to quote. The engine treats its absolute floor as the whole test there and says
   "with no baseline queue" rather than "∞x baseline".
+- **The two rule families grade a zero baseline differently**, so a fixture cannot
+  assume "no baseline means critical". `queue_buildup` still reaches straight for
+  `critical`, which is fair where its floor is 50 queued messages. The two duration
+  rules instead judge absolute magnitude — `criticalFloorMultiple` (4.0) × the floor
+  earns `critical`, anything merely above the floor is a `warning`. That landed in
+  Dev B's `fbb34da` after the review on #20, because 150 ms of queue wait reaching
+  for `critical` was not a claim worth making. `scenario-queue-buildup`'s Lab Router
+  finding sits 20 ms above that bound and is the set's most fragile severity.
 - **A rolling baseline is not the steady-state table.** `scenario-slow-processing`
   gives Lab Router a `growing_queue_wait` baseline of `0.02` even though the
   measured table has its `avgQueueingTime` at `0`. That is deliberate: the engine's

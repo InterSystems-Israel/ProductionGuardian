@@ -49,6 +49,26 @@
       "message": "Cloud API is Disabled with 154 message(s) queued"
     },
     {
+      "id": "f-1107",
+      "host": "Cloud API",
+      "type": "throughput_drop",
+      "severity": "critical",
+      "currentValue": 0,
+      "baselineValue": 0.4,
+      "detectedSecondsAgo": 90,
+      "message": "Throughput 0.0 msg/sec is 100% below baseline"
+    },
+    {
+      "id": "f-1106",
+      "host": "Cloud API",
+      "type": "queue_buildup",
+      "severity": "critical",
+      "currentValue": 154,
+      "baselineValue": 0,
+      "detectedSecondsAgo": 88,
+      "message": "Queue depth 154 with no baseline queue"
+    },
+    {
       "id": "f-1104",
       "host": "Lab Router",
       "type": "throughput_drop",
@@ -67,6 +87,16 @@
       "baselineValue": null,
       "detectedSecondsAgo": 60,
       "message": "No activity for 402s while 212 message(s) are queued"
+    },
+    {
+      "id": "f-1105",
+      "host": "Lab Router",
+      "type": "growing_queue_wait",
+      "severity": "critical",
+      "currentValue": 41.6,
+      "baselineValue": 0,
+      "detectedSecondsAgo": 50,
+      "message": "Average queue wait 41.60s"
     },
     {
       "id": "f-1103",

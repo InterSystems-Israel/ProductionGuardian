@@ -1,7 +1,8 @@
 {
   "id": "baseline-warming",
   "label": "Baseline warming up",
-  "note": "The engine has just started, so there is no rolling baseline and comparisons render as absent rather than as zero. Only the absolute rules can fire in this state: every comparative rule returns nothing while its baseline is null, so a warm-up fixture showing queue_buildup or slow_processing would be unproducible by the real engine.",
+  "baselineWarming": true,
+  "note": "The engine has just started, so there is no rolling baseline and comparisons render as absent rather than as zero. Only the absolute rules can fire in this state: every comparative rule returns nothing while its baseline is null, so a warm-up fixture showing queue_buildup or slow_processing would be unproducible by the real engine. The baselineWarming flag above is what tells validate-fixture-claims.mjs to silence its comparative sweep here — without it, Lab Router and Cloud API sitting at 0 msg/sec read as unreported throughput_drops.",
   "hosts": [
     {
       "host": "EMR Source",

@@ -59,6 +59,16 @@
       "message": "Cloud API is Error with 61 message(s) queued"
     },
     {
+      "id": "f-1214",
+      "host": "Cloud API",
+      "type": "queue_buildup",
+      "severity": "critical",
+      "currentValue": 61,
+      "baselineValue": 0,
+      "detectedSecondsAgo": 60,
+      "message": "Queue depth 61 with no baseline queue"
+    },
+    {
       "id": "f-1212",
       "host": "Cloud API",
       "type": "throughput_drop",
@@ -67,6 +77,16 @@
       "baselineValue": 0.4,
       "detectedSecondsAgo": 25,
       "message": "Throughput 0.1 msg/sec is 75% below baseline"
+    },
+    {
+      "id": "f-1215",
+      "host": "Cloud API",
+      "type": "growing_queue_wait",
+      "severity": "critical",
+      "currentValue": 0.84,
+      "baselineValue": 0.02,
+      "detectedSecondsAgo": 48,
+      "message": "Average queue wait 840ms is 42x baseline"
     },
     {
       "id": "f-1211",
