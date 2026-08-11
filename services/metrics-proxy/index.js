@@ -68,13 +68,37 @@ app.get('/proxy/metrics', (req, res) => {
   res.json(snapshot);
 });
 
-// Latest alerts from IRIS. Same warming contract as /proxy/metrics.
+// Latest alerts from IRIS, forwarded as JSON (acceptance criterion 4).
+// Same warming contract as /proxy/metrics: 200 + empty list before the first poll.
+//
+// `_meta.shape` names how the upstream payload was interpreted — the shape of
+// /api/monitor/alerts is not yet pinned by a capture, so a consumer seeing
+// `shape: "unrecognized-object"` knows the zero is a mapping gap, not a healthy
+// production. `_meta.raw` carries the payload in that case. See src/alerts.js.
 app.get('/proxy/alerts', (req, res) => {
   const alerts = getAlertsSnapshot();
   if (!alerts) {
-    return res.json({ alerts: [], warming: true });
+    return res.json({ alerts: [], warming: true, _meta: { polledAt: null, shape: null, count: 0 } });
   }
-  res.json(alerts);
+
+  // Cross-check against the metrics side, which counts alerts independently via
+  // `iris_system_alerts_new`. The two are polled on different intervals (30 s vs
+  // 10 s), so a mismatch is only meaningful as a hint — but "metrics says there are
+  // alerts and this list is empty" is exactly the symptom of a wrong shape mapping,
+  // and it is far cheaper to surface here than to debug from a blank dashboard.
+  const metrics = getMetricsSnapshot();
+  const alertsNew = metrics ? metrics.systemAlertsNew : null;
+  const suspectMismatch = alertsNew !== null && alertsNew > 0 && alerts.alerts.length === 0;
+
+  res.json({
+    ...alerts,
+    _meta: {
+      ...alerts._meta,
+      systemAlertsNew: alertsNew,
+      // True when metrics report new alerts but this endpoint published none.
+      suspectShapeMismatch: suspectMismatch,
+    },
+  });
 });
 
 // Simple liveness / readiness check.

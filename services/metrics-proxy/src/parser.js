@@ -11,6 +11,7 @@
  *   iris_interop_hosts               — status via a `status` LABEL (OK/Error/Inactive/
  *                                      Retry/Stopped/Unconfigured/Disabled). No `type`.
  *   iris_interop_queued              — PER PRODUCTION ONLY; carries no host label
+ *   iris_interop_messages            — cumulative message count per host
  *   iris_interop_messages_per_sec    — throughput per host
  *   iris_interop_messages_errored    — cumulative error count per host
  *   iris_interop_avg_processing_time — SECONDS; one series per (host, messagetype)
@@ -20,6 +21,22 @@
  *
  * The host label is `host` and holds a display name with spaces ("EMR Source").
  * `id` is the namespace, NOT a host — treating it as one invented a phantom host.
+ *
+ * ── ABSENT IS NOT ZERO ───────────────────────────────────────────────────────
+ * A second live capture (Dev A's own instance, 2026-08-11, fixtures/metrics-live-capture.txt)
+ * showed that IRIS emits FAR less than the family list above implies. On an idle
+ * production it emitted no `iris_interop_messages_errored` and no
+ * `iris_interop_last_activity` AT ALL — not zero-valued lines, no lines.
+ *
+ * The `avg_*` families are sparser still: they appeared for exactly ONE of thirteen
+ * hosts, because IRIS only emits them for a host that has actually processed
+ * something since stats were enabled.
+ *
+ * So every numeric per-host field starts as `null`, meaning "IRIS reported no series".
+ * `0` means IRIS measured zero. Defaulting to `0` (the previous behaviour) made an
+ * absent metric indistinguishable from a real zero, which is fabricated data: it let
+ * `errored: 0` look like a measurement on a build where the metric does not exist,
+ * so `elevated_error_rate` could never fire and nothing would say why.
  *
  * Prometheus text format reference:
  *   https://prometheus.io/docs/instrumenting/exposition_formats/#text-format-details
@@ -108,11 +125,12 @@ function parsePrometheusText(body) {
  */
 const METRIC_MAP = {
   iris_interop_hosts:               'status',               // status carried as a label; the value is not the status
+  iris_interop_messages:            'messages',            // integer, cumulative; present when messages_per_sec is
   iris_interop_messages_per_sec:    'messagesPerSec',       // float
-  iris_interop_messages_errored:    'errored',              // integer, cumulative
+  iris_interop_messages_errored:    'errored',              // integer, cumulative; ABSENT on an idle production
   iris_interop_avg_processing_time: 'avgProcessingTime',    // seconds; multi-series per messagetype
   iris_interop_avg_queueing_time:   'avgQueueingTime',      // seconds; multi-series per messagetype
-  iris_interop_last_activity:       'lastActivityElapsedSeconds',  // SECONDS SINCE last activity
+  iris_interop_last_activity:       'lastActivityElapsedSeconds',  // SECONDS SINCE last activity; ABSENT on 2024.1
 };
 
 /**
@@ -131,6 +149,45 @@ const SCALAR_FAMILIES = new Set([
   'iris_interop_queued',    // per-production only; per-host depth needs EnumerateHostStatus
   'iris_system_alerts_new',
 ]);
+
+/**
+ * Framework hosts IRIS runs inside every production. They are real hosts and their
+ * metrics are real, but they are not application components and must not reach the
+ * dashboard as findings.
+ *
+ * The 2026-08-11 capture is why this lives here rather than only downstream: of the
+ * thirteen hosts IRIS reported, TEN were framework — Ens.Actor, Ens.Alarm,
+ * Ens.MonitorService, Ens.ScheduleHandler, Ens.ScheduleService, three
+ * EnsLib.Background.* hosts, and ActivityReporter. Only EMRSource, LabRouter,
+ * PIDExtractProcess and PatientDemographicsOperation are ours.
+ *
+ * Matching is on the `Ens.`/`EnsLib.` prefix of the host label. Two traps:
+ *
+ *   1. `Ens.MonitorService` is the ONLY host with avg_* series in that capture, so an
+ *      unfiltered snapshot reports framework timings as though they were application
+ *      latency — the one host with data is the one host nobody asked about.
+ *   2. `ActivityReporter` has NO prefix. Its class is `Ens.Activity.Operation.Local`,
+ *      but the metric label carries the ITEM name, so no prefix rule can catch it.
+ *      It is listed explicitly by item name, and iris/labdemo/Production.cls renames
+ *      the item to `Ens.ActivityReporter` so the prefix rule covers it after a reload.
+ *      Both spellings are handled: the fix and the workaround must coexist while
+ *      Dev B's instance still runs the older definition.
+ *
+ * Kept as a proxy-side flag (`isFramework`) rather than a deletion — dropping hosts
+ * here would hide them from Dev B with no way to ask why. Dev B filters on the flag.
+ */
+const FRAMEWORK_PREFIXES = ['Ens.', 'EnsLib.'];
+const FRAMEWORK_ITEM_NAMES = new Set(['ActivityReporter']);
+
+/**
+ * True when a host is an IRIS framework item rather than an application component.
+ * @param {string} hostName — the `host` label value (an item name, not a class name)
+ * @returns {boolean}
+ */
+function isFrameworkHost(hostName) {
+  if (FRAMEWORK_ITEM_NAMES.has(hostName)) return true;
+  return FRAMEWORK_PREFIXES.some(p => hostName.startsWith(p));
+}
 
 /**
  * Convert raw parsed metrics into the per-host object array required by
@@ -200,15 +257,20 @@ function buildSnapshot(rawMetrics, polledAt) {
     if (!hostName) continue;
 
     if (!hostMap[hostName]) {
+      // Every numeric field starts null, not 0. IRIS omits whole families rather than
+      // emitting zeros (see the header note), and `0` has to keep meaning "measured
+      // zero" or every comparative rule downstream reasons about invented data.
       hostMap[hostName] = {
         host: hostName,
         type: 'unknown',
         status: 'Unknown',
-        queued: 0,
-        messagesPerSec: 0,
-        errored: 0,
-        avgProcessingTime: 0,
-        avgQueueingTime: 0,
+        isFramework: isFrameworkHost(hostName),
+        queued: null,
+        messages: null,
+        messagesPerSec: null,
+        errored: null,
+        avgProcessingTime: null,
+        avgQueueingTime: null,
         lastActivity: null,
         lastActivityElapsedSeconds: null,
       };
@@ -257,6 +319,13 @@ function buildSnapshot(rawMetrics, polledAt) {
   // the dashboard never reorders rows between polls.
   const hosts = Object.values(hostMap).sort((a, b) => a.host.localeCompare(b.host));
 
+  // Which per-host families this IRIS actually emitted. Without this, a build that
+  // omits `messages_errored` entirely is indistinguishable from a production with no
+  // errors, and `elevated_error_rate` silently never fires with nothing to point at.
+  // Reported rather than worked around: the proxy cannot conjure a family IRIS lacks.
+  const seenFamilies = new Set(rawMetrics.map(m => m.name));
+  const absentFamilies = Object.keys(METRIC_MAP).filter(f => !seenFamilies.has(f));
+
   return {
     hosts,
     systemAlertsNew,
@@ -266,6 +335,11 @@ function buildSnapshot(rawMetrics, polledAt) {
       // Per-production total. Per-host depth is NOT in the Prometheus text — it
       // requires Ens.Util.Statistics:EnumerateHostStatus (issue #12, ADR 0001).
       productionQueued,
+      // Diagnostics, not data. Dev B should treat a family listed here as
+      // "unmeasurable on this instance", not as a zero.
+      absentFamilies,
+      hostCount: hosts.length,
+      applicationHostCount: hosts.filter(h => !h.isFramework).length,
     },
   };
 }
@@ -289,4 +363,10 @@ function _hostType(labels) {
   return 'unknown';
 }
 
-module.exports = { parsePrometheusText, buildSnapshot, parseLabels, parseValue };
+module.exports = {
+  parsePrometheusText,
+  buildSnapshot,
+  parseLabels,
+  parseValue,
+  isFrameworkHost,
+};

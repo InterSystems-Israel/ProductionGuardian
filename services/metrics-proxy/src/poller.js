@@ -11,6 +11,7 @@
 const http = require('http');
 const https = require('https');
 const { parsePrometheusText, buildSnapshot } = require('./parser');
+const { normalizeAlerts } = require('./alerts');
 const { setMetricsSnapshot, setAlertsSnapshot } = require('./cache');
 
 const IRIS_HOST      = process.env.IRIS_HOST      || 'localhost';
@@ -86,22 +87,31 @@ async function pollMetrics() {
 }
 
 /**
- * Poll /api/monitor/alerts and store the JSON array.
+ * Poll /api/monitor/alerts and store the normalized JSON.
+ *
+ * Shape handling lives in ./alerts — the payload shape is unverified (no capture of
+ * this endpoint exists yet), so an unfamiliar body is reported rather than silently
+ * flattened to an empty list. `system_alert` is the only finding fed from here.
  */
 async function pollAlerts() {
   const polledAt = new Date().toISOString();
   try {
     const body = await irisGet('/api/monitor/alerts');
-    let alerts;
-    try {
-      alerts = JSON.parse(body);
-    } catch {
-      // Alerts endpoint may return an empty body or malformed JSON — treat as empty.
-      alerts = [];
+    const snapshot = normalizeAlerts(body, polledAt);
+    setAlertsSnapshot(snapshot);
+
+    const { shape, count } = snapshot._meta;
+    // Warn on any shape that produced no alerts for a reason other than "there are
+    // none". Silence here was how a shape mismatch could look like a healthy zero.
+    if (shape === 'array' || shape === 'empty' || shape.startsWith('wrapped:')) {
+      console.log(`[poller] alerts: ${count} alerts (shape: ${shape}) at ${polledAt}`);
+    } else {
+      console.warn(
+        `[poller] alerts: UNEXPECTED payload shape "${shape}" — published 0 alerts. ` +
+        `system_alert findings cannot fire until the mapping is corrected. ` +
+        `See _meta on /proxy/alerts for the raw payload.`
+      );
     }
-    if (!Array.isArray(alerts)) alerts = [];
-    setAlertsSnapshot({ alerts, _meta: { polledAt } });
-    console.log(`[poller] alerts: ${alerts.length} alerts at ${polledAt}`);
   } catch (err) {
     console.error(`[poller] alerts poll failed: ${err.message}`);
   }

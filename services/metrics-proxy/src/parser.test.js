@@ -13,7 +13,9 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { parsePrometheusText, buildSnapshot, parseLabels, parseValue } = require('./parser');
+const {
+  parsePrometheusText, buildSnapshot, parseLabels, parseValue, isFrameworkHost,
+} = require('./parser');
 
 describe('parseLabels', () => {
   it('parses a simple label set', () => {
@@ -123,12 +125,14 @@ iris_system_alerts_new 2
     assert.deepEqual(statuses.sort(), ['Error', 'OK']);
   });
 
-  it('reports queued per production, not per host', () => {
+  it('reports queued per production, and per-host queued as null not 0', () => {
     // iris_interop_queued carries no host label. Per-host depth needs
     // Ens.Util.Statistics:EnumerateHostStatus, which the poller does not read (#12).
+    // `null` rather than `0` matters: the production total here is 14, so publishing
+    // `queued: 0` per host would assert every host is drained while 14 sit somewhere.
     const snapshot = buildSnapshot(parsePrometheusText(metricsText));
     assert.equal(snapshot._meta.productionQueued, 14);
-    for (const h of snapshot.hosts) assert.equal(h.queued, 0);
+    for (const h of snapshot.hosts) assert.equal(h.queued, null);
   });
 
   it('never invents a host from the id (namespace) label', () => {
@@ -200,5 +204,157 @@ iris_system_alerts_new 2
     const snapshot = buildSnapshot(parsePrometheusText(metricsText));
     const emr = snapshot.hosts.find(h => h.host === 'EMR Source');
     assert.equal(emr.avgProcessingTime, 0.010);
+  });
+});
+
+/**
+ * The full 313-line capture from Dev A's own IRIS 2024.1 (2026-08-11), running the
+ * post-1801a50 production. Everything here reproduces something the earlier
+ * hand-trimmed fixture could not show, because it had no framework hosts and no
+ * missing metric families.
+ */
+describe('buildSnapshot — against the full live capture', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const captureText = fs.readFileSync(
+    path.join(__dirname, '..', 'fixtures', 'metrics-live-capture.txt'), 'utf8');
+  const snapshot = buildSnapshot(parsePrometheusText(captureText), '2026-08-11T12:00:00.000Z');
+  const appHosts = snapshot.hosts.filter(h => !h.isFramework);
+
+  it('parses every non-comment line in the capture', () => {
+    // 313 lines including Windows paths with escaped backslashes and bare-dot floats
+    // like `.051727`. A single unparsed line would silently drop a metric family.
+    const lineCount = captureText.split(/\r?\n/)
+      .filter(l => l.trim() && !l.trim().startsWith('#')).length;
+    assert.equal(parsePrometheusText(captureText).length, lineCount);
+    assert.equal(lineCount, 313);
+  });
+
+  it('keeps Windows directory paths intact through label parsing', () => {
+    // dir="c:\\intersystems\\..." — the escape handling must not corrupt these, or the
+    // label regex silently stops matching the rest of the line.
+    const raw = parsePrometheusText(captureText);
+    const dbSize = raw.find(m => m.name === 'iris_db_size_mb' && m.labels.id === 'LABDEMO');
+    assert.ok(dbSize, 'iris_db_size_mb for LABDEMO should parse');
+    assert.equal(dbSize.labels.dir, 'c:\\intersystems\\iris4health_2024_1\\mgr\\labdemo\\');
+    assert.equal(dbSize.value, 114);
+  });
+
+  it('flags framework hosts and leaves exactly the four application items', () => {
+    // IRIS reported 13 hosts; 9 are framework. Without the flag the dashboard shows
+    // Ens.Alarm and EnsLib.Background.* as application components.
+    assert.equal(snapshot.hosts.length, 13);
+    assert.deepEqual(appHosts.map(h => h.host).sort(), [
+      'EMRSource', 'LabRouter', 'PIDExtractProcess', 'PatientDemographicsOperation',
+    ]);
+    assert.equal(snapshot._meta.applicationHostCount, 4);
+  });
+
+  it('flags ActivityReporter despite it having no Ens. prefix', () => {
+    // Its CLASS is Ens.Activity.Operation.Local but the metric label carries the ITEM
+    // name, so no prefix rule reaches it. This is the same shape of bug as the phantom
+    // LABDEMO host: the filter looked at the wrong string.
+    const ar = snapshot.hosts.find(h => h.host === 'ActivityReporter');
+    assert.ok(ar, 'ActivityReporter should be present');
+    assert.equal(ar.isFramework, true);
+  });
+
+  it('does not let the one host with avg_* data masquerade as application latency', () => {
+    // Ens.MonitorService is the ONLY host with avg_processing_time in the capture
+    // (.051727). It is framework, so an unfiltered mean would report framework timing
+    // as the production's processing time.
+    const monitor = snapshot.hosts.find(h => h.host === 'Ens.MonitorService');
+    assert.equal(monitor.isFramework, true);
+    assert.ok(Math.abs(monitor.avgProcessingTime - 0.051727) < 1e-9);
+    // No application host had any avg_* series, so none may claim a number.
+    for (const h of appHosts) {
+      assert.equal(h.avgProcessingTime, null, `${h.host} must not invent a processing time`);
+      assert.equal(h.avgQueueingTime, null, `${h.host} must not invent a queueing time`);
+    }
+  });
+
+  it('reports absent metric families instead of publishing them as zero', () => {
+    // This IRIS emits NO iris_interop_messages_errored and NO
+    // iris_interop_last_activity — not zero-valued lines, no lines at all. Reporting
+    // `errored: 0` would make elevated_error_rate structurally unable to fire while
+    // looking like a measurement.
+    assert.deepEqual(snapshot._meta.absentFamilies.sort(), [
+      'iris_interop_last_activity',
+      'iris_interop_messages_errored',
+    ]);
+    for (const h of snapshot.hosts) {
+      assert.equal(h.errored, null, `${h.host}.errored must be null, not 0`);
+      assert.equal(h.lastActivity, null, `${h.host}.lastActivity must be null`);
+      assert.equal(h.lastActivityElapsedSeconds, null);
+    }
+  });
+
+  it('keeps a measured zero distinguishable from an absent metric', () => {
+    // messages_per_sec IS emitted, with value 0. That is a real measurement and must
+    // stay 0 — the null-default must not swallow legitimate zeros.
+    const emr = snapshot.hosts.find(h => h.host === 'EMRSource');
+    assert.equal(emr.messagesPerSec, 0);
+    assert.equal(emr.messages, 0);
+    assert.notEqual(emr.messagesPerSec, null);
+    // And a nonzero count survives.
+    const sched = snapshot.hosts.find(h => h.host === 'Ens.ScheduleHandler');
+    assert.equal(sched.messages, 10);
+  });
+
+  it('never invents a host from the many non-interop id labels', () => {
+    // The capture has ~200 lines carrying id="LABDEMO", id="IRISSYS", id="all",
+    // id="Lock_Table" etc. on db/sql/smh families. None is a host.
+    const names = snapshot.hosts.map(h => h.host);
+    for (const bogus of ['LABDEMO', 'IRISSYS', 'all', 'Lock_Table', 'primary', 'SYS', 'Default']) {
+      assert.ok(!names.includes(bogus), `invented a host from id="${bogus}"`);
+    }
+  });
+
+  it('reads the production name and the alert count from the capture', () => {
+    assert.equal(snapshot._meta.production, 'ProductionGuardian.LabDemo.Production');
+    // iris_system_alerts_new is 1 here — a real pending alert, which is what makes the
+    // /proxy/alerts cross-check in index.js meaningful.
+    assert.equal(snapshot.systemAlertsNew, 1);
+    assert.equal(snapshot._meta.productionQueued, 0);
+  });
+
+  it('leaves type unknown rather than guessing it from the host name', () => {
+    // `hosttype` rides only on avg_*, which the capture has for one host. Inferring
+    // "PIDExtractProcess is a process" from the name would be fabricated data — the
+    // item name is arbitrary and says nothing about the item's class.
+    for (const h of appHosts) {
+      assert.equal(h.type, 'unknown', `${h.host} type must stay unknown`);
+    }
+    assert.equal(snapshot.hosts.find(h => h.host === 'Ens.MonitorService').type, 'service');
+  });
+});
+
+describe('isFrameworkHost', () => {
+  it('matches Ens. and EnsLib. prefixes', () => {
+    for (const h of ['Ens.Actor', 'Ens.Alarm', 'Ens.MonitorService', 'Ens.ScheduleHandler',
+                     'EnsLib.Background.Service', 'EnsLib.Background.Workflow.Operation']) {
+      assert.equal(isFrameworkHost(h), true, `${h} should be framework`);
+    }
+  });
+
+  it('matches ActivityReporter under both spellings', () => {
+    // Pre-#14 item name has no prefix and needs the explicit entry; post-#14 the
+    // rename makes the prefix rule work. Both instances exist right now.
+    assert.equal(isFrameworkHost('ActivityReporter'), true);
+    assert.equal(isFrameworkHost('Ens.ActivityReporter'), true);
+  });
+
+  it('does not match application hosts', () => {
+    for (const h of ['EMRSource', 'LabRouter', 'PIDExtractProcess',
+                     'PatientDemographicsOperation', 'EMR Source', 'Lab Router', 'Cloud API']) {
+      assert.equal(isFrameworkHost(h), false, `${h} should NOT be framework`);
+    }
+  });
+
+  it('does not match a name that merely contains Ens', () => {
+    // Prefix, not substring: a host legitimately called "SensorFeed" or "Ensemble
+    // Bridge" is an application host.
+    assert.equal(isFrameworkHost('SensorFeed'), false);
+    assert.equal(isFrameworkHost('Ensemble Bridge'), false);
   });
 });
