@@ -156,23 +156,24 @@ const SCALAR_FAMILIES = new Set([
  * metrics are real, but they are not application components and must not reach the
  * dashboard as findings.
  *
- * The 2026-08-11 capture is why this lives here rather than only downstream: of the
- * thirteen hosts IRIS reported, TEN were framework — Ens.Actor, Ens.Alarm,
+ * Live captures are why this lives here rather than only downstream: on both the
+ * 2026-08-11 morning capture (13 hosts) and the afternoon one after the production was
+ * renamed (12 hosts), NINE hosts were framework — Ens.Actor, Ens.Alarm,
  * Ens.MonitorService, Ens.ScheduleHandler, Ens.ScheduleService, three
- * EnsLib.Background.* hosts, and ActivityReporter. Only EMRSource, LabRouter,
- * PIDExtractProcess and PatientDemographicsOperation are ours.
+ * EnsLib.Background.* hosts, and the activity reporter. Three quarters of what IRIS
+ * reports is plumbing.
  *
  * Matching is on the `Ens.`/`EnsLib.` prefix of the host label. Two traps:
  *
- *   1. `Ens.MonitorService` is the ONLY host with avg_* series in that capture, so an
+ *   1. `Ens.MonitorService` is the ONLY host with avg_* series in either capture, so an
  *      unfiltered snapshot reports framework timings as though they were application
  *      latency — the one host with data is the one host nobody asked about.
- *   2. `ActivityReporter` has NO prefix. Its class is `Ens.Activity.Operation.Local`,
- *      but the metric label carries the ITEM name, so no prefix rule can catch it.
- *      It is listed explicitly by item name, and iris/labdemo/Production.cls renames
- *      the item to `Ens.ActivityReporter` so the prefix rule covers it after a reload.
- *      Both spellings are handled: the fix and the workaround must coexist while
- *      Dev B's instance still runs the older definition.
+ *   2. The activity reporter's item name has been BOTH `ActivityReporter` (no prefix,
+ *      caught by nothing) and `Ens.Activity.Operation.Local` (caught by the prefix
+ *      rule). The metric label carries the ITEM name, not the class name, so the
+ *      prefix rule alone was never enough. The bare spelling stays listed explicitly:
+ *      it costs one Set entry, and any instance still running the older production
+ *      definition would otherwise show a framework host as an application component.
  *
  * Kept as a proxy-side flag (`isFramework`) rather than a deletion — dropping hosts
  * here would hide them from Dev B with no way to ask why. Dev B filters on the flag.

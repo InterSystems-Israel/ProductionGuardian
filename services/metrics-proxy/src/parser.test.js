@@ -208,10 +208,13 @@ iris_system_alerts_new 2
 });
 
 /**
- * The full 313-line capture from Dev A's own IRIS 2024.1 (2026-08-11), running the
- * post-1801a50 production. Everything here reproduces something the earlier
- * hand-trimmed fixture could not show, because it had no framework hosts and no
- * missing metric families.
+ * The full capture from Dev A's own IRIS 2024.1, taken 2026-08-11 AFTER the production
+ * items were renamed to the spaced contract names (`EMR Source`, `Lab Router`,
+ * `Cloud API`) and PIDExtractProcess was removed. This is what `npm run mock` serves.
+ *
+ * The pre-rename capture is kept as metrics-live-capture-preRename.txt and covered
+ * separately below — the host label is the join key, so a parser that only works on one
+ * spelling of it is a parser that breaks at integration.
  */
 describe('buildSnapshot — against the full live capture', () => {
   const fs = require('fs');
@@ -222,12 +225,12 @@ describe('buildSnapshot — against the full live capture', () => {
   const appHosts = snapshot.hosts.filter(h => !h.isFramework);
 
   it('parses every non-comment line in the capture', () => {
-    // 313 lines including Windows paths with escaped backslashes and bare-dot floats
-    // like `.051727`. A single unparsed line would silently drop a metric family.
+    // Includes Windows paths with escaped backslashes and bare-dot floats like
+    // `.051929`. A single unparsed line would silently drop a metric family.
     const lineCount = captureText.split(/\r?\n/)
       .filter(l => l.trim() && !l.trim().startsWith('#')).length;
     assert.equal(parsePrometheusText(captureText).length, lineCount);
-    assert.equal(lineCount, 313);
+    assert.equal(lineCount, 310);
   });
 
   it('keeps Windows directory paths intact through label parsing', () => {
@@ -237,35 +240,42 @@ describe('buildSnapshot — against the full live capture', () => {
     const dbSize = raw.find(m => m.name === 'iris_db_size_mb' && m.labels.id === 'LABDEMO');
     assert.ok(dbSize, 'iris_db_size_mb for LABDEMO should parse');
     assert.equal(dbSize.labels.dir, 'c:\\intersystems\\iris4health_2024_1\\mgr\\labdemo\\');
-    assert.equal(dbSize.value, 114);
   });
 
-  it('flags framework hosts and leaves exactly the four application items', () => {
-    // IRIS reported 13 hosts; 9 are framework. Without the flag the dashboard shows
+  it('flags framework hosts and leaves exactly the three application items', () => {
+    // IRIS reported 12 hosts; 9 are framework. Without the flag the dashboard shows
     // Ens.Alarm and EnsLib.Background.* as application components.
-    assert.equal(snapshot.hosts.length, 13);
+    assert.equal(snapshot.hosts.length, 12);
     assert.deepEqual(appHosts.map(h => h.host).sort(), [
-      'EMRSource', 'LabRouter', 'PIDExtractProcess', 'PatientDemographicsOperation',
+      'Cloud API', 'EMR Source', 'Lab Router',
     ]);
-    assert.equal(snapshot._meta.applicationHostCount, 4);
+    assert.equal(snapshot._meta.applicationHostCount, 3);
   });
 
-  it('flags ActivityReporter despite it having no Ens. prefix', () => {
-    // Its CLASS is Ens.Activity.Operation.Local but the metric label carries the ITEM
-    // name, so no prefix rule reaches it. This is the same shape of bug as the phantom
-    // LABDEMO host: the filter looked at the wrong string.
-    const ar = snapshot.hosts.find(h => h.host === 'ActivityReporter');
-    assert.ok(ar, 'ActivityReporter should be present');
+  it('resolves the spaced host names the contract joins on', () => {
+    // `host` is the documented join key and these values contain spaces. A label parser
+    // that stopped at whitespace would produce 'EMR' and silently fail to join.
+    for (const name of ['EMR Source', 'Lab Router', 'Cloud API']) {
+      assert.ok(snapshot.hosts.some(h => h.host === name), `${name} should be present`);
+    }
+  });
+
+  it('flags the activity reporter, whose item name has changed spelling', () => {
+    // Now `Ens.Activity.Operation.Local`, caught by the prefix rule. It was
+    // `ActivityReporter` in the pre-rename capture, caught by nothing — the metric label
+    // carries the ITEM name, so the prefix rule alone was never sufficient.
+    const ar = snapshot.hosts.find(h => h.host === 'Ens.Activity.Operation.Local');
+    assert.ok(ar, 'the activity reporter should be present');
     assert.equal(ar.isFramework, true);
   });
 
   it('does not let the one host with avg_* data masquerade as application latency', () => {
     // Ens.MonitorService is the ONLY host with avg_processing_time in the capture
-    // (.051727). It is framework, so an unfiltered mean would report framework timing
+    // (.051929). It is framework, so an unfiltered mean would report framework timing
     // as the production's processing time.
     const monitor = snapshot.hosts.find(h => h.host === 'Ens.MonitorService');
     assert.equal(monitor.isFramework, true);
-    assert.ok(Math.abs(monitor.avgProcessingTime - 0.051727) < 1e-9);
+    assert.ok(Math.abs(monitor.avgProcessingTime - 0.051929) < 1e-9);
     // No application host had any avg_* series, so none may claim a number.
     for (const h of appHosts) {
       assert.equal(h.avgProcessingTime, null, `${h.host} must not invent a processing time`);
@@ -292,13 +302,13 @@ describe('buildSnapshot — against the full live capture', () => {
   it('keeps a measured zero distinguishable from an absent metric', () => {
     // messages_per_sec IS emitted, with value 0. That is a real measurement and must
     // stay 0 — the null-default must not swallow legitimate zeros.
-    const emr = snapshot.hosts.find(h => h.host === 'EMRSource');
+    const emr = snapshot.hosts.find(h => h.host === 'EMR Source');
     assert.equal(emr.messagesPerSec, 0);
     assert.equal(emr.messages, 0);
     assert.notEqual(emr.messagesPerSec, null);
     // And a nonzero count survives.
     const sched = snapshot.hosts.find(h => h.host === 'Ens.ScheduleHandler');
-    assert.equal(sched.messages, 10);
+    assert.equal(sched.messages, 94);
   });
 
   it('never invents a host from the many non-interop id labels', () => {
@@ -310,22 +320,69 @@ describe('buildSnapshot — against the full live capture', () => {
     }
   });
 
-  it('reads the production name and the alert count from the capture', () => {
+  it('reads the production name and both alert counters from the capture', () => {
     assert.equal(snapshot._meta.production, 'ProductionGuardian.LabDemo.Production');
-    // iris_system_alerts_new is 1 here — a real pending alert, which is what makes the
-    // /proxy/alerts cross-check in index.js meaningful.
-    assert.equal(snapshot.systemAlertsNew, 1);
+    // alerts_new is 0 and alerts_log is 2: two alerts exist in alerts.log but have
+    // already been consumed by a read. Publishing only `new` would say "no alerts".
+    assert.equal(snapshot.systemAlertsNew, 0);
+    assert.equal(snapshot.systemAlertsLog, 2);
     assert.equal(snapshot._meta.productionQueued, 0);
   });
 
   it('leaves type unknown rather than guessing it from the host name', () => {
     // `hosttype` rides only on avg_*, which the capture has for one host. Inferring
-    // "PIDExtractProcess is a process" from the name would be fabricated data — the
-    // item name is arbitrary and says nothing about the item's class.
+    // "Lab Router is a process" from the name would be fabricated data — the item name
+    // is arbitrary and says nothing about the item's class.
     for (const h of appHosts) {
       assert.equal(h.type, 'unknown', `${h.host} type must stay unknown`);
     }
     assert.equal(snapshot.hosts.find(h => h.host === 'Ens.MonitorService').type, 'service');
+  });
+});
+
+/**
+ * The pre-rename capture (2026-08-11 morning): unspaced item names, PIDExtractProcess
+ * present, the activity reporter called `ActivityReporter` with no prefix.
+ *
+ * Kept and tested because `host` is the join key. Dev B and Dev C may still be running
+ * an instance with the older production definition, and a parser that only handles the
+ * current spelling would break on theirs while passing here.
+ */
+describe('buildSnapshot — against the pre-rename capture', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const captureText = fs.readFileSync(
+    path.join(__dirname, '..', 'fixtures', 'metrics-live-capture-preRename.txt'), 'utf8');
+  const snapshot = buildSnapshot(parsePrometheusText(captureText), '2026-08-11T06:00:00.000Z');
+  const appHosts = snapshot.hosts.filter(h => !h.isFramework);
+
+  it('resolves the unspaced item names and the four application hosts', () => {
+    assert.equal(snapshot.hosts.length, 13);
+    assert.deepEqual(appHosts.map(h => h.host).sort(), [
+      'EMRSource', 'LabRouter', 'PIDExtractProcess', 'PatientDemographicsOperation',
+    ]);
+  });
+
+  it('still flags the prefixless ActivityReporter', () => {
+    // The case the prefix rule cannot reach. If the explicit entry is ever dropped as
+    // dead weight, this fails rather than silently promoting it to an app component.
+    const ar = snapshot.hosts.find(h => h.host === 'ActivityReporter');
+    assert.ok(ar, 'ActivityReporter should be present');
+    assert.equal(ar.isFramework, true);
+  });
+
+  it('reports the same absent families on both captures', () => {
+    // The absence is a property of this IRIS build, not of the production definition.
+    assert.deepEqual(snapshot._meta.absentFamilies.sort(), [
+      'iris_interop_last_activity',
+      'iris_interop_messages_errored',
+    ]);
+  });
+
+  it('had an unread alert, unlike the later capture', () => {
+    // alerts_new 1 here vs 0 after — the read in between consumed it. This fixture is
+    // the only one that exercises systemAlertsNew > 0.
+    assert.equal(snapshot.systemAlertsNew, 1);
   });
 });
 

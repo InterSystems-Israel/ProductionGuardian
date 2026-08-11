@@ -5,10 +5,27 @@ them. Committed so every developer mocks against the same bytes (ADR 0004).
 
 | File | Provenance |
 |---|---|
-| `metrics-live-capture.txt` | **Real.** Full 313-line `/api/monitor/metrics` body, IRIS for Health 2024.1 on Windows, captured 2026-08-11 running the post-`1801a50` `ProductionGuardian.LabDemo.Production`. |
-| `alerts-live-capture.json` | **Real.** Full `/api/monitor/alerts` body, same instance, captured 2026-08-11. See the warning below — this endpoint cannot be re-captured at will. |
-| `metrics.txt` | Hand-trimmed 3-host excerpt in the real label shape. Kept because it is small enough to reason about; `MOCK_FIXTURE=metrics.txt npm run mock` serves it. |
+| `metrics-live-capture.txt` | **Real, and the mock default.** Full 310-line `/api/monitor/metrics` body, IRIS for Health 2024.1 on Windows, captured 2026-08-11 **after** the production items were renamed to the spaced contract names. 12 hosts, 3 application. |
+| `metrics-live-capture-preRename.txt` | **Real.** The same instance earlier the same day, 313 lines, before the rename: unspaced item names (`EMRSource`, `LabRouter`), `PIDExtractProcess` present, activity reporter called `ActivityReporter`. |
+| `alerts-live-capture.json` | **Real.** Full `/api/monitor/alerts` body, same instance, 2026-08-11. See the warning below — this endpoint cannot be re-captured at will. |
+| `metrics.txt` | Hand-trimmed 3-host excerpt in the real label shape. Small enough to reason about; `MOCK_FIXTURE=metrics.txt npm run mock` serves it. |
 | `alerts.json` | **Hand-written, and its field names are wrong** — see below. |
+
+## Why the pre-rename capture is kept
+
+`host` is the join key between the proxy, the findings API and the dashboard, and its
+value changed spelling: `EMRSource` → `EMR Source`, `LabRouter` → `Lab Router`,
+`ActivityReporter` → `Ens.Activity.Operation.Local`, and `PIDExtractProcess` was removed.
+
+Both captures are covered by `src/parser.test.js`. A parser that only handles the current
+spelling would pass against this instance and break against a colleague still running the
+older production definition. The pre-rename file is also the only fixture where
+`iris_system_alerts_new` is nonzero — the later capture reads `0` because the alerts had
+already been consumed by then.
+
+Only three application hosts exist now. `contracts/samples/hosts-response.json` lists
+four, including `FHIR Transform`, which no longer exists in the production — PR #15
+removes it and is still open.
 
 ## `/api/monitor/alerts` is consume-on-read
 
