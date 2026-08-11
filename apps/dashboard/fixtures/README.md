@@ -5,11 +5,15 @@ the screencast source (`apps/dashboard/CLAUDE.md` §5).
 
 ## Rules these files follow
 
-- **The three LABDEMO components only** — `EMR Source` (service), `Lab Router`
-  (process), `Cloud API` (operation). Demo and live must look continuous, so no
-  invented hosts. `FHIR Transform` was a fourth until `contracts/` PR #15: it was
-  a real pass-through routing item, removed from the production when the pipeline
-  became HL7→PID, so the samples were older than the production rather than wrong.
+- **Only components the production really has** — never an invented host, because
+  demo and live must look continuous. For LABDEMO today that is `EMR Source`
+  (service), `Lab Router` (process), `Cloud API` (operation), per the `<Item>` set
+  in `iris/labdemo/Production.cls`. **The rule is "no invented hosts", not "there
+  are three"**: `FHIR Transform` was a fourth until `contracts/` PR #15 — a real
+  pass-through routing item that left the production when the pipeline became
+  HL7→PID, which made the samples older than the production rather than wrong. A
+  fixture is a frozen snapshot of one production and is expected to need editing
+  when that production changes; nothing in `src/` is (issue #25).
 - **Numbers are anchored to measured LABDEMO values, never invented** (issue #6).
   The healthy steady state is the capture Dev B re-measured over three samples:
   `EMR Source 0.2` msg/sec, `Lab Router 1.2`, `Cloud API 0.4`;
