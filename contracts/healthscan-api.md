@@ -47,8 +47,7 @@ Hosts are returned in stable alphabetical order by `host`.
 
 **Only application hosts appear.** The framework's own items (`Ens.MonitorService`,
 `Ens.Alarm`, `Ens.ScheduleHandler`, `EnsLib.Testing.*`, `Ens.Activity.Operation.Local`, …) are
-filtered out. For LABDEMO that means exactly four: EMR Source, Lab Router, FHIR Transform,
-Cloud API.
+filtered out. For LABDEMO that means exactly three: EMR Source, Lab Router, Cloud API.
 
 ## 2. `GET /api/healthscan/findings`
 
