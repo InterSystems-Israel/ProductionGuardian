@@ -268,6 +268,33 @@ export function configFor<K extends keyof RuleConfigs>(
   return { ...config.rules[rule], ...(override as object) } as RuleConfigs[K];
 }
 
+/** Override keys, excluding the `_comment` documentation entries. */
+export function declaredOverrideHosts(config: ThresholdConfig): string[] {
+  return Object.keys(config.hostOverrides).filter((key) => !key.startsWith('_'));
+}
+
+/**
+ * Override keys that match no host the engine has actually seen.
+ *
+ * `hostOverrides` is keyed by a literal host name, so pointing the engine at a different
+ * production makes every override inert — silently. The tuning simply stops applying and
+ * nothing says so. Raised by Dev C in #25, and it is the same shape as three failures
+ * this project has already fixed: `npm test --if-present` reporting green on nothing,
+ * `-c ajv-formats` quietly ignoring `format`, and the `@devA` CODEOWNERS placeholder
+ * requesting review from nobody. A config that weakens without complaining.
+ *
+ * Returns the inert keys so the caller can log them. Deliberately not an error: an
+ * override for a host that is temporarily absent from a running production is
+ * legitimate, and refusing to start would be worse than saying so.
+ */
+export function inertOverrideHosts(
+  config: ThresholdConfig,
+  observedHosts: Iterable<string>,
+): string[] {
+  const seen = new Set(observedHosts);
+  return declaredOverrideHosts(config).filter((host) => !seen.has(host));
+}
+
 /**
  * Live config holder. Reads once at construction, then re-reads on file change.
  * A bad file is logged and ignored — `current` keeps the last good value.

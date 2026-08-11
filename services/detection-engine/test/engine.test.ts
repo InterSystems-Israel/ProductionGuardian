@@ -438,3 +438,39 @@ describe('findings ordering (contract §2)', () => {
     assert.equal(findings[0]?.severity, 'critical', 'critical sorts first within a timestamp');
   });
 });
+
+describe('inert override warning reaches the log (#25)', () => {
+  const withOverride: ThresholdConfig = {
+    ...DEFAULT_CONFIG,
+    hostOverrides: { 'Cloud API': { slow_processing: { absoluteFloorSeconds: 0.3 } } },
+  };
+
+  it('warns once, not once per poll', () => {
+    const logs: string[] = [];
+    const engine = new DetectionEngine(withOverride, (msg) => logs.push(msg));
+    let at = T0;
+    for (let i = 0; i < 5; i += 1) {
+      engine.applyPoll(response([proxyHost({ name: 'Tick Feed' })]), at);
+      at += POLL_MS;
+    }
+    assert.equal(logs.length, 1, `expected one warning, got ${logs.length}`);
+    assert.match(logs[0] ?? '', /hostOverrides\["Cloud API"\] matches no observed host/);
+    assert.match(logs[0] ?? '', /Observed: Tick Feed/);
+  });
+
+  it('stays silent when the override applies', () => {
+    const logs: string[] = [];
+    const engine = new DetectionEngine(withOverride, (msg) => logs.push(msg));
+    engine.applyPoll(response([proxyHost({ name: 'Cloud API' })]), T0);
+    assert.deepEqual(logs, []);
+  });
+
+  it('warns again after reconfigure, so a corrected file is re-checked', () => {
+    const logs: string[] = [];
+    const engine = new DetectionEngine(withOverride, (msg) => logs.push(msg));
+    engine.applyPoll(response([proxyHost({ name: 'Tick Feed' })]), T0);
+    engine.reconfigure(withOverride);
+    engine.applyPoll(response([proxyHost({ name: 'Tick Feed' })]), T0 + POLL_MS);
+    assert.equal(logs.length, 2);
+  });
+});
