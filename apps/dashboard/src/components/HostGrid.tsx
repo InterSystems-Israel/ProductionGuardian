@@ -49,12 +49,12 @@ function HostSkeleton(): JSX.Element {
 }
 
 export function HostGrid({ hosts, findings, now, loading }: HostGridProps): JSX.Element {
-  // Skeletons, not spinners (§7.3) — four, matching the LABDEMO host count, so
+  // Skeletons, not spinners (§7.3) — three, matching the LABDEMO host count, so
   // the layout does not jump when real data lands.
   if (loading && hosts.length === 0) {
     return (
       <div className="pg-grid">
-        {[0, 1, 2, 3].map((index) => (
+        {[0, 1, 2].map((index) => (
           <HostSkeleton key={index} />
         ))}
       </div>

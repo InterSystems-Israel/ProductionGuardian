@@ -29,12 +29,12 @@ Every scenario is reachable by URL, which is also how you grab screenshots.
 | URL | What you should see |
 |---|---|
 | `/` | Scripted progression — advances one fixture per refresh, then loops |
-| `/?scenario=healthy` | All four hosts OK, zero counts, the designed empty state |
-| `/?scenario=queue-buildup` | Lab Router queue at 486, two warnings |
-| `/?scenario=dead-host` | Cloud API grey `Inactive` dot, two criticals, red left borders |
+| `/?scenario=healthy` | All three hosts OK, zero counts, the designed empty state |
+| `/?scenario=queue-buildup` | Lab Router queue at 486, two criticals |
+| `/?scenario=dead-host` | Cloud API grey `Disabled` dot, three criticals and a warning, red left borders |
 | `/?scenario=error-storm` | Cloud API in `Error`, 218 errored messages |
-| `/?scenario=slow-processing` | FHIR Transform at 1.86 s per message |
-| `/?scenario=throughput-drop` | EMR Source intake collapsed to 1.8 msg/sec |
+| `/?scenario=slow-processing` | Lab Router at 1.86 s per message |
+| `/?scenario=throughput-drop` | EMR Source intake collapsed to 0 msg/sec, the drop reaching all three hosts |
 | `/?scenario=system-alert` | An alert from `/api/monitor/alerts` |
 | `/?scenario=baseline-warming` | `baselineValue: null` — comparisons render `—`, never `NaN` |
 

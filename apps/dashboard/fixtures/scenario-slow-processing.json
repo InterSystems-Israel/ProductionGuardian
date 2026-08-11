@@ -1,7 +1,7 @@
 {
   "id": "slow-processing",
   "label": "Slow processing",
-  "note": "FHIR Transform is taking far longer per message than baseline, and the queue is climbing behind it. Nothing is failing yet — this is the early signal. Against a measured 80ms baseline the same 1.86s is a far starker multiple than it was against the old invented 0.21s.",
+  "note": "Lab Router is taking far longer per message than baseline, and the queue is climbing behind it. Nothing is failing yet — this is the early signal. Against a measured 80ms baseline the same 1.86s is a far starker multiple than it was against the old invented 0.21s. Throughput at 0.5 against a 1.2 baseline is a fraction of 0.42, just above the engine's 0.4 firing gate, so throughput_drop stays silent here on purpose — slow is not yet stopped.",
   "hosts": [
     {
       "host": "EMR Source",
@@ -16,17 +16,6 @@
     },
     {
       "host": "Lab Router",
-      "type": "process",
-      "status": "OK",
-      "queued": 3,
-      "messagesPerSec": 1.2,
-      "errored": 0,
-      "avgProcessingTime": 0.08,
-      "avgQueueingTime": 0.04,
-      "lastActivitySecondsAgo": 1
-    },
-    {
-      "host": "FHIR Transform",
       "type": "process",
       "status": "OK",
       "queued": 96,
@@ -51,7 +40,7 @@
   "findings": [
     {
       "id": "f-1330",
-      "host": "FHIR Transform",
+      "host": "Lab Router",
       "type": "slow_processing",
       "severity": "critical",
       "currentValue": 1.86,
@@ -61,7 +50,7 @@
     },
     {
       "id": "f-1332",
-      "host": "FHIR Transform",
+      "host": "Lab Router",
       "type": "growing_queue_wait",
       "severity": "critical",
       "currentValue": 1.24,
@@ -71,7 +60,7 @@
     },
     {
       "id": "f-1331",
-      "host": "FHIR Transform",
+      "host": "Lab Router",
       "type": "queue_buildup",
       "severity": "critical",
       "currentValue": 96,
