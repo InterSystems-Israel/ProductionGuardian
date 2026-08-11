@@ -141,7 +141,10 @@ async function pollAlerts() {
  */
 function startPoller() {
   console.log(`[poller] starting — metrics every ${METRICS_INTERVAL}ms, alerts every ${ALERTS_INTERVAL}ms`);
-  console.log(`[poller] IRIS: ${USE_HTTPS ? 'https' : 'http'}://${IRIS_HOST}:${IRIS_PORT} (namespace: ${IRIS_NAMESPACE})`);
+  // Include IRIS_BASE_PATH — it is part of the URL actually requested, and omitting it
+  // from the banner made a wrong prefix invisible at the one moment you would look.
+  console.log(`[poller] IRIS: ${USE_HTTPS ? 'https' : 'http'}://${IRIS_HOST}:${IRIS_PORT}`
+    + `${IRIS_BASE_PATH} (namespace: ${IRIS_NAMESPACE})`);
 
   // Run immediately on startup, then on interval.
   pollMetrics();

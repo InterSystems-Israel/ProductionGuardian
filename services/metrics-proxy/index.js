@@ -162,5 +162,11 @@ startPoller();
 
 app.listen(PORT, () => {
   console.log(`[metrics-proxy] listening on port ${PORT}`);
-  console.log(`[metrics-proxy] IRIS target: ${process.env.IRIS_HOST}:${process.env.IRIS_PORT}`);
+  // Print the base path too. IRIS_BASE_PATH is the setting most likely to be wrong and
+  // the hardest to spot, so echoing host:port alone hid the one value worth checking:
+  // omitting it still yields a successful poll, just of the wrong namespace.
+  const base = process.env.IRIS_BASE_PATH || '';
+  console.log(`[metrics-proxy] IRIS target: http://${process.env.IRIS_HOST}:`
+    + `${process.env.IRIS_PORT}${base}/api/monitor/  (compare this to the URL that `
+    + `works in your browser)`);
 });
