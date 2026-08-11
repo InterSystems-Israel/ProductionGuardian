@@ -22,30 +22,30 @@ XData DTL [ XMLNamespace = "http://www.intersystems.com/dtl" ]
            create='new' language='objectscript' >
 
   <!-- PatientID: PID-3 first repetition, component 1 (the MR number CX.1) -->
-  <assign value='source.GetValueAt("PID:3(1).1")' property='target.PatientID' action='set'/>
+  <assign value='source.{PID:3(1).1}' property='target.PatientID' action='set'/>
 
   <!-- Name: PID-5 first repetition, XPN components -->
-  <assign value='source.GetValueAt("PID:5(1).1")' property='target.LastName'   action='set'/>
-  <assign value='source.GetValueAt("PID:5(1).2")' property='target.FirstName'  action='set'/>
-  <assign value='source.GetValueAt("PID:5(1).3")' property='target.MiddleName' action='set'/>
+  <assign value='source.{PID:5(1).1}' property='target.LastName'   action='set'/>
+  <assign value='source.{PID:5(1).2}' property='target.FirstName'  action='set'/>
+  <assign value='source.{PID:5(1).3}' property='target.MiddleName' action='set'/>
 
   <!-- Date of birth: PID-7 (TS, take first 8 chars for YYYYMMDD) -->
-  <assign value='$extract(source.GetValueAt("PID:7"),1,8)' property='target.DateOfBirth' action='set'/>
+  <assign value='$extract(source.{PID:7"),1,8)' property='target.DateOfBirth' action='set'/>
 
   <!-- Sex: PID-8 -->
-  <assign value='source.GetValueAt("PID:8")' property='target.Sex' action='set'/>
+  <assign value='source.{PID:8}' property='target.Sex' action='set'/>
 
   <!-- Address: PID-11 first repetition, XAD components -->
-  <assign value='source.GetValueAt("PID:11(1).1")' property='target.AddressStreet' action='set'/>
-  <assign value='source.GetValueAt("PID:11(1).3")' property='target.AddressCity'   action='set'/>
-  <assign value='source.GetValueAt("PID:11(1).4")' property='target.AddressState'  action='set'/>
-  <assign value='source.GetValueAt("PID:11(1).5")' property='target.AddressZip'    action='set'/>
+  <assign value='source.{PID:11(1).1}' property='target.AddressStreet' action='set'/>
+  <assign value='source.{PID:11(1).3}' property='target.AddressCity'   action='set'/>
+  <assign value='source.{PID:11(1).4}' property='target.AddressState'  action='set'/>
+  <assign value='source.{PID:11(1).5}' property='target.AddressZip'    action='set'/>
 
   <!-- Home phone: PID-13 first repetition, XTN component 1 -->
-  <assign value='source.GetValueAt("PID:13(1).1")' property='target.HomePhone' action='set'/>
+  <assign value='source.{PID:13(1).1}' property='target.HomePhone' action='set'/>
 
   <!-- Traceability: source message control ID from MSH-10 -->
-  <assign value='source.GetValueAt("MSH:10")' property='target.SourceMessageID' action='set'/>
+  <assign value='source.{MSH:10}' property='target.SourceMessageID' action='set'/>
 
   <!-- Timestamp of extraction -->
   <assign value='$zdatetime($ztimestamp,3,1)' property='target.ExtractedAt' action='set'/>
