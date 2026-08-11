@@ -1,7 +1,7 @@
 {
   "id": "error-storm",
   "label": "Error storm",
-  "note": "Cloud API is rejecting messages and FHIR Transform is retrying behind it. host.errored stays the cumulative count IRIS reports, while the finding's currentValue is errors/min — the engine compares a rate, because a cumulative counter only ever rises and would flag forever once it moved.",
+  "note": "Cloud API is rejecting messages and Lab Router is retrying into it. host.errored stays the cumulative count IRIS reports, while the finding's currentValue is errors/min — the engine compares a rate, because a cumulative counter only ever rises and would flag forever once it moved. Lab Router's finding is the only elevated_error_rate in the set with a non-zero baseline, so it is the one that exercises the ratio path rather than the clean-baseline path.",
   "hosts": [
     {
       "host": "EMR Source",
@@ -16,17 +16,6 @@
     },
     {
       "host": "Lab Router",
-      "type": "process",
-      "status": "OK",
-      "queued": 2,
-      "messagesPerSec": 1.2,
-      "errored": 0,
-      "avgProcessingTime": 0.08,
-      "avgQueueingTime": 0.03,
-      "lastActivitySecondsAgo": 2
-    },
-    {
-      "host": "FHIR Transform",
       "type": "process",
       "status": "Retry",
       "queued": 22,
@@ -81,7 +70,7 @@
     },
     {
       "id": "f-1211",
-      "host": "FHIR Transform",
+      "host": "Lab Router",
       "type": "elevated_error_rate",
       "severity": "warning",
       "currentValue": 4.2,

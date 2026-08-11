@@ -305,7 +305,7 @@ Going through the dev proxy means **CORS is never your problem** and Dev B can b
 
 Demo mode is a **first-class deliverable**, not a stub — it is the Day-5 fallback and the screencast source.
 
-- Fixtures use the LABDEMO production's four real components, so demo and live look continuous: **EMR Source** (service), **Lab Router** (process), **FHIR Transform** (process), **Cloud API** (operation).
+- Fixtures use the LABDEMO production's three real components, so demo and live look continuous: **EMR Source** (service), **Lab Router** (process), **Cloud API** (operation). There was a fourth, `FHIR Transform`, until `contracts/` PR #15 dropped it — a real pass-through routing item that left the production when the pipeline became HL7→PID.
 - Fixture files are plain JSON matching the contract exactly — the same guards run over them. If a fixture fails validation, the contract transcription is wrong.
 - Each fixture is a scenario file containing `{ hosts: Host[], findings: Finding[] }`. `scenario-healthy.json` has zero findings — that exercises the empty state, which is easy to forget and looks bad if broken on stage.
 - `mockClient` supports a **scripted progression**: healthy → degrading → findings appear, advancing on each poll so the dashboard visibly comes alive during the demo without anyone touching IRIS. Make it loop, and make it restartable from the UI.
@@ -415,7 +415,7 @@ From §4.5 of the MVP plan, in order:
 
 | # | Task | Est. | Done when |
 |---|---|---|---|
-| 1 | Dashboard against mocked schema — host grid, findings list, severity summary | 1.5 d | Renders all four LABDEMO hosts and all fixture findings; every state designed; `tsc` clean |
+| 1 | Dashboard against mocked schema — host grid, findings list, severity summary | 1.5 d | Renders all three LABDEMO hosts and all fixture findings; every state designed; `tsc` clean |
 | 2 | Live polling + demo/live toggle (`?mode=live`) | 0.75 d | Visible change reflected within 10 s; API failure degrades to last-good + banner, never blanks |
 | 3 | Finding detail view | 0.5 d | Click a finding → current vs. baseline, metric, timestamp; keyboard accessible; drawer survives polls |
 | 4 | Screencast + static fallback | 0.5 d | `dist/index.html` opens from `file://` in demo mode; screencast recorded |
@@ -431,7 +431,7 @@ Sequencing note: tasks 1–3 need only the contract, so they proceed regardless 
 
 - **Ask before widening scope.** If a request implies any module from §1.1, say so instead of building it.
 - **The contract is upstream of you.** Never edit `contracts/`. Never add a field to a type to make a component work — surface it as a contract question.
-- **Never invent data.** No placeholder hosts, no made-up metrics, no fabricated findings outside `fixtures/`. Fixtures use the four LABDEMO components and the eight real finding types.
+- **Never invent data.** No placeholder hosts, no made-up metrics, no fabricated findings outside `fixtures/`. Fixtures use the three LABDEMO components and the eight real finding types.
 - **No new dependencies** without stating why and what it replaces.
 - **No `fetch` outside `src/api/`.** No component talks to the network.
 - **No hard-coded colors, spacing, or radii.** Use the tokens in §7.1. If a token is missing, add it to `tokens.css` rather than inlining a value.

@@ -26,17 +26,6 @@
       "lastActivitySecondsAgo": 1
     },
     {
-      "host": "FHIR Transform",
-      "type": "process",
-      "status": "OK",
-      "queued": 4,
-      "messagesPerSec": 1.2,
-      "errored": 0,
-      "avgProcessingTime": 0.08,
-      "avgQueueingTime": 0.05,
-      "lastActivitySecondsAgo": 3
-    },
-    {
       "host": "Cloud API",
       "type": "operation",
       "status": "OK",

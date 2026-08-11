@@ -1,7 +1,7 @@
 {
   "id": "throughput-drop",
   "label": "Throughput drop",
-  "note": "EMR Source intake has collapsed and the drop propagates downstream. Queues are draining, which looks healthy until you notice nothing is arriving. Every collapsed value here is below the measured healthy rate — the whole point of the rescale, since the old fixture's 'collapsed' 1.8 msg/sec was above LABDEMO's real 1.2.",
+  "note": "EMR Source intake has collapsed and the drop propagates the full length of the pipeline — 0.2 to 0, then 1.2 to 0.4, then 0.4 to 0.1. Queues are draining, which looks healthy until you notice nothing is arriving. Every collapsed value here is below the measured healthy rate — the whole point of the rescale, since the old fixture's 'collapsed' 1.8 msg/sec was above LABDEMO's real 1.2. Only EMR Source reaches critical: the two downstream fractions are 0.33 and 0.25, and the engine's critical band is at or below 0.1.",
   "hosts": [
     {
       "host": "EMR Source",
@@ -24,17 +24,6 @@
       "avgProcessingTime": 0.08,
       "avgQueueingTime": 0,
       "lastActivitySecondsAgo": 29
-    },
-    {
-      "host": "FHIR Transform",
-      "type": "process",
-      "status": "OK",
-      "queued": 0,
-      "messagesPerSec": 0.1,
-      "errored": 0,
-      "avgProcessingTime": 0.08,
-      "avgQueueingTime": 0,
-      "lastActivitySecondsAgo": 31
     },
     {
       "host": "Cloud API",
@@ -60,24 +49,24 @@
       "message": "Throughput 0.0 msg/sec is 100% below baseline"
     },
     {
-      "id": "f-1442",
-      "host": "FHIR Transform",
-      "type": "throughput_drop",
-      "severity": "critical",
-      "currentValue": 0.1,
-      "baselineValue": 1.2,
-      "detectedSecondsAgo": 58,
-      "message": "Throughput 0.1 msg/sec is 92% below baseline"
-    },
-    {
       "id": "f-1441",
       "host": "Lab Router",
       "type": "throughput_drop",
       "severity": "warning",
       "currentValue": 0.4,
       "baselineValue": 1.2,
-      "detectedSecondsAgo": 54,
+      "detectedSecondsAgo": 58,
       "message": "Throughput 0.4 msg/sec is 67% below baseline"
+    },
+    {
+      "id": "f-1442",
+      "host": "Cloud API",
+      "type": "throughput_drop",
+      "severity": "warning",
+      "currentValue": 0.1,
+      "baselineValue": 0.4,
+      "detectedSecondsAgo": 54,
+      "message": "Throughput 0.1 msg/sec is 75% below baseline"
     }
   ]
 }

@@ -18,17 +18,6 @@
       "host": "Lab Router",
       "type": "process",
       "status": "OK",
-      "queued": 0,
-      "messagesPerSec": 1.2,
-      "errored": 0,
-      "avgProcessingTime": 0.08,
-      "avgQueueingTime": 0,
-      "lastActivitySecondsAgo": 1
-    },
-    {
-      "host": "FHIR Transform",
-      "type": "process",
-      "status": "OK",
       "queued": 12,
       "messagesPerSec": 0,
       "errored": 0,
@@ -61,7 +50,7 @@
     },
     {
       "id": "f-1661",
-      "host": "FHIR Transform",
+      "host": "Lab Router",
       "type": "stalled_host",
       "severity": "warning",
       "currentValue": 312,

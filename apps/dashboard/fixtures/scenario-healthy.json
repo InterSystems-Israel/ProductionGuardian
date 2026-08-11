@@ -1,7 +1,7 @@
 {
   "id": "healthy",
   "label": "Healthy",
-  "note": "Everything within baseline. Zero findings — the empty state. These four rows are the measured LABDEMO steady state, so every other scenario is a departure from real numbers rather than from invented ones.",
+  "note": "Everything within baseline. Zero findings — the empty state. These three rows are the measured LABDEMO steady state, so every other scenario is a departure from real numbers rather than from invented ones.",
   "hosts": [
     {
       "host": "EMR Source",
@@ -24,17 +24,6 @@
       "avgProcessingTime": 0.08,
       "avgQueueingTime": 0,
       "lastActivitySecondsAgo": 2
-    },
-    {
-      "host": "FHIR Transform",
-      "type": "process",
-      "status": "OK",
-      "queued": 0,
-      "messagesPerSec": 1.2,
-      "errored": 0,
-      "avgProcessingTime": 0.08,
-      "avgQueueingTime": 0,
-      "lastActivitySecondsAgo": 4
     },
     {
       "host": "Cloud API",

@@ -1,7 +1,7 @@
 {
   "id": "dead-host",
   "label": "Dead host",
-  "note": "Cloud API is Disabled. Nothing drains downstream, so FHIR Transform stalls behind it — the critical scenario and the demo headline. dead_host is absolute, so it stays trustworthy even as the rolling baseline drifts (engine CLAUDE.md §5.1).",
+  "note": "Cloud API is Disabled. Nothing drains downstream, so Lab Router stalls behind it — the critical scenario and the demo headline. EMR Source keeps accepting at its measured 0.2 msg/sec, which is where Lab Router's 212 queued came from. dead_host is absolute, so it stays trustworthy even as the rolling baseline drifts (engine CLAUDE.md §5.1).",
   "hosts": [
     {
       "host": "EMR Source",
@@ -19,17 +19,6 @@
       "type": "process",
       "status": "OK",
       "queued": 212,
-      "messagesPerSec": 1.2,
-      "errored": 0,
-      "avgProcessingTime": 0.08,
-      "avgQueueingTime": 2.1,
-      "lastActivitySecondsAgo": 3
-    },
-    {
-      "host": "FHIR Transform",
-      "type": "process",
-      "status": "OK",
-      "queued": 338,
       "messagesPerSec": 0,
       "errored": 0,
       "avgProcessingTime": 0.08,
@@ -61,7 +50,7 @@
     },
     {
       "id": "f-1104",
-      "host": "FHIR Transform",
+      "host": "Lab Router",
       "type": "throughput_drop",
       "severity": "critical",
       "currentValue": 0,
@@ -71,13 +60,13 @@
     },
     {
       "id": "f-1102",
-      "host": "FHIR Transform",
+      "host": "Lab Router",
       "type": "stalled_host",
       "severity": "warning",
       "currentValue": 402,
       "baselineValue": null,
       "detectedSecondsAgo": 60,
-      "message": "No activity for 402s while 338 message(s) are queued"
+      "message": "No activity for 402s while 212 message(s) are queued"
     },
     {
       "id": "f-1103",
