@@ -49,6 +49,39 @@ npm test            # unit tests
 npm run smoke       # HTTP checks against a RUNNING proxy (mock or real)
 ```
 
+### Hitting the endpoints from PowerShell
+
+In PowerShell (5.1 on the verified Windows box), **`curl` is an alias for
+`Invoke-WebRequest`**, not curl. `curl -s http://…` therefore binds `-s` to
+`-SessionVariable`, leaves no positional argument for `-Uri`, and **prompts
+`cmdlet Invoke-WebRequest at command pipeline position 1 / Supply values for the
+following parameters: Uri:`** — which reads as the proxy hanging when nothing has been
+requested at all. Use either:
+
+```powershell
+curl.exe -s http://localhost:3001/proxy/health      # the real curl, .exe is required
+Invoke-RestMethod http://localhost:3001/proxy/health   # native, parses JSON for you
+```
+
+`Invoke-RestMethod` is the nicer one for this proxy, since the payloads are JSON:
+
+```powershell
+# just the application hosts, as a table
+(Invoke-RestMethod http://localhost:3001/proxy/metrics).hosts |
+  Where-Object { -not $_.isFramework } |
+  Format-Table host,status,messages,messagesPerSec,errored -AutoSize
+
+Invoke-RestMethod http://localhost:3001/proxy/alerts | ConvertTo-Json -Depth 4
+```
+
+Careful reading `Format-Table` output: a `null` renders as an **empty cell** while a real
+measured `0` renders as `0`. On the verified instance `errored` is empty and
+`messagesPerSec` is `0`, and those mean different things — an empty cell is "IRIS sent no
+such metric", not "no errors". `ConvertTo-Json` shows it unambiguously. See the
+absent-is-not-zero note at the end of this file.
+
+Git Bash has the real `curl`, so `curl -s …` works there unchanged.
+
 ### Pointing it at a real IRIS
 
 `cp .env.example .env`, then set the connection to match the URL that works in your
