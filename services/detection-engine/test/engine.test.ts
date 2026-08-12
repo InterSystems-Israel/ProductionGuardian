@@ -9,7 +9,11 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { DEFAULT_CONFIG, type ThresholdConfig } from '../src/config/thresholds.ts';
+import {
+  DEFAULT_CONFIG,
+  DEFAULT_POLL_INTERVAL_MS,
+  type ThresholdConfig,
+} from '../src/config/thresholds.ts';
 import { DetectionEngine, normalizeHostType } from '../src/detect/engine.ts';
 import type { ProxyHost, ProxyResponse } from '../src/types/proxy.ts';
 
@@ -668,29 +672,77 @@ describe('sustained breach is time-gated as well as sample-gated (#44)', () => {
     );
   });
 
-  it('the shipped gate is reachable within sustainedSamples polls at the shipped rate', () => {
-    // The trap this caught: sustainedSeconds=8 at a 5s poll is unreachable in 2 samples,
-    // so it silently confirms on the 3rd and adds 5s to every detection. Measured as a
-    // 12.8s debounce against live IRIS. Asserting the RELATIONSHIP rather than the value,
-    // because either number can change and the constraint is between them.
-    const POLL_MS_SHIPPED = 5_000;
+  it('the shipped gate is reachable within sustainedSamples polls, WITH MARGIN', () => {
+    // Two traps this has caught, both "a timing number without the rate it runs at":
+    //   8 at a 5s poll -> unreachable in 2 samples, confirms on the 3rd (12.8s measured)
+    //   5 at a 5s poll -> reachable only by EXACT equality, so fetch jitter slips it to
+    //                     the 3rd sample on ~half of detections (10.2s vs 5.3s)
+    //
+    // Hence STRICT `<`, not `<=`: "reachable in N polls" has to mean reachable when the
+    // observed gap is a little under nominal, because `applyPoll` is stamped after a
+    // variable-duration fetch. `<=` admitted the zero-margin case and passed on 5.
+    //
+    // Reads DEFAULT_POLL_INTERVAL_MS rather than a local copy — a hardcoded 5_000 here
+    // left this test green while the relationship it asserts became false.
     const { sustainedSamples, sustainedSeconds } = DEFAULT_CONFIG;
-    const spanCoveredBySamples = (sustainedSamples - 1) * POLL_MS_SHIPPED;
+    const spanCoveredBySamples = (sustainedSamples - 1) * DEFAULT_POLL_INTERVAL_MS;
 
     assert.ok(
-      sustainedSeconds * 1000 <= spanCoveredBySamples,
-      `sustainedSeconds=${sustainedSeconds} is not reachable in ${sustainedSamples} polls of ` +
-        `${POLL_MS_SHIPPED}ms � it would force an extra poll and add latency invisibly`,
+      sustainedSeconds * 1000 < spanCoveredBySamples,
+      `sustainedSeconds=${sustainedSeconds} needs to be reachable in ${sustainedSamples} ` +
+        `polls of ${DEFAULT_POLL_INTERVAL_MS}ms with room to spare, but covers ` +
+        `${spanCoveredBySamples}ms exactly or more — it would force an extra poll`,
     );
 
-    // And prove it end to end: two polls at the shipped rate must confirm.
+    // End to end at the nominal rate: two polls must confirm.
     const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
     engine.applyPoll(response([deadHost()]), T0);
-    engine.applyPoll(response([deadHost()]), T0 + POLL_MS_SHIPPED);
+    engine.applyPoll(response([deadHost()]), T0 + DEFAULT_POLL_INTERVAL_MS);
     assert.ok(
       engine.snapshot().findings.some((f) => f.type === 'dead_host'),
       'two polls at the shipped interval must be enough to confirm',
     );
+  });
+
+  /**
+   * The jitter case, which the nominal-rate test above cannot see.
+   *
+   * `src/index.ts` stamps `applyPoll(response, Date.now())` AFTER awaiting the fetch, so
+   * the gap between consecutive stamps is `POLL_INTERVAL + (fetch_n − fetch_{n−1})`, not
+   * the interval. A poll quicker than its predecessor produces a short gap.
+   *
+   * Reproduced from @tanifgit's review on #46 — at `sustainedSeconds: 5` these four cases
+   * gave 5.3 / 10.2 / 10.05 / 10.12 seconds, i.e. an intermittent doubling. At 4 they all
+   * land near 5.
+   */
+  it('confirms on the second poll even when a fetch is quicker than the last (#46)', () => {
+    const POLL = DEFAULT_POLL_INTERVAL_MS;
+
+    /** Detection latency in seconds, simulating stamp = pollStart + fetchDuration. */
+    const detectAfter = (fetchMs: readonly number[]): number => {
+      const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+      for (let i = 0; i < 8; i += 1) {
+        const stamp = T0 + i * POLL + (fetchMs[i] ?? fetchMs[fetchMs.length - 1] ?? 0);
+        engine.applyPoll(response([deadHost()]), stamp);
+        if (engine.snapshot().findings.length > 0) return (stamp - T0) / 1000;
+      }
+      return Number.POSITIVE_INFINITY;
+    };
+
+    const cases: ReadonlyArray<readonly [string, readonly number[]]> = [
+      ['constant latency', [300, 300]],
+      ['2nd poll 100ms quicker', [300, 200]],
+      ['2nd poll 250ms quicker', [300, 50]],
+      ['cold connect, then warm', [800, 120]],
+    ];
+
+    for (const [label, fetchMs] of cases) {
+      const seconds = detectAfter(fetchMs);
+      assert.ok(
+        seconds < POLL * 2 / 1000,
+        `${label}: confirmed after ${seconds}s, which means jitter cost an extra poll`,
+      );
+    }
   });
 
   it('sustainedSeconds: 0 preserves the old sample-only behaviour', () => {

@@ -79,6 +79,19 @@ export interface RuleConfigs {
   system_alert: SystemAlertConfig;
 }
 
+/**
+ * Default engine poll interval, in ms — the one `src/index.ts` uses absent
+ * POLL_INTERVAL_MS.
+ *
+ * Lives here rather than in index.ts because `sustainedSeconds` must be reachable within
+ * `sustainedSamples` polls of it (see DEFAULT_CONFIG below): the three numbers are ONE
+ * constraint, and a test has to be able to read all of them. Importing index.ts to get
+ * this would start a server and a poll loop as a side effect, so the test previously held
+ * a hardcoded copy — which left it passing while the relationship it asserts became false
+ * (#19's "copies of a fact", inside the test written to protect that fact).
+ */
+export const DEFAULT_POLL_INTERVAL_MS = 5_000;
+
 export interface ThresholdConfig {
   /** MVP §6: consecutive breaching samples required before emitting. */
   sustainedSamples: number;
@@ -103,12 +116,24 @@ export interface ThresholdConfig {
 
 export const DEFAULT_CONFIG: ThresholdConfig = {
   sustainedSamples: 2,
-  // Must be REACHABLE within sustainedSamples polls, or it silently costs an extra one.
-  // At the shipping 5s poll a gate of 8 confirms on the 3rd sample rather than the 2nd —
-  // measured as a 12.8s debounce, which put the chain over the bar. 5 is satisfied by the
-  // 2nd sample, so the gate is inert at 5s polling and only starts binding if the interval
-  // is shortened further. That is precisely the coupling it exists to break (#44).
-  sustainedSeconds: 5,
+  // Must be REACHABLE within sustainedSamples polls WITH MARGIN, or it silently costs an
+  // extra one. Two ways that has already gone wrong here:
+  //
+  //   8 at a 5s poll  — unreachable in 2 samples, confirms on the 3rd. Measured 12.8s.
+  //   5 at a 5s poll  — reachable only by EXACT equality (5000 >= 5000). The stamp is
+  //                     taken after a variable-duration fetch (index.ts), so the observed
+  //                     gap is POLL_INTERVAL + (fetch_n − fetch_{n−1}). Any poll quicker
+  //                     than its predecessor makes the gap < 5000 and slips confirmation
+  //                     to the third sample — intermittently 10.2s instead of 5.3s, on
+  //                     roughly half of all detections. 100ms of jitter is enough.
+  //
+  // 4 leaves 1000ms of slack at the shipping rate and still decouples the debounce from
+  // the poll rate at every shorter interval (4s of protection at a 1s poll, where the old
+  // sample-only behaviour gave 1s). That decoupling is the whole point of the gate (#44).
+  //
+  // The general form, learned twice: a timing number needs the rate it runs at AND the
+  // jitter on that rate. `>=` on exact equality is the least robust point on the curve.
+  sustainedSeconds: 4,
   minBaselineSamples: 12,
   baselineWindowSeconds: 1800,
   rules: {
