@@ -1,0 +1,32 @@
+// ObjectScript driver for the `iris-compile` CI job. Piped into `iris session`.
+//
+// Loads and compiles every .cls under iris/ into the community image's USER namespace,
+// which is already Interoperability-enabled.
+//
+// Why a file rather than an inline heredoc in ci.yml: the terminal parser is fussy about
+// multi-line input, `%`-escaping breaks inside YAML `run:` blocks, and a failure here
+// should be reproducible by piping this file at a container by hand.
+//
+// NO MACROS. `$$$ISERR` and friends need an include file, which an interactive session
+// does not have -- using one makes the script die silently at that line, producing no
+// marker at all. That cost me a debugging cycle: the job reported failure with empty
+// output rather than saying the driver itself was broken. `$select` on the raw status is
+// plain code and works.
+//
+// USER is deliberate. Each class declares its own package (ProductionGuardian.*), so
+// LoadDir reads the name from the file rather than inferring it from the path -- which
+// matters because iris/ does NOT mirror the package layout: iris/labdemo/Data/ holds
+// ProductionGuardian.LabDemo.Data. Creating a LABDEMO namespace would be closer to
+// production but adds EnableNamespace, several minutes, and a second failure mode; USER
+// in irishealth-community already has Ens.* and the HL7 2.5 schema, which is all a
+// compile needs.
+//
+// The caller greps for the COMPILE OK / COMPILE FAILED marker rather than trusting an
+// exit status: `iris session` exits 0 even when the script inside it reported an error,
+// which would make this job the very thing it exists to catch -- a check that passes
+// while verifying nothing.
+zn "USER"
+set sc = $system.OBJ.LoadDir("/tmp/pg-iris-src/", "ck", .errorlog, 1)
+write !, $select(sc: "COMPILE OK", 1: "COMPILE FAILED"), !
+write $select(sc: "", 1: $system.Status.GetErrorText(sc)), !
+halt

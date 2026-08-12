@@ -134,6 +134,91 @@ jobs:
         working-directory: apps/dashboard
         run: npm run validate:fixtures:strict
 
+  # Compiles every .cls under iris/ against a real IRIS. Added because THREE defects in
+  # that directory reached `main` and were each found by hand rather than by CI:
+  #   - HL7ToPID.cls had a stray `"` where `}` belongs, so the DTL never compiled and no
+  #     message could reach Cloud API at all (#29)
+  #   - PatientDispatcher passed %response.Output, which does not exist, so four REST
+  #     routes returned 500 (#37)
+  #   - two Storage blocks used the XML end-tag form, which UDL rejects (#17)
+  #
+  # Uses intersystems/irishealth-community, which is public and needs no credentials --
+  # our own instance runs containers.intersystems.com/intersystems/irishealth, which CI
+  # cannot pull. Verified locally that this image's USER namespace already has Ens.*,
+  # Ens.DataTransformDTL and the HL7 2.5 schema, so no EnableNamespace step is needed.
+  #
+  # Verified to CATCH a real defect, not merely to pass: reintroducing HL7ToPID's stray
+  # quote produces `#1011: Invalid name` and the job fails.
+  #
+  # WHAT IT DOES NOT CATCH, measured rather than assumed: runtime-only defects. Restoring
+  # `%ToJSON(%response.Output)` still yields COMPILE OK, because a missing property is
+  # only resolved when the line executes. So this covers 2 of the 3 defects that motivated
+  # it (#29's DTL, #17's Storage blocks) and NOT #37's. Closing that gap means calling the
+  # endpoints, which needs a namespace with the production loaded -- worth doing, and a
+  # bigger job than this one.
+  iris-compile:
+    name: iris — compile ObjectScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip if iris/ is absent
+        id: guard
+        run: |
+          if [ -n "$(find iris -name '*.cls' -print -quit 2>/dev/null)" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"; echo "no .cls under iris/ — skipping"
+          fi
+      - name: Start IRIS for Health (community)
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          # --health-start-period 0 so Docker begins probing immediately; the image
+          # defaults to a 60s grace period, which would make every run wait a full minute.
+          docker run -d --name pg-iris --health-start-period 0s --health-interval 5s             intersystems/irishealth-community:latest-em
+
+          # Wait on the IMAGE'S OWN healthcheck (/irisHealth.sh) rather than a hand-rolled
+          # probe. Two earlier attempts were both wrong in ways only a cold container shows:
+          #   - `iris session -U %SYS` answers BEFORE installation finishes, so the next
+          #     step died with "Sign-on inhibited: Startup or Installation in progress"
+          #   - `iris session -U USER` fed by a heredoc returns <ENDOFFILE> rather than the
+          #     marker, and blocks instead of failing fast, which burns the job timeout
+          # The vendor's healthcheck is the vendor's definition of ready. Measured: healthy
+          # in ~20s locally from cold.
+          for i in $(seq 1 60); do
+            health=$(docker inspect pg-iris --format '{{.State.Health.Status}}' 2>/dev/null || echo missing)
+            if [ "$health" = healthy ]; then echo "IRIS healthy after ~$((i * 5))s"; exit 0; fi
+            if [ "$health" = missing ]; then echo "::error::container gone"; docker logs pg-iris | tail -40; exit 1; fi
+            sleep 5
+          done
+          echo "::error::IRIS did not become healthy within 300s (last status: $health)"
+          docker logs pg-iris | tail -40; exit 1
+      # Flat copy on purpose: iris/ does not mirror the package layout, and LoadDir reads
+      # each class's declared name from the file rather than from its path.
+      - name: Copy classes into the container
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          docker exec pg-iris bash -c 'mkdir -p /tmp/pg-iris-src'
+          find iris -name '*.cls' -exec docker cp {} pg-iris:/tmp/pg-iris-src/ \;
+          docker cp tools/ci-compile-iris.txt pg-iris:/tmp/ci-compile-iris.txt
+          echo "copied $(find iris -name '*.cls' | wc -l) classes"
+      # Greps for the marker rather than trusting the exit status: `iris session` exits 0
+      # even when the script inside reported a compile error, which would make this job
+      # exactly the kind of check that passes while verifying nothing.
+      - name: Compile
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          set -o pipefail
+          docker exec pg-iris bash -c 'iris session IRIS -U USER < /tmp/ci-compile-iris.txt' 2>&1 | tee /tmp/out.txt
+          if grep -q 'COMPILE FAILED' /tmp/out.txt; then
+            echo "::error::ObjectScript failed to compile — see the output above"; exit 1
+          fi
+          if ! grep -q 'COMPILE OK' /tmp/out.txt; then
+            echo "::error::no COMPILE OK marker; the driver did not run to completion"; exit 1
+          fi
+      - name: Tear down
+        if: always() && steps.guard.outputs.present == 'true'
+        run: docker rm -f pg-iris || true
+
   metrics-proxy:
     name: metrics-proxy — typecheck + tests
     runs-on: ubuntu-latest
