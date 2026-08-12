@@ -4,9 +4,11 @@
 # means reviews are NOT requested for that path. Verify a handle resolves before
 # trusting it -- a typo here looks identical to working config.
 
-# ---- Dev A -- IRIS and metrics ingestion ----
-/iris/                        @kskubach
-/services/metrics-proxy/      @kskubach
+# ---- IRIS and metrics ingestion ----
+# Dev A's former area. Dev A moved off the project 2026-08-12 and Dev B took over their
+# outstanding tasks (#36, #38), so these are Dev B's now.
+/iris/                        @Ari-Glikman
+/services/metrics-proxy/      @Ari-Glikman
 
 # ---- Dev B -- detection engine and findings API ----
 /services/detection-engine/   @Ari-Glikman
@@ -16,21 +18,26 @@
 /docs/demo/                   @tanifgit
 
 # ---- Shared, PR-gated ----
-# A contract change needs all three. That sounds heavy and is the point: a silent
-# contract change is the failure mode that breaks the Day-5 integration, and the
-# review takes 30 seconds.
-/contracts/                   @kskubach @Ari-Glikman @tanifgit
+# A contract change needs EVERY remaining developer -- two since 2026-08-12, three before
+# that. The count is not the point; requiring someone other than the author is. A silent
+# contract change is the failure mode that breaks the Day-5 integration, and the review
+# takes 30 seconds.
+#
+# Note this now means a contract PR cannot be self-approved: GitHub refuses to let an
+# author approve their own PR, so with two developers the gate is exactly "the other
+# person looked at it".
+/contracts/                   @Ari-Glikman @tanifgit
 
 # ADRs record decisions nobody should change unilaterally.
-/docs/decisions/              @kskubach @Ari-Glikman @tanifgit
+/docs/decisions/              @Ari-Glikman @tanifgit
 
 # Root config, tooling, CI.
-/tools/                       @kskubach @Ari-Glikman @tanifgit
-/.github/                     @kskubach @Ari-Glikman @tanifgit
+/tools/                       @Ari-Glikman @tanifgit
+/.github/                     @Ari-Glikman @tanifgit
 
 # Source material is read-only after Day 1 -- any change here wants three pairs of eyes.
-/docs/production-guardian-healthscan-mvp1.docx  @kskubach @Ari-Glikman @tanifgit
-/docs/production-guardian-demo.html             @kskubach @Ari-Glikman @tanifgit
+/docs/production-guardian-healthscan-mvp1.docx  @Ari-Glikman @tanifgit
+/docs/production-guardian-demo.html             @Ari-Glikman @tanifgit
 
 # Catch-all for anything not matched above.
-*                             @kskubach @Ari-Glikman @tanifgit
+*                             @Ari-Glikman @tanifgit

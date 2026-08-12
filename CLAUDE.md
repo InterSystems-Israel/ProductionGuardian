@@ -1,15 +1,15 @@
 # CLAUDE.md — Production Guardian (shared rules)
 
-Rules that apply to **all three developers**. Deep, area-specific instructions live in the nearest `CLAUDE.md` to the files being edited:
+Rules that apply to **every developer**. Deep, area-specific instructions live in the nearest `CLAUDE.md` to the files being edited:
 
 | Area | File |
 |---|---|
 | Dashboard / UI (Dev C) | `apps/dashboard/CLAUDE.md` |
 | Detection engine + findings API (Dev B) | `services/detection-engine/CLAUDE.md` |
-| Metrics proxy (Dev A) | `services/metrics-proxy/CLAUDE.md` |
-| IRIS, LABDEMO, triggers (Dev A) | `iris/CLAUDE.md` |
+| Metrics proxy (Dev B, was Dev A) | `services/metrics-proxy/CLAUDE.md` |
+| IRIS, LABDEMO, triggers (Dev B, was Dev A) | `iris/CLAUDE.md` |
 
-**Keep this file stable.** Every edit here is a merge conflict for the other two developers. Area-specific rules belong in an area file, not here.
+**Keep this file stable.** Every edit here is a merge conflict for everyone else. Area-specific rules belong in an area file, not here.
 
 ---
 
@@ -46,7 +46,7 @@ Also out: historical trend charts, multi-production support (single production o
 
 | Path | Owner |
 |---|---|
-| `iris/**`, `services/metrics-proxy/**` | Dev A |
+| `iris/**`, `services/metrics-proxy/**` | Dev B (was Dev A) |
 | `services/detection-engine/**` | Dev B |
 | `apps/dashboard/**`, `docs/demo/**` | Dev C |
 | `contracts/**` | see §4 — **nobody edits without a PR** |
@@ -63,13 +63,13 @@ Full explanation and rationale: `CONTRIBUTING.md`.
 
 - **Never edit a file in `contracts/`** as part of an implementation task.
 - Never add a field to a local type to make code compile — that is a **contract change request** to the owning developer.
-- A contract change is its own PR, with a `contracts/CHANGELOG.md` entry, reviewed by all three developers.
+- A contract change is its own PR, with a `contracts/CHANGELOG.md` entry, reviewed by **every other developer**. Two remain since 2026-08-12 (Dev A moved off; Dev B took their areas), so in practice that is one other person — and GitHub will not let an author approve their own PR, which is the point.
 
 ## 5. Ports and conventions
 
 | Service | Port | Owner |
 |---|---|---|
-| Metrics proxy | `3001` | Dev A |
+| Metrics proxy | `3001` | Dev B (was Dev A) |
 | Findings API (`/api/healthscan/*`) | `3002` | Dev B |
 | Dashboard dev server | `5173` | Dev C |
 
@@ -77,7 +77,7 @@ Branches: `devA/…`, `devB/…`, `devC/…`. Commit subjects scoped to the area
 
 ## 6. Working rules for Claude Code
 
-- **Never invent data.** No placeholder hosts, no fabricated metrics or findings outside a declared fixtures directory. Demo data uses the four LABDEMO components (EMR Source, Lab Router, FHIR Transform, Cloud API) and the eight real finding types.
+- **Never invent data.** No placeholder hosts, no fabricated metrics or findings outside a declared fixtures directory. Demo data uses the LABDEMO application components and the eight real finding types. The authoritative host list is the `<Item>` set in `iris/labdemo/Production.cls` — do not restate it, because a copied host list is what went stale when `FHIR Transform` was removed.
 - **Mock-first is the plan, not a fallback.** Dev B builds against a mock of Dev A's proxy; Dev C builds against a mock of Dev B's findings API. Never block on another developer's service being up.
 - **No new dependencies** without stating why and what it replaces.
 - **Match the surrounding code** — same naming, file shape, and comment density. Comment the non-obvious, not the obvious.

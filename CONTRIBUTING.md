@@ -75,12 +75,21 @@ Three Claude Code sessions can run concurrently against this tree without touchi
 
 ## 2. Ownership map
 
+> **Team change, 2026-08-12.** Dev A moved off the project and Dev B took over their
+> outstanding tasks and their two areas (`iris/**`, `services/metrics-proxy/**`,
+> `contracts/proxy-*`). Two developers remain. Where this file says "all three" it now means
+> **every remaining developer** — the count was never the point; requiring someone other than
+> the author is. GitHub will not let an author approve their own PR, so with two people the
+> gate is exactly "the other person looked at it". Prose elsewhere describing the original
+> three-way split is left as written, because it records how the project was structured.
+
+
 | Path | Owner | Everyone else |
 |---|---|---|
-| `iris/**`, `services/metrics-proxy/**` | Dev A | read-only |
+| `iris/**`, `services/metrics-proxy/**` | Dev B (was Dev A) | read-only |
 | `services/detection-engine/**` | Dev B | read-only |
 | `apps/dashboard/**`, `docs/demo/**` | Dev C | read-only |
-| `contracts/proxy-*` | Dev A | read + PR |
+| `contracts/proxy-*` | Dev B (was Dev A) | read + PR |
 | `contracts/healthscan-*` | Dev B | read + PR |
 | `contracts/samples/**` | producer of each file | read-only |
 | `tools/**`, root config, `.github/**` | shared | PR + one review |
