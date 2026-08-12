@@ -47,7 +47,7 @@ Management Portal → System Administration → Security → Applications → We
 | Dispatch class | `ProductionGuardian.LabDemo.REST.PatientDispatcher` |
 | Allowed authentication | Password (or Unauthenticated for local demo) |
 
-Click **Save**. The API is now live at `http://localhost:52773/labdemo/patients`.
+Click **Save**. The API is now live at `http://localhost:<web-port>/labdemo/patients` — see the port note below.
 
 ### 1b — Register the host-status web application
 
@@ -79,7 +79,7 @@ $ curl -s -u user:pass http://localhost/labdemo/monitor/hoststatus
 ```
 
 The equivalent on an instance whose private web server *is* published would be
-`http://localhost:52773/labdemo/monitor/hoststatus`. Getting this wrong is quiet in exactly the way
+`http://localhost:<web-port>/labdemo/monitor/hoststatus`. Getting this wrong is quiet in exactly the way
 `IRIS_BASE_PATH` is: the proxy logs one failed poll and then reports `queued`/`errored` as `null`,
 which reads as an idle production rather than a bad URL.
 
@@ -142,7 +142,11 @@ Each message flows:
 
 ## REST API reference
 
-Base URL: `http://localhost:52773/labdemo`
+Base URL: `http://<host>:<web-port>/labdemo`
+
+**`<web-port>` is whatever web server fronts your instance — see the note above; it is 80,
+not 52773, on the verified instance.** The examples below use `$PORT` so they are not wrong
+on a copy-paste; set it once (`PORT=80`) and reuse.
 
 | Method | Path | Description |
 |---|---|---|
@@ -153,12 +157,12 @@ Base URL: `http://localhost:52773/labdemo`
 
 Example — query a patient directly:
 ```bash
-curl http://localhost:52773/labdemo/patients/123456
+curl "http://localhost:$PORT/labdemo/patients/123456"
 ```
 
 Example — check total count:
 ```bash
-curl http://localhost:52773/labdemo/patients/count
+curl "http://localhost:$PORT/labdemo/patients/count"
 ```
 
 ---
@@ -184,12 +188,24 @@ write rec.LastName, " ", rec.FirstName, " (", rec.UpdateCount, " updates)"
 Only `EMR Source`, `Lab Router` and `Cloud API` exist, so every trigger targets one of
 those three. Use the config item names exactly.
 
-**Two things to know before you start, or nothing will fire and it will look broken.**
+**Three things to know before you start, or nothing will fire and it will look broken.**
+
+*The class names below are this repo's, and the running instance may not be using them.*
+Every trigger that edits a class assumes the production defined in `Production.cls`
+(`ProductionGuardian.LabDemo.*`). The LABDEMO instance verified on 2026-08-12 was running a
+**different production class tree** (`LABDEMO.Production`, with `LABDEMO.Operation.CloudAPI`
+and friends), and only one class from this repo was compiled there at all. Editing
+`PatientDemographicsOperation` on that instance changes nothing that is running. Check
+which production is live before editing anything — `Ens.Director.GetProductionStatus()` —
+and see #34, which tracks converging the two.
 
 *Warm-up.* Six of the eight rules are comparative — they need a baseline first.
-`minBaselineSamples` is 12 at a 10 s poll, so let the generator run for **~2 minutes of
-healthy traffic** before inducing anything. `dead_host` and `system_alert` are absolute and
-fire immediately.
+`minBaselineSamples` is 12 **samples**, not a duration — the wall-clock warm-up is
+`12 × POLL_INTERVAL_MS`, so it moves whenever the poll rate does. Read the current value
+from `services/detection-engine/src/index.ts` rather than trusting a number written here;
+at the 5 s poll it ships with today that is **~1 minute of healthy traffic**. Let the
+generator run that long before inducing anything. `dead_host` and `system_alert` are
+absolute and fire immediately.
 
 *The numbers have floors.* A breach must clear both the baseline multiplier **and** an
 absolute floor, so a small nudge produces nothing. The current floors are in
@@ -205,20 +221,38 @@ stops working.
 | `growing_queue_wait` | Same `hang 1` — watch `Cloud API` while the generator keeps running | Messages wait behind the hung one. Floor is 0.15 s and 3× the ~0.03 s baseline, so a 1 s hang clears it once traffic overlaps |
 | `elevated_error_rate` | Set `Cloud API`'s `HTTPPort` to a closed port (e.g. 59999) | Every message errors. Floor is 1.0 errors/min and 3× baseline; at one message per 2 s that is ~30/min |
 | `stalled_host` | Disable `Cloud API` so its queue holds messages, then wait | Needs no activity for `inactiveSeconds` (300) **while messages are queued** — so it takes **5 minutes**, and `requiresQueued` means an idle-but-empty host will not do |
-| `queue_buildup` | Disable `Cloud API`, then `do ##class(ProductionGuardian.LabDemo.HL7Generator).Run(80, 0.2)` | Depth must exceed the absolute floor of **50** as well as 5× baseline, so it needs well over 50 queued — 80 messages at 0.2 s does it. Fewer than 50 produces no finding at all. **See the caveat below** |
+| `queue_buildup` | **Does not currently fire — see the caveat below.** The queue builds; no finding appears | Depth must exceed the absolute floor of **50** *and* 5× baseline. Clearing the floor is easy; the 5× is unreachable against a growing queue |
 | `system_alert` | Enable `Alert on Error` on `Cloud API`, then induce the error-rate trigger above | An errored message with alerting on writes an alert that `/api/monitor/alerts` serves. This is the only rule that can produce an `info` finding |
 
 Disabling a host induces `dead_host` too, so the `stalled_host` and `queue_buildup`
 triggers each surface two findings. That is correct behaviour, not a duplicate.
 
-> **`queue_buildup` caveat — the trigger is right, the plumbing may not be.** Per-host
-> queue depth is **not** in the Prometheus text. `/api/monitor/metrics` carries only
-> `iris_interop_queued{id="LABDEMO",production="LABDEMO.Production"}` — one
-> production-wide number, no `host` label (verified on the live instance). Until the proxy
-> reads per-host depth from `Ens.Util.Statistics:EnumerateHostStatus` (issue #12,
-> `PROXY-Q2`), this trigger will build a real queue that the engine cannot see. Build the
-> queue anyway when testing that work; the instruction above is what it should be measured
-> against.
+> **`queue_buildup` caveat — the plumbing is fixed, the rule still cannot fire (#43).**
+>
+> The old caveat here said per-host depth was missing from the Prometheus text and the
+> engine therefore could not see the queue. **That half is solved:** #12 landed, the proxy
+> reads per-host depth from `Ens.Util.Statistics:EnumerateHostStatus`, and the engine now
+> receives real numbers — `dead_host` reports them in its message (*"Cloud API is Disabled
+> with 6 message(s) queued"*).
+>
+> **But the rule still does not fire, for a different reason.** Measured on live LABDEMO:
+> disabling `Cloud API` grew the queue 6 → 122 and `queue_buildup` stayed silent the whole
+> way, well past its floor of 50. The rolling baseline rises *with* the queue, so the ratio
+> never reaches 5×. The ceiling for a linear ramp is **~2.18× and scale-invariant** — no
+> generator rate, floor, or multiplier value changes it (pinned in
+> `services/detection-engine/test/baseline.test.ts`).
+>
+> So there is currently **no way to induce this finding on a live instance**, and the old
+> `Run(80, 0.2)` instruction did not work. Demo mode still shows all eight types. Tracked
+> in #43; the fix changes what the baseline is compared against and belongs with #25's
+> thresholds ADR rather than a tuning change.
+>
+> The lesson worth keeping: the fixture at
+> `services/detection-engine/fixtures/proxy/queue-buildup.json` jumps 0 → 486 in a single
+> poll, so the first breaching sample sees a near-zero mean and a huge ratio. Real IRIS
+> ramps. **The fixture is honest about the value and wrong about the shape**, and this rule
+> is sensitive to shape — which is why the whole test suite was green while the live path
+> was broken.
 
 After the `slow_processing` / `growing_queue_wait` test, **remove the `hang`** and
 recompile — a hang left in place poisons every later baseline.
