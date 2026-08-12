@@ -17,6 +17,23 @@ Shared fixture: `samples/metrics-dump.txt` — the raw IRIS `/api/monitor/metric
 snapshot in this document was derived from. Feed it to `src/parser.js` and you get the values
 quoted here.
 
+> **The sample's HOST ROSTER is not the part it is authoritative for.** `metrics-dump.txt` is a
+> real capture, and every label *shape* and metric *family* in it is canonical — that is what
+> this document is derived from and what your parser must handle. But its four application
+> hosts (`EMR Source`, `Lab Router`, `FHIR Transform`, `Cloud API`) come from
+> **`LABDEMO.Production` — a different production, with its own class tree
+> (`LABDEMO.Process.FHIRTransform`, …) that does not exist in this repo** (#34).
+>
+> It was never a stale deployment of `iris/labdemo/Production.cls`: that class was not
+> compiled in the namespace at all until 2026-08-12. So `_meta.applicationHostCount: 4` below
+> is a true reading of a production we do not ship, and it disagrees with
+> `samples/hosts-response.json`'s 3 for that reason and no other. **Neither is wrong.**
+>
+> `iris/labdemo/Production.cls` is authoritative for the roster, and
+> `services/metrics-proxy/fixtures/metrics-live-capture-3host.txt` is the first capture taken
+> from it. Do not derive a host count, or a claim about what LABDEMO has ever contained, from
+> this sample.
+
 **Published by Dev B on Dev A's behalf.** Dev A has moved to other work; this contract is derived
 from their merged code (`services/metrics-proxy/`) rather than authored alongside it, so it
 documents what the proxy *does* today, not an intent. Where the code and Dev B's engine disagree,

@@ -5,6 +5,26 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-13 — sample-provenance caveat on `metrics-dump.txt` (Dev B)
+
+**Documentation only. No field added, removed or retyped; no schema change; every existing
+payload stays valid.** Recorded here because `contracts/` is edited by PR regardless of how
+small the change is, and because the thing being written down was load-bearing enough to cost
+a full diagnosis cycle.
+
+`samples/metrics-dump.txt` reports four application hosts, `samples/hosts-response.json`
+reports three, and that disagreement sits in the one directory whose purpose is that everybody
+mocks the same bytes. The reason is now stated in `proxy-api.md` §1: the sample was captured
+from **`LABDEMO.Production`, an unrelated production with its own class tree that does not
+exist in this repo** — not from a stale deployment of `iris/labdemo/Production.cls`, which was
+not compiled in the namespace at all until 2026-08-12.
+
+So the sample is authoritative for label *shapes* and metric *families*, and not for the
+roster. Requested by Dev C on #34, who also asked that the note say **different production**
+rather than *stale deployment*, since writing down the wrong reason is how a wrong conclusion
+gets re-derived later.
+
+
 ## 2026-08-12 — `_meta.hostStatus.undescribedHosts` added (Dev B)
 
 Adds one diagnostic field, no change to any host or finding field. Follows the same-day entry
@@ -404,10 +424,18 @@ Units confirmed empirically rather than assumed: Cloud API configured at 0.05s l
 Samples carry real measured values from the LABDEMO production, including a genuinely induced
 degraded state (Cloud API disabled → queue depth 48), not invented numbers.
 
-### Known gap, not a contract change
+### Known gap, not a contract change — CLOSED 2026-08-12
 
 `iris_interop_queued` carries no `host` label — it emits once per production. Per-host queue depth
 is available from `Ens.Util.Statistics:EnumerateHostStatus` (verified: `Cloud API = 48` while
 disabled), so `Host.queued` stays a required number. **This needs Dev A's proxy to read host
 status, not only the Prometheus metrics text.** Raised with Dev A separately; no contract impact
 if that holds.
+
+**Resolved, and one clause of it turned out wrong.** The proxy reads host status as of #12/#36,
+so per-host depth flows end to end. But "`Host.queued` stays a required number" did not hold:
+it is `["integer","null"]` since the 2026-08-12 entry above, because a host whose depth is not
+measurable must be distinguishable from one measuring zero. Still required — a null *value* is
+legal, an absent *key* is not. #31 confirmed the same per-production shape for
+`messages_errored`, re-verified 2026-08-12 against `ProductionGuardian.LabDemo.Production`
+with traffic flowing rather than only against the capture from an unrelated production.
