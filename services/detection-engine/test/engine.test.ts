@@ -919,4 +919,67 @@ describe('no message ever stringifies a null (#51)', () => {
       }
     });
   }
+
+  /**
+   * The case that actually builds a message from an unknown count.
+   *
+   * The four sweeps above null EVERY count, so every rule correctly declines and the
+   * assertion loop inspects zero findings — which is the fix working, but it means only
+   * the two cases that relax a gate can ever fail. @tanifgit spotted that on #51 and
+   * pointed out the gap it leaves: `dead_host` is the one rule that fires DESPITE a null
+   * count, because it is absolute, so it is the only rule whose message string can contain
+   * an unknown depth. Nothing in the suite asserted a dead_host message at all.
+   *
+   * Worth pinning rather than hand-checking: dead_host is one of only two findings that
+   * fire reliably against live IRIS, so its message is the one most likely to be on screen.
+   */
+  /*
+   * NOTE ON WHAT THIS PINS, having tried to break it three ways: it does NOT distinguish
+   * raw from coerced. A coerced 0 fails the `> 0` test, so the note is omitted either way
+   * and this passes even with orZero() restored and the rule reading `host.queued`. I
+   * claimed otherwise before checking; it isn't true.
+   *
+   * What it does pin is the OUTPUT — the exact string on screen for the demo's headline
+   * finding, which nothing asserted before. Combined with the test below, it pins that the
+   * note appears when there is a depth and not when there isn't. That is worth having; it
+   * is just a weaker claim than "guards the raw read".
+   */
+  it('dead_host omits the queue note when the depth is unknown, rather than faking 0', () => {
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    let at = T0;
+    for (let i = 0; i < 3; i += 1) {
+      engine.applyPoll(
+        response([unmeasurable({ host: 'Cloud API', status: 'Disabled' })]),
+        at,
+      );
+      at += POLL_MS;
+    }
+
+    const dead = engine.snapshot().findings.filter((f) => f.type === 'dead_host');
+    assert.equal(dead.length, 1, 'dead_host is absolute and must fire without a depth');
+    const [finding] = dead;
+    assert.ok(finding !== undefined);
+    assert.equal(
+      finding.message,
+      'Cloud API is Disabled',
+      'an unknown depth must be omitted, not rendered as "0 message(s) queued"',
+    );
+  });
+
+  it('dead_host DOES report a measured depth', () => {
+    // The other half: 0 is a reading and a positive depth must appear. Without this, the
+    // test above would pass on a rule that had simply lost the note entirely.
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    let at = T0;
+    for (let i = 0; i < 3; i += 1) {
+      engine.applyPoll(
+        response([proxyHost({ host: 'Cloud API', status: 'Disabled', queued: 6 })]),
+        at,
+      );
+      at += POLL_MS;
+    }
+    const [finding] = engine.snapshot().findings.filter((f) => f.type === 'dead_host');
+    assert.ok(finding !== undefined);
+    assert.equal(finding.message, 'Cloud API is Disabled with 6 message(s) queued');
+  });
 });
