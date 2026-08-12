@@ -172,15 +172,26 @@ jobs:
       - name: Start IRIS for Health (community)
         if: steps.guard.outputs.present == 'true'
         run: |
-          docker run -d --name pg-iris intersystems/irishealth-community:latest-em
-          # Poll rather than sleep: readiness varied between 10s and ~60s in testing.
-          for i in $(seq 1 30); do
-            if docker exec pg-iris iris session IRIS -U %SYS <<< 'write "up",! halt' 2>/dev/null | grep -q up; then
-              echo "IRIS ready after ~$((i * 5))s"; exit 0
-            fi
+          # --health-start-period 0 so Docker begins probing immediately; the image
+          # defaults to a 60s grace period, which would make every run wait a full minute.
+          docker run -d --name pg-iris --health-start-period 0s --health-interval 5s             intersystems/irishealth-community:latest-em
+
+          # Wait on the IMAGE'S OWN healthcheck (/irisHealth.sh) rather than a hand-rolled
+          # probe. Two earlier attempts were both wrong in ways only a cold container shows:
+          #   - `iris session -U %SYS` answers BEFORE installation finishes, so the next
+          #     step died with "Sign-on inhibited: Startup or Installation in progress"
+          #   - `iris session -U USER` fed by a heredoc returns <ENDOFFILE> rather than the
+          #     marker, and blocks instead of failing fast, which burns the job timeout
+          # The vendor's healthcheck is the vendor's definition of ready. Measured: healthy
+          # in ~20s locally from cold.
+          for i in $(seq 1 60); do
+            health=$(docker inspect pg-iris --format '{{.State.Health.Status}}' 2>/dev/null || echo missing)
+            if [ "$health" = healthy ]; then echo "IRIS healthy after ~$((i * 5))s"; exit 0; fi
+            if [ "$health" = missing ]; then echo "::error::container gone"; docker logs pg-iris | tail -40; exit 1; fi
             sleep 5
           done
-          echo "::error::IRIS did not become ready"; docker logs pg-iris | tail -40; exit 1
+          echo "::error::IRIS did not become healthy within 300s (last status: $health)"
+          docker logs pg-iris | tail -40; exit 1
       # Flat copy on purpose: iris/ does not mirror the package layout, and LoadDir reads
       # each class's declared name from the file rather than from its path.
       - name: Copy classes into the container
