@@ -134,19 +134,46 @@ describe('self-inflation (inherent to a rolling mean)', () => {
    * Measured against real LABDEMO — a disabled Cloud API queued 6 -> 122 messages and
    * `queue_buildup` stayed silent the whole way, well past its absoluteFloor of 50.
    *
-   * The ratio ceiling is ~2.18x and it is SCALE-INVARIANT: +8/poll and +30/poll both
-   * top out there, because scaling a ramp scales its mean identically. So no floor or
-   * ramp rate makes this rule fire on a steadily growing queue — the gate is 5x and
-   * the mechanism cannot produce it. That is why #43 proposes changing what the
-   * comparison is against, not tuning the numbers.
+   * The ceiling is RATE-invariant, not scale-invariant, and it has a closed form:
+   *
+   *     ceiling = 2·i* / (i* − 1)
+   *
+   * where i* is the first sample clearing BOTH `minBaselineSamples` and the absolute
+   * floor. At N=12 that is 24/11 = 2.1818…, so the figure comes from the WARM-UP COUNT,
+   * not from the ramp. Verified by probing BaselineStore directly (@tanifgit, #45):
+   *
+   *     step=8/30/500  N=12  -> 2.1818  (rate cannot change it, confirmed to 500/poll)
+   *     step=8         N=24  -> 2.0870  (but minBaselineSamples CAN)
+   *     step=8  N=12  floor=500 -> 2.0323  (a higher floor LOWERS it: i* is later,
+   *                                         where the ratio is smaller)
+   *
+   * Hence the assertion below is `< 5`, not `≈ 2.18`: the closed form is ≤ 4 for any
+   * N ≥ 2, so "never 5x" is robust in a way the specific number is not. Do not rewrite
+   * `2.18` as a constant here — re-derive it from N.
+   *
+   * WHAT THIS DOES NOT SHOW: that no multiplier can work. The ratio asymptotes to 2 from
+   * ABOVE and stays there for the life of the window, so a gate at 2.0 does fire, on
+   * ~185 consecutive samples. The tuning family is ruled out by COST, not arithmetic — a
+   * 2.0 ratio gate on queue depth would fire on ordinary traffic variation. That is a
+   * better argument for #43's "change what the comparison is against" than impossibility,
+   * and it is a question #25's ADR has to answer rather than assume.
    *
    * `fixtures/proxy/queue-buildup.json` jumps 0 -> 486 in one poll, which is why the
    * fixture suite is green and the live run was not: the fixture is honest about the
    * value and wrong about the shape, and this rule is sensitive to shape.
    */
   it('never reaches 5x against a linear ramp, at any rate (#43)', () => {
+    // Copies of windowSeconds / minBaselineSamples / queue_buildup.absoluteFloor from
+    // thresholds.json. Deliberately hardcoded so this pinning test does not move with
+    // config — the `< 5` result holds for any of them. Named rather than inlined so the
+    // ceiling stays re-derivable: change MIN_SAMPLES and the ceiling becomes
+    // 2·N/(N−1), NOT 2.18.
+    const WINDOW_SECONDS = 1800;
+    const MIN_SAMPLES = 12;
+    const ABSOLUTE_FLOOR = 50;
+
     const ceiling = (step: number): number => {
-      const store = new BaselineStore(1800, 12);
+      const store = new BaselineStore(WINDOW_SECONDS, MIN_SAMPLES);
       let at = T0;
       let best = 0;
       for (let i = 0; i < 120; i += 1) {
@@ -154,7 +181,7 @@ describe('self-inflation (inherent to a rolling mean)', () => {
         const mean = store.baseline('Cloud API', 'queued');
         // Only count samples that clear the rule's own absolute floor, since below it
         // the rule is gated off regardless of ratio.
-        if (mean !== null && mean > 0 && depth >= 50) {
+        if (mean !== null && mean > 0 && depth >= ABSOLUTE_FLOOR) {
           best = Math.max(best, depth / mean);
         }
         store.record('Cloud API', 'queued', depth, at);
@@ -170,7 +197,7 @@ describe('self-inflation (inherent to a rolling mean)', () => {
     assert.ok(fast < 5, `a fast ramp must not fire either (peak ratio ${fast.toFixed(2)}x)`);
     assert.ok(
       Math.abs(slow - fast) < 0.01,
-      `the ceiling is scale-invariant, so tuning the rate cannot help ` +
+      `the ceiling is RATE-invariant, so a faster generator cannot help ` +
         `(${slow.toFixed(2)}x vs ${fast.toFixed(2)}x)`,
     );
   });
