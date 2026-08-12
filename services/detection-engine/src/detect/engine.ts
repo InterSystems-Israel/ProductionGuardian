@@ -115,6 +115,15 @@ export class DetectionEngine {
         const verdict = rule.evaluate({
           host,
           errorsPerMinute,
+          // Raw nullable values, so a rule can tell "measured zero" from "unknown".
+          // normalizeHost() collapses these for the wire; rules must not see that.
+          raw: {
+            queued: proxyHost.queued,
+            messagesPerSec: proxyHost.messagesPerSec,
+            errored: proxyHost.errored,
+            avgProcessingTime: proxyHost.avgProcessingTime,
+            avgQueueingTime: proxyHost.avgQueueingTime,
+          },
           baselines: this.#baselines,
           config: this.#config,
           now,

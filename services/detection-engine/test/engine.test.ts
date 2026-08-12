@@ -478,3 +478,81 @@ describe('inert override warning reaches the log (#25)', () => {
     assert.equal(logs.length, 2);
   });
 });
+
+describe('unmeasurable metrics through the full poll path (#33)', () => {
+  // These belong at engine level, not rule level: the defects were in what
+  // normalizeHost() hands the rules, so a rule test that supplies both the normalized and
+  // raw values itself cannot see them. I found that out by injecting the original defect
+  // into the rule and watching the rule tests still pass.
+
+  it('a metric going absent on a healthy production produces NOTHING', () => {
+    const engine = new DetectionEngine(DEFAULT_CONFIG, () => {});
+    let at = T0;
+    for (let i = 0; i < 20; i += 1) {
+      engine.applyPoll(response([proxyHost()]), at);
+      at += POLL_MS;
+    }
+    assert.deepEqual(engine.snapshot().findings, [], 'precondition: healthy is silent');
+
+    // IRIS omits whole metric families rather than emitting zeros, and a rate over a
+    // zero-length window parses as NaN -> null. Either route previously became 0 and reported
+    // a 100% collapse.
+    for (let i = 0; i < 3; i += 1) {
+      engine.applyPoll(response([proxyHost({ messagesPerSec: null })]), at);
+      at += POLL_MS;
+    }
+    assert.deepEqual(
+      engine.snapshot().findings.map((f) => `${f.severity} ${f.type}`),
+      [],
+      'an absent rate must not be reported as a collapse',
+    );
+  });
+
+  it('but a REAL collapse still fires', () => {
+    const engine = new DetectionEngine(DEFAULT_CONFIG, () => {});
+    let at = T0;
+    for (let i = 0; i < 20; i += 1) {
+      engine.applyPoll(response([proxyHost()]), at);
+      at += POLL_MS;
+    }
+    for (let i = 0; i < 3; i += 1) {
+      engine.applyPoll(response([proxyHost({ messagesPerSec: 0 })]), at);
+      at += POLL_MS;
+    }
+    const types = engine.snapshot().findings.map((f) => f.type);
+    assert.ok(types.includes('throughput_drop'), `expected throughput_drop, got ${types.join(', ')}`);
+  });
+
+  it('stalled_host fires on a measurable queue, through normalization', () => {
+    // The live case has queued: null, which normalizes to 0 and silently disabled this
+    // rule. With a real depth it must still fire.
+    const engine = new DetectionEngine(DEFAULT_CONFIG, () => {});
+    let at = T0;
+    for (let i = 0; i < 16; i += 1) {
+      engine.applyPoll(
+        response([proxyHost({ queued: 5, lastActivityElapsedSeconds: 400 })]),
+        at,
+      );
+      at += POLL_MS;
+    }
+    const types = engine.snapshot().findings.map((f) => f.type);
+    assert.ok(types.includes('stalled_host'), `expected stalled_host, got ${types.join(', ')}`);
+  });
+
+  it('stalled_host declines when the depth is unknown, as it does live', () => {
+    const engine = new DetectionEngine(DEFAULT_CONFIG, () => {});
+    let at = T0;
+    for (let i = 0; i < 16; i += 1) {
+      engine.applyPoll(
+        response([proxyHost({ queued: null, lastActivityElapsedSeconds: 400 })]),
+        at,
+      );
+      at += POLL_MS;
+    }
+    const types = engine.snapshot().findings.map((f) => f.type);
+    assert.ok(
+      !types.includes('stalled_host'),
+      'firing on an unknown depth would be the false positive §6 warns about',
+    );
+  });
+});

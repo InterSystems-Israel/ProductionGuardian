@@ -10,7 +10,7 @@ import { describe, it } from 'node:test';
 import { BaselineStore } from '../src/baseline/window.ts';
 import { DEFAULT_CONFIG, type ThresholdConfig } from '../src/config/thresholds.ts';
 import { HOST_RULES } from '../src/detect/rules/index.ts';
-import type { Rule, RuleVerdict } from '../src/detect/rules/types.ts';
+import type { RawHostMetrics, Rule, RuleVerdict } from '../src/detect/rules/types.ts';
 import type { Host } from '../src/types/healthscan.ts';
 
 const NOW = Date.parse('2026-08-06T16:00:00Z');
@@ -53,11 +53,27 @@ function evaluate(
   type: string,
   h: Host,
   baselines: BaselineStore,
-  extra: { errorsPerMinute?: number | null; config?: ThresholdConfig; now?: number } = {},
+  extra: {
+    errorsPerMinute?: number | null;
+    config?: ThresholdConfig;
+    now?: number;
+    /** Override a raw value to test the "not measurable" path rather than "measured zero". */
+    raw?: Partial<RawHostMetrics>;
+  } = {},
 ): RuleVerdict | null {
   return ruleFor(type).evaluate({
     host: h,
     errorsPerMinute: extra.errorsPerMinute ?? null,
+    // Default the raw values to mirror the normalized host, so existing cases are
+    // unaffected; a test opts in to nullability explicitly via `extra.raw`.
+    raw: {
+      queued: h.queued,
+      messagesPerSec: h.messagesPerSec,
+      errored: h.errored,
+      avgProcessingTime: h.avgProcessingTime,
+      avgQueueingTime: h.avgQueueingTime,
+      ...extra.raw,
+    },
     baselines,
     config: extra.config ?? DEFAULT_CONFIG,
     now: extra.now ?? NOW,
@@ -380,6 +396,82 @@ describe('throughput_drop', () => {
     );
     assert.ok(verdict !== null);
     assert.equal(verdict.severity, 'critical');
+  });
+});
+
+describe('unmeasurable metrics are not symptoms (#33)', () => {
+  // normalizeHost() collapses a null count to 0 for the published Host shape, because the
+  // contract declares queued/errored as required integers. Rules must therefore read the
+  // RAW values -- Dev C found two defects caused by reading the normalized ones.
+
+  it('throughput_drop stays silent when the rate is not measurable', () => {
+    // The one rule where LOWER is worse, so the only one where a coerced 0 reads as a
+    // symptom. A null rate became 0 and reported a 100% collapse of a healthy production.
+    const verdict = evaluate(
+      'throughput_drop',
+      host({ messagesPerSec: 0 }),
+      warmBaseline('messagesPerSec', 1.2),
+      { raw: { messagesPerSec: null } },
+    );
+    assert.equal(verdict, null, 'an absent rate is not a collapsed one');
+  });
+
+  it('throughput_drop still fires on a REAL zero', () => {
+    // The guard must suppress absence, not detection.
+    const verdict = evaluate(
+      'throughput_drop',
+      host({ messagesPerSec: 0 }),
+      warmBaseline('messagesPerSec', 1.2),
+      { raw: { messagesPerSec: 0 } },
+    );
+    assert.equal(verdict?.severity, 'critical');
+    assert.match(verdict?.message ?? '', /100% below baseline/);
+  });
+
+  it('stalled_host declines when the queue depth is unknown', () => {
+    // Deliberate: an idle host with an unknown queue is more likely quiet than hung, and
+    // firing on absent data is the false positive MVP §6 names as the top risk. What was
+    // wrong before was that this happened by accident, via a coerced zero.
+    const verdict = evaluate(
+      'stalled_host',
+      host({ queued: 0, lastActivity: new Date(NOW - 400_000).toISOString() }),
+      new BaselineStore(1800, 12),
+      { raw: { queued: null } },
+    );
+    assert.equal(verdict, null);
+  });
+
+  it('stalled_host fires when the depth is measurable and non-zero', () => {
+    const verdict = evaluate(
+      'stalled_host',
+      host({ queued: 5, lastActivity: new Date(NOW - 400_000).toISOString() }),
+      new BaselineStore(1800, 12),
+      { raw: { queued: 5 } },
+    );
+    assert.ok(verdict !== null, 'a real backed-up idle host must still be reported');
+    assert.equal(verdict.severity, 'warning');
+  });
+
+  it('stalled_host still declines on a measured empty queue', () => {
+    const verdict = evaluate(
+      'stalled_host',
+      host({ queued: 0, lastActivity: new Date(NOW - 400_000).toISOString() }),
+      new BaselineStore(1800, 12),
+      { raw: { queued: 0 } },
+    );
+    assert.equal(verdict, null, 'idle with nothing to do is healthy');
+  });
+
+  it('the duration rules are unaffected, since higher is worse for them', () => {
+    // Recorded because it is the cleanest way to see why only throughput_drop broke: a
+    // coerced 0 falls under these floors and correctly produces nothing.
+    for (const type of ['slow_processing', 'growing_queue_wait'] as const) {
+      const metric = type === 'slow_processing' ? 'avgProcessingTime' : 'avgQueueingTime';
+      const verdict = evaluate(type, host({ [metric]: 0 } as never), warmBaseline(metric, 0.08), {
+        raw: { [metric]: null } as never,
+      });
+      assert.equal(verdict, null, `${type} should be silent on an absent value`);
+    }
   });
 });
 
