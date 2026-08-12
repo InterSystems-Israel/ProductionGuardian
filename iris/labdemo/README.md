@@ -110,6 +110,54 @@ do ##class(ProductionGuardian.Setup.EnableMetrics).Run()
 
 See `../setup/README.md` for the full walkthrough.
 
+### 3b — Create the drop directories, and point Cloud API at a reachable web server
+
+Three things that are **not** optional and were each discovered by the production failing
+on first deploy (#34). All three are environment-dependent, which is why they are not
+baked into `Production.cls` beyond a default.
+
+**The two file directories must exist.** `EMR Source` is an `EnsLib.HL7.Service.FileService`
+and goes straight to `Error` without them:
+
+```
+ERROR #5021: Directory '/tmp/labdemo/hl7-archive/' does not exist.
+```
+
+Create both (inside the container, if IRIS is containerised) and make them writable by the
+IRIS owner:
+
+```bash
+mkdir -p /tmp/labdemo/hl7-in /tmp/labdemo/hl7-archive
+chown -R irisowner:irisowner /tmp/labdemo
+```
+
+**`Cloud API` must target the web server that fronts the instance, as reached from inside
+it.** `Production.cls` ships `webgateway-webinar:80`, which is specific to the verified
+setup. The old default of `127.0.0.1:52773` assumed a private web server in the same
+container; where there is none, every message fails and the operation sits in `Retry`:
+
+```
+ERROR #6059: Unable to open TCP/IP socket to server 127.0.0.1:52773
+```
+
+Confirm what actually listens before trusting a port — on the verified instance the IRIS
+container publishes only the superserver on `1972`, and the web gateway is a *separate*
+container.
+
+**And it needs credentials.** Through an external web gateway the REST app answers `403` to
+an unauthenticated request even when `/labdemo` permits unauthenticated access locally.
+Create an Ensemble credential and name it in the `Credentials` adapter setting:
+
+```
+do ##class(Ens.Config.Credentials).SetCredential("LabDemoREST","user","pass",1)
+```
+
+Verified from inside the container: `403` without credentials, `200 {"count":0}` with.
+
+**Register BOTH web applications.** §1 and §1b are both required — `/labdemo/monitor` alone
+is not enough. Without `/labdemo`, `Cloud API` POSTs into a 404 and no `PatientRecord` is
+ever written, while `EMR Source` and `Lab Router` look perfectly healthy.
+
 ### 4 — Start the production
 
 ```
@@ -117,6 +165,11 @@ do ##class(Ens.Director).StartProduction("ProductionGuardian.LabDemo.Production"
 ```
 
 Or via Management Portal: Interoperability → Configure → Production → Start.
+
+**After changing a class, `update` is not always enough.** A running job keeps executing the
+code it started with, so a fix to a business-host class can appear not to apply — the same
+error kept being logged after the source was corrected and reloaded. Stop and start the
+production when a class changes, rather than only updating it.
 
 ---
 
@@ -190,14 +243,19 @@ those three. Use the config item names exactly.
 
 **Three things to know before you start, or nothing will fire and it will look broken.**
 
-*The class names below are this repo's, and the running instance may not be using them.*
-Every trigger that edits a class assumes the production defined in `Production.cls`
-(`ProductionGuardian.LabDemo.*`). The LABDEMO instance verified on 2026-08-12 was running a
-**different production class tree** (`LABDEMO.Production`, with `LABDEMO.Operation.CloudAPI`
-and friends), and only one class from this repo was compiled there at all. Editing
-`PatientDemographicsOperation` on that instance changes nothing that is running. Check
-which production is live before editing anything — `Ens.Director.GetProductionStatus()` —
-and see #34, which tracks converging the two.
+*Check which production is running before editing a class.* Every trigger below assumes
+`ProductionGuardian.LabDemo.Production` from `Production.cls`. That **is** what runs on the
+verified instance as of 2026-08-12 (#34) — but it was not before that date, and the failure
+mode is silent: the instance was running an unrelated `LABDEMO.Production` with its own
+class tree, so editing `PatientDemographicsOperation` changed nothing that was executing and
+the trigger appeared not to work. One command, worth running first:
+
+```
+do ##class(Ens.Director).GetProductionStatus(.p,.state)  write p," state=",state,!
+```
+
+Expect `ProductionGuardian.LabDemo.Production state=1`. Anything else and the triggers here
+do not apply to what is running.
 
 *Warm-up.* Six of the eight rules are comparative — they need a baseline first.
 `minBaselineSamples` is 12 **samples**, not a duration — the wall-clock warm-up is

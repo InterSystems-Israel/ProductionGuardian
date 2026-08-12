@@ -79,8 +79,26 @@ XData ProductionDefinition
         Comment="POSTs patient demographics JSON to the PatientDispatcher REST API"
         LogTraceEvents="false"
         Schedule="">
-    <Setting Target="Adapter" Name="HTTPServer">127.0.0.1</Setting>
-    <Setting Target="Adapter" Name="HTTPPort">52773</Setting>
+    <!-- HTTPServer/HTTPPort must name the WEB SERVER that fronts this instance, reached
+         from INSIDE the IRIS container. 127.0.0.1:52773 assumed a private web server in
+         the same container; on the verified instance nothing listens there at all (only
+         the superserver on 1972), so every message failed with
+
+           ERROR #6059: Unable to open TCP/IP socket to server 127.0.0.1:52773
+
+         and Cloud API sat in Retry having processed zero messages. Same wrong-port
+         assumption as the one corrected in README.md (#48), this time in code (#34).
+
+         Credentials are REQUIRED: through an external web gateway the REST app answers
+         403 to an unauthenticated request even when /labdemo allows unauthenticated
+         access locally. Verified both ways from inside the container — 403 without,
+         200 {"count":0} with.
+
+         Override all three per environment in the Management Portal rather than editing
+         this file; they are the only settings here that depend on the deployment. -->
+    <Setting Target="Adapter" Name="HTTPServer">webgateway-webinar</Setting>
+    <Setting Target="Adapter" Name="HTTPPort">80</Setting>
+    <Setting Target="Adapter" Name="Credentials">LabDemoREST</Setting>
     <Setting Target="Adapter" Name="URL">/labdemo/patients</Setting>
   </Item>
 
