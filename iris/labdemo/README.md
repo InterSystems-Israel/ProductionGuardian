@@ -185,7 +185,7 @@ write rec.LastName, " ", rec.FirstName, " (", rec.UpdateCount, " updates)"
 
 ## Inducing findings (for Health Scan testing)
 
-Only `EMR Source`, `Lab Router` and `Cloud API` exist, so every trigger targets one of
+Only `EMR Source`, `Lab Router` and `Cloud API` exist **in `Production.cls`**, so every trigger targets one of
 those three. Use the config item names exactly.
 
 **Three things to know before you start, or nothing will fire and it will look broken.**
@@ -201,11 +201,10 @@ and see #34, which tracks converging the two.
 
 *Warm-up.* Six of the eight rules are comparative — they need a baseline first.
 `minBaselineSamples` is 12 **samples**, not a duration — the wall-clock warm-up is
-`12 × POLL_INTERVAL_MS`, so it moves whenever the poll rate does. Read the current value
-from `services/detection-engine/src/index.ts` rather than trusting a number written here;
-at the 5 s poll it ships with today that is **~1 minute of healthy traffic**. Let the
-generator run that long before inducing anything. `dead_host` and `system_alert` are
-absolute and fire immediately.
+`12 × POLL_INTERVAL_MS`. Read the interval from `services/detection-engine/src/index.ts`
+and multiply: **~2 minutes at a 10 s poll, ~1 minute at 5 s.** Let the generator run that
+long before inducing anything. `dead_host` and `system_alert` are absolute and fire
+immediately.
 
 *The numbers have floors.* A breach must clear both the baseline multiplier **and** an
 absolute floor, so a small nudge produces nothing. The current floors are in
@@ -238,9 +237,10 @@ triggers each surface two findings. That is correct behaviour, not a duplicate.
 > **But the rule still does not fire, for a different reason.** Measured on live LABDEMO:
 > disabling `Cloud API` grew the queue 6 → 122 and `queue_buildup` stayed silent the whole
 > way, well past its floor of 50. The rolling baseline rises *with* the queue, so the ratio
-> never reaches 5×. The ceiling for a linear ramp is **~2.18× and scale-invariant** — no
-> generator rate, floor, or multiplier value changes it (pinned in
-> `services/detection-engine/test/baseline.test.ts`).
+> never reaches the 5× gate — and **no generator rate changes that**, because scaling a ramp
+> scales its mean identically (pinned in `services/detection-engine/test/baseline.test.ts`).
+> The closed form and the multiplier values that *would* fire are worked out on #45; that
+> argument belongs there and in #25, not in a README.
 >
 > So there is currently **no way to induce this finding on a live instance**, and the old
 > `Run(80, 0.2)` instruction did not work. Demo mode still shows all eight types. Tracked
