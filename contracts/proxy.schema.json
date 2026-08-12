@@ -71,7 +71,7 @@
         },
         "queued": {
           "$ref": "#/definitions/NullableCount",
-          "description": "Per-host queue depth. null on every host today: iris_interop_queued carries no host label, so the value is not in /api/monitor/metrics at all. The per-production total is _meta.productionQueued. 0 is the contract-conformant placeholder — see proxy-api.md §6.1, issue #12."
+          "description": "Per-host queue depth. A MEASURED NUMBER when the host-status endpoint supplied it, null when it did not. Not from /api/monitor/metrics: iris_interop_queued carries no host label, so the value comes from Ens.Util.Statistics:EnumerateHostStatus via a REST endpoint the proxy polls alongside metrics, merged on exact host name. null means that source was unavailable or did not describe this host — never a placeholder. Per-production total remains _meta.productionQueued. See proxy-api.md §6.1, issue #12."
         },
         "messages": {
           "$ref": "#/definitions/NullableCount",
@@ -83,7 +83,7 @@
         },
         "errored": {
           "$ref": "#/definitions/NullableCount",
-          "description": "Cumulative errored messages. null on every host today: iris_interop_messages_errored carries no host label either, and unlike queued no per-production total is published. See proxy-api.md Q8 and §6.3. Named `errored` to match the ratified healthscan contract, not `messagesErrored` — §6.2 is a request for a decision."
+          "description": "Cumulative errored messages for this host. A MEASURED NUMBER when the host-status endpoint supplied it, null when it did not. Not from /api/monitor/metrics: iris_interop_messages_errored carries no host label either, so this is COUNT(*) over Ens.MessageHeader WHERE Status = 8 grouped per host. null when the endpoint reported erroredAvailable false — the count is then unknown, not zero. See proxy-api.md Q8 and §6.3. Named `errored` to match the ratified healthscan contract, not `messagesErrored` — §6.2 is a request for a decision."
         },
         "avgProcessingTime": {
           "$ref": "#/definitions/NullableNumber",
@@ -100,6 +100,10 @@
         "lastActivityElapsedSeconds": {
           "$ref": "#/definitions/NullableNumber",
           "description": "Seconds since last activity as iris_interop_last_activity holds it — ELAPSED SECONDS, not an epoch timestamp. This is the measurement; prefer it over lastActivity for stalled_host."
+        },
+        "statusFromMetrics": {
+          "type": "string",
+          "description": "OPTIONAL, and present only when the two status sources DISAGREE. `status` then carries EnumerateHostStatus's value, which is authoritative because it reports Disabled — a state iris_interop_hosts does not express — and this field carries what the metrics text said. Measured on the live instance: metrics reported status=OK for a host that was Disabled with 70 messages queued. Absent on every host where the two agree, which is the normal case. Diagnostic: read `status`, and treat this as evidence about the sources rather than about the host."
         }
       }
     },
@@ -146,7 +150,63 @@
           "description": "Tracked metric families IRIS did not emit. A family listed here is 'unmeasurable on this instance', NOT zero."
         },
         "hostCount": { "type": "integer", "minimum": 0 },
-        "applicationHostCount": { "type": "integer", "minimum": 0 }
+        "applicationHostCount": { "type": "integer", "minimum": 0 },
+        "hostStatus": {
+          "$ref": "#/definitions/HostStatusMeta",
+          "description": "How the per-host queued/errored merge went this poll. Absent on a warming response, before any poll has completed."
+        }
+      }
+    },
+
+    "HostStatusMeta": {
+      "type": "object",
+      "description": "Diagnostics for the third data source — the per-host queue/error endpoint (issues #12, #31). This is how a consumer tells 'every queued is null because the endpoint is down' from 'every queued is genuinely 0'. Both look identical in the host array alone.",
+      "properties": {
+        "shape": {
+          "type": ["string", "null"],
+          "description": "How the payload was read: 'hosts' on success; 'unparseable' (e.g. a 404 HTML page), 'unrecognized-object', 'unrecognized-array' otherwise. null when the source was not polled at all. Anything but 'hosts' means every queued/errored is null for a configuration reason, not a measurement.",
+          "enum": ["hosts", "unparseable", "unrecognized-object", "unrecognized-array", "unrecognized-string", "unrecognized-number", "unrecognized-boolean", null]
+        },
+        "merged": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many hosts got queued/errored from this source. **0 while shape is 'hosts' is the interesting failure**: the endpoint answered correctly and NO host name matched, which means the join key diverged. Compare against hostCount."
+        },
+        "available": {
+          "type": "boolean",
+          "description": "Present and false only when the source was not polled or the request failed outright. Absent when it was polled, whatever the outcome."
+        },
+        "hostCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Hosts the endpoint described, before matching against the metrics host list."
+        },
+        "skippedEntries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Entries dropped for having no usable host name. Non-zero means the endpoint is emitting something unexpected."
+        },
+        "unmatchedHosts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Hosts this source named that the metrics text did not. Reported, never added: a host invented from the second source would have no metrics at all and dead_host would fire on the gap. Non-empty means the two sources disagree about what exists — usually a rename."
+        },
+        "sampledAt": {
+          "oneOf": [{ "$ref": "#/definitions/Timestamp" }, { "type": "null" }],
+          "description": "When IRIS sampled the host state, as the endpoint reported it. Distinct from polledAt, which is when the proxy asked."
+        },
+        "polledAt": {
+          "oneOf": [{ "$ref": "#/definitions/Timestamp" }, { "type": "null" }]
+        },
+        "production": { "type": ["string", "null"] },
+        "productionState": {
+          "type": ["string", "null"],
+          "description": "Running | Stopped | Suspended | Troubled | Unknown. The underlying query returns ZERO ROWS for a stopped production, which is otherwise indistinguishable from a production with no hosts — this field is what separates them."
+        },
+        "erroredAvailable": {
+          "type": "boolean",
+          "description": "False when IRIS could not produce per-host error counts. `errored` then stays null rather than being published as a 0 nobody measured."
+        }
       }
     },
 

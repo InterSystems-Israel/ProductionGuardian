@@ -1,11 +1,16 @@
 # Metrics proxy API contract
 
-**Owner:** Dev A · **Consumer:** Dev B · **Port:** `3001` · **Status:** published
+**Owner:** Dev A (moved on; maintained by Dev B) · **Consumer:** Dev B · **Port:** `3001` ·
+**Status:** published
 
 Three read-only endpoints. The proxy polls the IRIS built-in `/api/monitor/` API, parses the
 Prometheus text format, and republishes it as per-host JSON. **It forwards and reshapes; it does
 not detect, threshold, or judge.** Baseline comparison and findings are the detection engine's job
 (`healthscan-api.md`).
+
+It also polls **one endpoint outside `/api/monitor/`** — a small read-only REST wrapper in the
+LABDEMO namespace supplying per-host queue depth and error counts, which the Prometheus text does
+not carry at all. See §1.3; that is the only non-built-in dependency.
 
 Machine-readable: `proxy.schema.json`.
 Shared fixture: `samples/metrics-dump.txt` — the raw IRIS `/api/monitor/metrics` body every
@@ -32,30 +37,48 @@ scalars and diagnostics.
       "type": "process",
       "status": "OK",
       "isFramework": false,
-      "queued": null,
-      "messages": 126,
+      "queued": 0,
+      "messages": 54360,
       "messagesPerSec": 1.2,
-      "errored": null,
+      "errored": 0,
       "avgProcessingTime": 0.08,
       "avgQueueingTime": 0,
-      "lastActivity": "2026-08-11T23:59:55.162Z",
-      "lastActivityElapsedSeconds": 4.838
+      "lastActivity": "2026-08-12T11:07:12.944Z",
+      "lastActivityElapsedSeconds": 1.149
     }
   ],
-  "systemAlertsNew": 1,
+  "systemAlertsNew": 0,
   "systemAlertsLog": 1,
   "_meta": {
-    "polledAt": "2026-08-12T00:00:00Z",
+    "polledAt": "2026-08-12T11:07:14.093Z",
     "production": "LABDEMO.Production",
     "productionQueued": 0,
     "absentFamilies": [],
     "hostCount": 15,
-    "applicationHostCount": 4
+    "applicationHostCount": 4,
+    "hostStatus": {
+      "polledAt": "2026-08-12T11:07:14.094Z",
+      "shape": "hosts",
+      "hostCount": 13,
+      "skippedEntries": 0,
+      "sampledAt": "2026-08-12T11:07:14.108Z",
+      "production": "LABDEMO.Production",
+      "productionState": "Running",
+      "erroredAvailable": true,
+      "merged": 13,
+      "unmatchedHosts": []
+    }
   }
 }
 ```
 
-Those are measured values from `samples/metrics-dump.txt`, not illustrative ones.
+Those are measured values, not illustrative ones — captured from `GET /proxy/metrics` running
+against live LABDEMO on 2026-08-12. The label shapes behind them are pinned by
+`samples/metrics-dump.txt`; `queued`, `errored` and `_meta.hostStatus` come from the host-status
+endpoint described in §1.3, which that capture predates.
+
+**`queued: 0` and `errored: 0` here are measurements, not placeholders** — this is a healthy
+production that drains immediately. Before §1.3's endpoint existed they were `null`.
 
 ### 1.1 Host fields
 
@@ -65,14 +88,15 @@ Those are measured values from `samples/metrics-dump.txt`, not illustrative ones
 | `type` | string | `service` \| `process` \| `operation` \| `unknown`. Normalized — see Q6. |
 | `status` | string | The IRIS `status` label, passed through. `Unknown` when IRIS sent no `iris_interop_hosts` line. Enum in Q7. |
 | `isFramework` | boolean | `true` for IRIS's own plumbing. Flag, not a filter — see Q5. |
-| `queued` | number \| **null** | Per-host queue depth. **`null` on every host today** — see Q2 and §6.1. |
+| `queued` | number \| null | Per-host queue depth. **A measured number when the host-status endpoint answered**, `null` when it did not — see Q2 and §6.1. |
 | `messages` | number \| null | Cumulative messages since production start. |
 | `messagesPerSec` | number \| null | Throughput over the IRIS sampling window. |
-| `errored` | number \| **null** | Cumulative errored count. **`null` on every host today** — see Q8. |
+| `errored` | number \| null | Cumulative errored count. **A measured number when the host-status endpoint answered**, `null` when it did not — see Q8. |
 | `avgProcessingTime` | number \| null | **Seconds.** Aggregated across message types — see Q3. |
 | `avgQueueingTime` | number \| null | **Seconds.** Aggregated across message types — see Q3. |
 | `lastActivity` | string \| null | ISO 8601 UTC, `Z`-suffixed. Derived — see Q4. |
 | `lastActivityElapsedSeconds` | number \| null | Seconds since last activity, as IRIS gives it — see Q4. |
+| `statusFromMetrics` | string | **Optional, present only when the two status sources disagree** — see §1.3. |
 
 Hosts are in stable alphabetical order by `host` (`localeCompare`), matching the findings API so
 the dashboard never reorders rows between polls.
@@ -101,9 +125,75 @@ substitute a value.** A rule fed a fabricated zero reports on data that does not
 | `_meta.absentFamilies` | string[] | Tracked metric families IRIS did not emit. Diagnostics, not data. |
 | `_meta.hostCount` | number | `hosts.length`, framework included. |
 | `_meta.applicationHostCount` | number | Hosts with `isFramework: false`. |
+| `_meta.hostStatus` | object | How the per-host `queued`/`errored` merge went this poll — see §1.3. Absent while warming. |
 
 **`_meta` is diagnostics, not payload.** `absentFamilies` exists so a consumer can distinguish
 "unmeasurable on this instance" from "measured zero"; it is not something to build a finding on.
+
+### 1.3 Where `queued` and `errored` come from — a third source
+
+**Neither value is in `/api/monitor/metrics`.** `iris_interop_queued` and
+`iris_interop_messages_errored` are each emitted **once per production**, labelled `id` and
+`production` only, with no `host` label — asserted against the capture by two of the checks in
+`validate.mjs`. So for as long as the proxy read only the Prometheus text, `queued` and `errored`
+were `null` on every host and `queue_buildup` (#12) and `elevated_error_rate` (#31) could not fire.
+
+They now come from a small **read-only** REST endpoint in the LABDEMO namespace,
+`GET /labdemo/monitor/hoststatus` (`iris/labdemo/REST/HostStatusDispatcher.cls`), which wraps
+`Ens.Util.Statistics:EnumerateHostStatus` and adds per-host error counts from `Ens.MessageHeader`.
+The proxy polls it **on the metrics interval, concurrently**, and merges by host name before
+caching the snapshot.
+
+**The join key is exact and deliberately unnormalized.** `EnumerateHostStatus`'s `Name` column and
+the metrics `host` label are the same string, spaces intact (`Cloud API`, `Lab Router`) — verified
+against both sources on the same instance. The proxy does no trimming, case folding or space
+stripping: a name that stops matching is a real change (a rename), and silently mapping `CloudAPI`
+onto `Cloud API` would attribute one host's queue depth to another. Divergence is **reported** as
+`unmatchedHosts` rather than guessed at.
+
+`_meta.hostStatus`:
+
+| Field | Notes |
+|---|---|
+| `shape` | `hosts` on success; `unparseable`, `unrecognized-object`, `unrecognized-array` otherwise; `null` when not polled. Anything but `hosts` means every `queued`/`errored` is `null` for a **configuration** reason. |
+| `merged` | How many hosts received values. |
+| `hostCount` | How many hosts the endpoint described, before matching. |
+| `unmatchedHosts` | Hosts the endpoint named that the metrics text did not. Empty is normal. |
+| `skippedEntries` | Entries with no usable host name. |
+| `sampledAt` | When IRIS sampled host state, per the endpoint. Distinct from `polledAt`. |
+| `production`, `productionState` | `productionState` is `Running` \| `Stopped` \| `Suspended` \| `Troubled` \| `Unknown`. |
+| `erroredAvailable` | `false` when IRIS could not count errors — `errored` then stays `null`. |
+| `available` | Present and `false` only when the source was not polled or the request failed. |
+
+**`merged: 0` while `shape` is `"hosts"` is the failure worth watching.** The endpoint answered
+correctly and *no host name matched*, so every `queued` is `null` and nothing looks broken. That is
+the one case where a `null` means "the join key diverged" rather than "not measured", and it is why
+these diagnostics exist rather than just the values.
+
+**`productionState` is what separates a stopped production from an empty one.** `EnumerateHostStatus`
+returns **zero rows** when the production is stopped, which in the payload alone is
+indistinguishable from a production that has no hosts.
+
+Two measured facts behind the numbers, both easy to get backwards:
+
+- **The underlying query returns the EMPTY STRING for an idle host, not `0`.** Its shipped source
+  does `If tQueueCount=0 Set tQueueCount=""`. So empty means "the counter was read and it was 0" —
+  a real measured zero — and the endpoint publishes `0`. A truthiness test on that column would
+  invert the meaning and report an idle host as unmeasured.
+- **`errored` is `COUNT(*)` over `Ens.MessageHeader` where `Status = 8`.** `8` is `Error`, read from
+  the compiled property's VALUELIST/DISPLAYLIST rather than assumed. The SQL is keyed on
+  `%EXACT(TargetConfigName)` because a plain `GROUP BY TargetConfigName` returns the name
+  **uppercased** (`CLOUD API`) — a `%SQLUPPER` collation artifact of the grouping key — which
+  cannot be joined against the `host` label.
+
+**Degradation is explicit.** A failed or disabled third poll leaves `queued`/`errored` as `null` and
+publishes the metrics snapshot unchanged — exactly the previous behaviour, never a dropped snapshot
+and never a substituted `0`. Setting `IRIS_HOSTSTATUS_PATH=` empty disables it, which is the honest
+configuration for an instance where the endpoint is not deployed.
+
+**This endpoint is Health Scan's only non-`/api/monitor/` dependency**, and it is read-only: it
+reads host state and counts rows. It performs no remediation and changes no production setting —
+`iris/CLAUDE.md` and the MVP scope boundary both put that in Smart Resolve.
 
 ## 2. `GET /proxy/alerts`
 
@@ -238,7 +328,7 @@ this contract from the merged code.
 | # | Question | Answer |
 |---|---|---|
 | **Q1** | Array or object keyed by host? `status` passed through or normalized? | **Array**, under a `hosts` key, alphabetical by host. Your assumption holds. `status` is **passed through** unchanged — also as assumed. **But the field is `host`, not `name`** (Q9), and the array is nested in an object alongside `_meta`, not returned bare. |
-| **Q2** | Is `queued` present per host? | **The field is present; the value is not.** `iris_interop_queued` carries no `host` label — labels are exactly `id` and `production`, verified in all three captures. The proxy publishes **`queued: null`** on every host and the real per-production total as `_meta.productionQueued` (`0` in the sample). Per-host depth needs `Ens.Util.Statistics:EnumerateHostStatus`, which the poller does not read. **`queue_buildup` cannot fire per host today** — issue #12, ADR 0001. See §6.1: `null` vs `0` is an open discrepancy. |
+| **Q2** | Is `queued` present per host? | **Yes, as a measured number** — as of #12's fix. `iris_interop_queued` carries no `host` label (labels are exactly `id` and `production`, verified in all three captures), so the value does **not** come from the metrics text: the proxy polls `Ens.Util.Statistics:EnumerateHostStatus` through a REST endpoint and merges by exact host name — see §1.3. `null` now means "that source was unavailable or did not describe this host", never a placeholder. `_meta.productionQueued` remains the per-production total. **`queue_buildup` can now fire per host**; note that is not the same as *having fired* — see §6.1. |
 | **Q3** | Are `avg*` already aggregated, or raw per-`messagetype` series? | **Already aggregated by the proxy, weighted by `iris_interop_sample_count`.** Your assumption holds and aggregation does *not* move to the engine. IRIS emits one series per `(host, messagetype)`; `sample_count` is its own family keyed the same way, not a label, so the proxy indexes it in a pre-pass. A host with no sample-count line falls back to an unweighted mean rather than dropping out. **`sampleCount` is not published per host** (Q10) — you no longer need it, since you are not doing the weighting. |
 | **Q4** | Elapsed seconds, or a pre-computed timestamp? | **Both.** `lastActivityElapsedSeconds` is IRIS's own value (elapsed seconds, e.g. `4.838` — *not* an epoch timestamp), and `lastActivity` is `polledAt − elapsed` as ISO 8601 UTC. Prefer `lastActivityElapsedSeconds` for `stalled_host`: it is the measurement, and the timestamp inherits poll-timing error (±10 s). Both are `null` when IRIS emitted no line, rather than reading as "active just now". |
 | **Q5** | Are framework hosts filtered by the proxy? | **They reach you, flagged.** Your assumption holds and your own filter stays necessary. Every host carries `isFramework` (`Ens.`/`EnsLib.` prefix, plus the bare `ActivityReporter` spelling). **Filtering is not optional:** in `samples/metrics-dump.txt`, 11 of 15 hosts are framework, and `Ens.MonitorService` is one of the few with `avg_*` series — an unfiltered snapshot reports framework timings as application latency. Filter on `isFramework` rather than re-deriving the prefix rule; the metric label carries the *item* name, which has been both `ActivityReporter` and `Ens.Activity.Operation.Local`, so a prefix rule alone was never enough. |
@@ -249,19 +339,24 @@ this contract from the merged code.
 |---|---|---|
 | **Q6** | `type` vocabulary | IRIS says **`actor`** where the MVP doc says `process`; the proxy normalizes `actor → process`, so the IRIS word never reaches you. `hosttype` rides on the `avg_*` families only — `iris_interop_hosts` carries no type label at all. A host with no `avg_*` series therefore reports **`type: "unknown"`**: 8 of 15 hosts in the sample, all framework. Treat `unknown` as a real value, not a bug. |
 | **Q7** | Exact `status` enum | `OK`, `Error`, `Inactive`, `Retry`, `Stopped`, `Unconfigured`, `Disabled`, plus **`Unknown`** when IRIS sent no `iris_interop_hosts` line for a host. **There is no `Active` and no `Warning`.** Same enum as `healthscan-api.md` Q1 with `Unknown` added, so your `dead_host` mapping needs no change. |
-| **Q8** | Is `errored` per host? | **No — and this was not previously known.** `iris_interop_messages_errored` carries **no `host` label** in `samples/metrics-dump.txt`: `iris_interop_messages_errored{id="LABDEMO",production="LABDEMO.Production"} 0`. It is per-production, exactly like `queued`. The proxy's `METRIC_MAP` treats it as per-host, so with no `host` label the line is skipped and **`errored` is `null` on every host** — and unlike `queued`, the per-production total is *not* published anywhere. `elevated_error_rate` cannot fire today, for the same structural reason as `queue_buildup`. See §6.3. |
+| **Q8** | Is `errored` per host? | **Not from the metrics text — but it is published per host now.** `iris_interop_messages_errored` carries **no `host` label** in `samples/metrics-dump.txt`: `iris_interop_messages_errored{id="LABDEMO",production="LABDEMO.Production"} 0`. It is per-production, exactly like `queued`, so that line is skipped. The value instead comes from the same host-status endpoint as `queued` (§1.3), as `COUNT(*)` over `Ens.MessageHeader` where `Status = 8` — `8` being `Error`, read from the compiled property rather than assumed. `null` when `_meta.hostStatus.erroredAvailable` is `false`. **`elevated_error_rate` can now fire per host.** See §6.3. |
 
 ### 5.2 What changes for Dev B
 
-**Every one of the 15 hosts in `samples/metrics-dump.txt` is currently rejected by
-`isProxyHost()`.** Measured, not predicted — the probe output is in the PR body. Three field-level
-mismatches, each independently sufficient to reject a host:
+**As first published, every one of the 15 hosts in `samples/metrics-dump.txt` was rejected by
+`isProxyHost()`.** Measured, not predicted — the probe output is in that PR's body. Three
+field-level mismatches, each independently sufficient to reject a host:
 
-| # | Engine expects | Proxy publishes | Effect |
-|---|---|---|---|
-| **Q9** | `name: string` | `host: string` | `name` is `undefined` → every host rejected |
-| **Q8** | `messagesErrored: number` | `errored: number \| null` | `messagesErrored` is `undefined` → every host rejected |
-| **Q2** | `queued: number` (finite) | `queued: null` | fails `isFiniteNumber` → every host rejected |
+| # | Engine expected | Proxy publishes | Effect | Status |
+|---|---|---|---|---|
+| **Q9** | `name: string` | `host: string` | `name` is `undefined` → every host rejected | **fixed** in PR #33 |
+| **Q8** | `messagesErrored: number` | `errored: number \| null` | `messagesErrored` is `undefined` → every host rejected | **fixed** in PR #33 |
+| **Q2** | `queued: number` (finite) | `queued: number \| null` | `null` failed `isFiniteNumber` → every host rejected | **fixed both sides**: engine accepts `null` (#33), and the proxy now usually sends a number (§1.3) |
+
+The engine side is verified on `devB/live-mode-reconcile`, not assumed: `ProxyHost` types both
+fields as `NullableCount`, and `isProxyHost` gates them with `isNullableCount`, which accepts
+`null` and any finite number. So **no engine change is needed for this contract amendment** — a
+host with a measured `queued` satisfies the same guard that a `null` one does.
 
 The guard log-and-skips per host, which is the right design — but when the mismatch is in a field
 *every* host shares, "skip the bad entry" becomes "report zero hosts", and the dashboard shows an
@@ -292,31 +387,32 @@ live IRIS, and `contracts/` is not edited to make a consumer compile.
 Three things this contract deliberately does not settle. Each needs a one-line change on one side
 or the other, and picking a side unilaterally is how a silent contract change happens.
 
-### 6.1 `queued: null` vs `queued: 0`
+### 6.1 `queued` — resolved, with one thing still unverified
 
-**The contract position is `0`.** `proxy.schema.json` permits `null` because that is what the
-proxy emits today, and a schema that rejected the running code would be a fiction.
+**Closed.** The discrepancy this section used to describe — proxy publishing `null`, engine
+demanding a finite number — is settled from both ends:
 
-The two sides both have a real argument, which is why this is not obvious:
+- The proxy publishes a **measured number** whenever the host-status endpoint answers (§1.3), so the
+  common case is no longer `null` at all.
+- The engine accepts `number | null` (`isNullableCount`) and skips a rule rather than rejecting the
+  host, which is what PR #33 did. Verified in
+  `services/detection-engine/src/types/proxy.ts` on that branch, not assumed.
 
-- **The proxy's `null`** is honest. `services/metrics-proxy/src/parser.test.js` pins it explicitly:
-  *"`queued: 0` per host would assert every host is drained while 14 sit somewhere."* Publishing
-  `0` while `_meta.productionQueued` is `486` is a false statement about each host.
-- **The engine's finite-number guard** is also right: a rule cannot compare `null` to a baseline,
-  and `0` at least keeps the host visible so its other seven metrics can be evaluated.
+`null` is still legal and still means what it says: *this was not measured*. It is no longer a
+standing state of the world, so `absent is not zero` costs nothing here now.
 
-Rejecting the whole host is the worst of both — it loses `status`, `messagesPerSec` and everything
-else over one unmeasurable field. **Recommended fix, one line, engine side:** relax the guard to
-accept `null` for `queued` and have `queue_buildup` skip a host whose depth is unmeasurable, the
-same way comparative rules already skip a warming baseline. That keeps the "absent is not zero"
-invariant that the rest of the payload depends on, rather than carving out an exception for the one
-field where it is inconvenient.
+**What is NOT verified: that `queue_buildup` actually fires.** Two separate milestones, and only the
+first is done:
 
-Closing it properly is issue #12 — a small `%CSP.REST` wrapper over
-`Ens.Util.Statistics:EnumerateHostStatus`, which returns per-host depth keyed by config item name,
-so the `host` join key survives. Until then, note Dev C's number from #16: `queue_buildup` has
-`absoluteFloor: 50`, and the captured depth of `48` **will not trip the rule**. "Wired up and
-returning real numbers" and "the finding fires" are two separate milestones.
+1. ✅ **Wired up and returning real numbers per host.** Verified end to end against live IRIS.
+2. ❓ **The finding firing.** Every `queued` observed on the live instance is `0` — the production is
+   healthy and drains immediately. A non-zero depth could not be induced without disabling a host,
+   which is a production change and out of bounds on a shared instance. The `70` quoted in §1.3 was
+   measured earlier, on this instance, with `Cloud API` disabled.
+
+And note Dev C's number from #16 before reading milestone 1 as milestone 2: `queue_buildup` has
+`absoluteFloor: 50`, so a depth of `48` **would not trip the rule** even though it is real. Wired up
+is not the same as firing.
 
 ### 6.2 `errored` vs `messagesErrored`
 
@@ -337,21 +433,36 @@ of it, and `errored` already means something downstream.
 This contract publishes `errored` because that is what the code emits. **It is a request for a
 decision, not a decision.**
 
-### 6.3 `errored` is per-production upstream, so no rename fixes it
+### 6.3 `errored` is per-production upstream — closed the same way as #12
 
-Q8's discovery outlives the naming question. `iris_interop_messages_errored` has no `host` label,
-so **`elevated_error_rate` cannot fire per host regardless of what the field is called** — the same
-structural gap as `queue_buildup`, and it has not been filed.
+**Closed**, and by the same change, as this section predicted: `EnumerateHostStatus` gave the host
+list and `Ens.MessageHeader` the counts, so one endpoint closed both #12 and #31. The naming
+question in §6.2 is untouched by it — the field is still `errored`, and that is still a request for
+a decision rather than a decision.
 
-Worth deciding alongside #12, because the fix is the same shape: `EnumerateHostStatus` returns
-per-host error counts as well as queue depth, so one REST wrapper closes both rules. Two of eight
-finding types depend on it. Filed against `iris/**`, which is now unowned — flagging it here so
-it is at least written down.
+The value is `COUNT(*) … WHERE Status = 8`, per host. Two details worth keeping, because both were
+measured and both would have produced a plausible wrong answer:
 
-Note the proxy publishes **no** per-production error total: unlike `queued`, `messages_errored` is
-not in `SCALAR_FAMILIES`, so the value is parsed and then dropped. Adding it to `_meta` as
-`productionErrored` would be a one-line proxy change and would at least make the number visible.
-Not done here — this is a contract PR, not an implementation one.
+- **`Status = 8` is `Error`.** From the compiled property: VALUELIST `,1,2,3,4,5,6,7,8,9` against
+  DISPLAYLIST `,Created,Queued,Delivered,Discarded,Suspended,Deferred,Aborted,Error,Completed`.
+  Filtering on `Status = 'Error'` compares against the stored code and matches nothing, silently.
+- **The join key needs `%EXACT`.** A plain `GROUP BY TargetConfigName` returns the name
+  **uppercased** (`CLOUD API`, `LAB ROUTER`) because the property collates with `%SQLUPPER` and the
+  grouping key is what comes back. Case-folding the metrics label to compensate was tried and
+  matched only 4 of 13 hosts; `%EXACT(TargetConfigName)` returns the stored spelling and joins
+  directly.
+
+Still true, and still not done: **the proxy publishes no per-production error total.**
+`messages_errored` is not in `SCALAR_FAMILIES`, so that line is parsed and dropped. It matters less
+now that per-host counts exist, but `_meta.productionErrored` would still be a one-line change and
+would make the number visible. Left out deliberately — nothing consumes it, and this change is
+already touching two contracts.
+
+**`elevated_error_rate` can now fire per host. Whether it *has* fired is unverified**, for the same
+reason as `queue_buildup` in §6.1: every host on the live instance reports `errored: 0`, because
+`Ens.MessageHeader` holds 163,392 rows and **every one is `Status = 9` (Completed)**. There are no
+errored messages to count. Inducing one means misconfiguring a host — a production change, out of
+bounds here.
 
 ---
 

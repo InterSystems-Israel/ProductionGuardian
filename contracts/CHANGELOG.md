@@ -187,6 +187,85 @@ adding `Active` to the status enum fails 1, narrowing `NullableCount` to `intege
 stripping the `messages_errored` line from the capture fails 1. A validator never seen to fail is
 not known to be testing anything.
 
+## 2026-08-12 — `queued` and `errored` are measured per host (Dev B, for Dev A's area)
+
+**Amends `proxy-api.md` and `proxy.schema.json` shortly after they were published.** When this was
+written those files were not yet on `main` — they arrived with PR #30, which has since merged — so
+it began as an amendment to an unmerged contract and landed as a change to a ratified one. It is recorded here anyway: the whole point of this
+file is that no contract statement changes silently, and "it was only just written" is not an
+exception.
+
+**Dev A has moved to other work and Dev B has taken over their outstanding tasks**, including this
+contract and the `iris/` and `services/metrics-proxy/` changes behind it.
+
+### What changed
+
+`queued` and `errored` were documented as **`null` on every host, always**. They are now **measured
+numbers** whenever the new host-status source answers. Neither field's *type* changed —
+`number | null` before and after — so **no consumer is required to change anything.** What changed
+is which of the two cases is normal.
+
+- `proxy-api.md` — new **§1.3** explaining the third data source and the exact-match join; §1
+  sample payload replaced with a live capture; `queued`/`errored` rows in §1.1 rewritten; new
+  optional `statusFromMetrics` row; new `_meta.hostStatus` row in §1.2; **Q2** and **Q8** answered
+  differently; **§5.2** updated to record that PR #33 fixed the engine side; **§6.1** and **§6.3**
+  closed.
+- `proxy.schema.json` — `queued`/`errored` descriptions rewritten; new optional
+  `ProxyHost.statusFromMetrics`; new `HostStatusMeta` definition; `MetricsMeta.hostStatus` added.
+- `validate.mjs` — 5 new accept cases, 4 new reject cases (40 checks total, all passing).
+
+### Why the values were null, and where they come from now
+
+Neither `iris_interop_queued` nor `iris_interop_messages_errored` carries a `host` label — both are
+emitted once per production. Two of the eight finding types, `queue_buildup` (#12) and
+`elevated_error_rate` (#31), were structurally unable to fire per host because of it. Two checks in
+`validate.mjs` assert that absence against the capture, and they still pass: **the metrics text has
+not changed, the proxy reads somewhere else as well.**
+
+That somewhere is `Ens.Util.Statistics:EnumerateHostStatus` plus `Ens.MessageHeader`, exposed by a
+new read-only `%CSP.REST` class in `iris/` and polled on the metrics interval. This is option (1)
+on #12, which Dev A proposed and Dev C endorsed.
+
+**The join key survives unnormalized, which is what makes this safe.** `EnumerateHostStatus`'s
+`Name` column and the metrics `host` label are the same string, spaces intact — verified against
+both sources on one instance. No trimming, no case folding: a host that stops matching is reported
+in `_meta.hostStatus.unmatchedHosts` rather than guessed at, because silently mapping `CloudAPI`
+onto `Cloud API` would attribute one host's queue depth to another.
+
+### `null` still means exactly what it meant
+
+The "absent is not zero" invariant is unchanged and this change leans on it rather than eroding it.
+`null` now means *the host-status source was unavailable, or did not describe this host* — still
+never a placeholder, and still never substituted with `0`. `_meta.hostStatus` exists so a consumer
+can tell **"every `queued` is null because the endpoint is down"** from **"every `queued` is
+genuinely 0"**, which are identical in the host array alone. `merged: 0` with `shape: "hosts"` is
+the specific case worth alerting on: the endpoint answered and nothing matched.
+
+### Verified
+
+- The endpoint called over HTTP against live LABDEMO: `200`, `application/json`, 13 hosts.
+- `GET /proxy/metrics` from the proxy running against live IRIS: 15 hosts, **13 merged**,
+  `unmatchedHosts: []`, `queued` and `errored` numbers on all four application hosts.
+- `npm run validate` → 40/40. Proven load-bearing rather than merely passing: with
+  `statusFromMetrics` and `HostStatusMeta` removed from the schema in memory, the new cases fail.
+- `services/metrics-proxy`: 96 tests pass, up from 71.
+- **Engine needs no change, and this was checked rather than assumed** — `ProxyHost.queued`/`.errored`
+  are `NullableCount` and `isProxyHost` gates them with `isNullableCount` on
+  `devB/live-mode-reconcile` (PR #33).
+
+### Not verified — read this before treating either finding as done
+
+**No non-zero queue depth or error count was observed on live IRIS.** The production is healthy: it
+drains immediately, and all 163,392 rows in `Ens.MessageHeader` are `Status = 9` (Completed). 400
+samples of `Ens.Queue.GetCount` and 40 of `EnumerateHostStatus` read `0`/empty throughout. Inducing
+either state requires disabling or misconfiguring a host — a production change, out of bounds on a
+shared instance.
+
+So: **the plumbing is verified end to end; the two findings actually firing is not.** The non-zero
+path is covered by schema cases and a unit test explicitly labelled synthetic, and rests on the
+depth of `70` measured earlier on this instance with `Cloud API` disabled. Note also
+`queue_buildup`'s `absoluteFloor: 50` (#16): real numbers arriving and the rule tripping are
+separate milestones.
 
 ## 2026-08-10 — `FHIR Transform` removed from the samples (Dev A)
 
