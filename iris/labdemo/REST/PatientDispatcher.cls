@@ -171,18 +171,32 @@ ClassMethod RecordToDynamic(rec As ProductionGuardian.LabDemo.Data.PatientRecord
 }
 
 /// Write a %DynamicObject as the response body.
+/// 
+/// `%ToJSON()` takes NO argument on purpose: with none it writes to the current device,
+/// which inside a %CSP.REST request is the CSP output stream. The obvious-looking
+/// `%ToJSON(%response.Output)` fails at runtime — %CSP.Response has no `Output` property
+/// on IRIS 2026.1 — so every route through here returned HTTP 500. Verified:
+/// `##class(%Dictionary.CompiledProperty).%ExistsId("%CSP.Response||Output")` is 0.
+/// It compiles cleanly either way, which is why nothing caught it until an endpoint was
+/// actually called (#37).
 ClassMethod WriteJSON(dyn As %DynamicObject) [ Private ]
 {
     set %response.ContentType = "application/json"
-    do dyn.%ToJSON(%response.Output)
+    do dyn.%ToJSON()
 }
 
 /// Write a JSON error response.
+/// 
+/// `write {...}` on a JSON literal emits an OREF, not JSON — measured output was
+/// `24616@%Library.DynamicObject`. A dynamic object has to be serialized explicitly;
+/// `write` on it stringifies the reference. So error bodies were unparseable even on the
+/// paths that did not 500.
 ClassMethod WriteErrorResponse(httpStatus As %Integer, message As %String) [ Private ]
 {
     set %response.Status = httpStatus _ " Error"
     set %response.ContentType = "application/json"
-    write {"error": (message)}
+    set err = {"error": (message)}
+    do err.%ToJSON()
 }
 
 }
