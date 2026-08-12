@@ -27,12 +27,15 @@ import {
 const deadHost: Rule = {
   type: 'dead_host',
   absolute: true,
-  evaluate({ host, config }: RuleInput): RuleVerdict | null {
+  evaluate({ host, raw, config }: RuleInput): RuleVerdict | null {
     const rule = configFor(config, 'dead_host', host.host);
     if (!rule.enabled) return null;
     if (!DEAD_STATUSES.includes(host.status)) return null;
 
-    const queueNote = host.queued > 0 ? ` with ${host.queued} message(s) queued` : '';
+    // raw, not host: an UNKNOWN depth must omit the note rather than claim zero (#49).
+    // The finding still fires -- dead_host is absolute and does not need the depth.
+    const queueNote =
+      raw.queued !== null && raw.queued > 0 ? ` with ${raw.queued} message(s) queued` : '';
     return {
       type: 'dead_host',
       severity: rule.severity,
@@ -64,14 +67,22 @@ const stalledHost: Rule = {
     // already become 0, so the gate was never satisfied and the rule was SILENTLY off
     // against live IRIS -- a sixth live break, found by Dev C on #33.
     //
-    // Deliberate choice, not an accident: when the depth is unknown we still decline to
-    // fire. An idle host with an unknown queue is more likely quiet than hung, and firing
-    // on absent data is the false positive MVP §6 names as the top risk. The distinction
-    // is now visible in the code rather than an emergent property of a coerced zero.
-    if (rule.requiresQueued) {
-      if (raw.queued === null) return null;
-      if (raw.queued <= 0) return null;
-    }
+    // The null check is HOISTED out of the requiresQueued branch on purpose. Nested, whether
+    // an unmeasurable depth was handled depended on a config flag unrelated to nullability —
+    // and `requiresQueued` is hot-reloaded from thresholds.json (ADR 0003), so flipping it
+    // put the literal string "null" in the message, one config edit from a projector:
+    //
+    //     requiresQueued=false -> "No activity for 900s while null message(s) are queued"
+    //
+    // tsc cannot catch that: template literals stringify null happily. Widening a type
+    // audits every arithmetic site for free and every stringification site not at all.
+    //
+    // Unlike dead_host, this rule cannot just omit the depth — it is the whole point of the
+    // sentence — so an unknown depth declines to fire. An idle host with an unknown queue is
+    // more likely quiet than hung, and firing on absent data is the false positive MVP §6
+    // names as the top risk.
+    if (raw.queued === null) return null;
+    if (rule.requiresQueued && raw.queued <= 0) return null;
 
     const idleSeconds = (now - Date.parse(host.lastActivity)) / 1000;
     if (!Number.isFinite(idleSeconds) || idleSeconds < rule.inactiveSeconds) return null;
@@ -82,7 +93,7 @@ const stalledHost: Rule = {
       currentValue: Math.round(idleSeconds),
       baselineValue: null,
       message:
-        `No activity for ${Math.round(idleSeconds)}s while ${host.queued} message(s) are queued`,
+        `No activity for ${Math.round(idleSeconds)}s while ${raw.queued} message(s) are queued`,
     };
   },
 };
@@ -94,16 +105,23 @@ const stalledHost: Rule = {
 const queueBuildup: Rule = {
   type: 'queue_buildup',
   absolute: false,
-  evaluate({ host, baselines, config }: RuleInput): RuleVerdict | null {
+  evaluate({ host, raw, baselines, config }: RuleInput): RuleVerdict | null {
     const rule = configFor(config, 'queue_buildup', host.host);
     if (!rule.enabled) return null;
 
     const baseline = baselines.baseline(host.host, 'queued');
     if (baseline === null) return null;
-    if (host.queued < rule.absoluteFloor) return null;
+
+    // raw, not host: an unmeasurable depth is not a small one. Reading the normalized
+    // host meant a coerced 0 was compared against the floor, which happened to stay
+    // silent only because absoluteFloor is 50 -- correct by arithmetic rather than by
+    // intent, and it would fire at floor 0 (#49). #25 is actively reconsidering floors.
+    const depth = raw.queued;
+    if (depth === null) return null;
+    if (depth < rule.absoluteFloor) return null;
 
     // A zero baseline makes any ratio infinite, so treat the floor as the whole test.
-    const ratio = baseline > 0 ? host.queued / baseline : Number.POSITIVE_INFINITY;
+    const ratio = baseline > 0 ? depth / baseline : Number.POSITIVE_INFINITY;
     if (ratio < rule.baselineMultiplier) return null;
 
     const severity = Number.isFinite(ratio)
@@ -116,9 +134,9 @@ const queueBuildup: Rule = {
     return {
       type: 'queue_buildup',
       severity,
-      currentValue: host.queued,
+      currentValue: depth,
       baselineValue: baseline,
-      message: `Queue depth ${host.queued} ${comparison}`,
+      message: `Queue depth ${depth} ${comparison}`,
     };
   },
 };

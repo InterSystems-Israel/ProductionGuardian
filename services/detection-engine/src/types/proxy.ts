@@ -40,11 +40,19 @@ export interface ProxyHost {
   status: string;
   /** The proxy's own view of whether this is framework infrastructure. Advisory. */
   isFramework: boolean;
-  /** null — not exposed per host by IRIS. See #12 and `_meta.productionQueued`. */
+  /**
+   * Per-host queue depth, from the host-status endpoint (#12/#36). Was ALWAYS null when
+   * this file was written, because the Prometheus text has no per-host `queued`; now it is
+   * usually a real number and null only when that endpoint is absent or the host is
+   * undescribed. Treat null as unmeasurable, never as zero (#49).
+   */
   queued: NullableCount;
   messages: NullableCount;
   messagesPerSec: NullableCount;
-  /** null — not exposed per host by IRIS. See #31; no production total is published. */
+  /**
+   * Cumulative errored count, also from the host-status endpoint (#36). Same history as
+   * `queued`: absent from the Prometheus text (#31), now supplied per host.
+   */
   errored: NullableCount;
   /** Seconds, aggregated across message types weighted by sample count (Q3). */
   avgProcessingTime: NullableCount;

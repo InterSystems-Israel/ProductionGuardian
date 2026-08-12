@@ -754,3 +754,232 @@ describe('sustained breach is time-gated as well as sample-gated (#44)', () => {
     assert.ok(types.includes('dead_host'), 'the escape hatch must actually disable the gate');
   });
 });
+/**
+ * Unmeasurable counts must never enter the baseline (#49).
+ *
+ * Found by @tanifgit. Every RULE was hardened to tell "unknown" from "zero"; the BASELINE
+ * was not, because the four record() calls took the normalized host, where orZero() has
+ * already collapsed null to 0. So a metric going absent deflated the baseline it feeds and
+ * the next genuine reading was judged against fabricated history.
+ *
+ * The measured failure, against shipped thresholds: a steady queue of 40 drops out of the
+ * host-status endpoint for five minutes, returns at an ordinary 60, and the engine reported
+ * "Queue depth 60 is 6.5x baseline" with baseline=9.21 — the mean of twelve real 40s and
+ * sixty fabricated zeros. Internally consistent arithmetic about nothing.
+ *
+ * This is the near-mirror of the self-inflation property in baseline.test.ts: there the
+ * window includes samples it should exclude and a real problem goes silent; here it
+ * includes samples that were never measured and a normal value raises a warning.
+ */
+describe('unmeasurable counts never enter the baseline (#49)', () => {
+  /** A host with every nullable count measurable, so a test can null one field. */
+  function measured(overrides: Partial<ProxyHost> = {}): ProxyHost {
+    return proxyHost({ queued: 40, messagesPerSec: 1.2, avgProcessingTime: 0.08, ...overrides });
+  }
+
+  it('does not deflate the baseline across an outage in the host-status endpoint', () => {
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    let at = T0;
+
+    // Warm on a real, steady queue of 40.
+    for (let i = 0; i < 13; i += 1) {
+      engine.applyPoll(response([measured()]), at);
+      at += POLL_MS;
+    }
+    // The endpoint goes away for 60 polls. Nothing about the production changed.
+    for (let i = 0; i < 60; i += 1) {
+      engine.applyPoll(response([measured({ queued: null })]), at);
+      at += POLL_MS;
+    }
+    // It returns at an ordinary depth for this host.
+    for (let i = 0; i < 3; i += 1) {
+      engine.applyPoll(response([measured({ queued: 60 })]), at);
+      at += POLL_MS;
+    }
+
+    const buildup = engine.snapshot().findings.filter((f) => f.type === 'queue_buildup');
+    assert.deepEqual(
+      buildup.map((f) => f.message),
+      [],
+      'a queue that never changed must not produce a finding',
+    );
+  });
+
+  it('leaves a gap rather than a false sample, for every nullable metric', () => {
+    // Asserted through sampleCount rather than through a finding: the point is that the
+    // window is SHORTER, not merely that no finding appeared. A rule staying silent for an
+    // unrelated reason would hide this.
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    let at = T0;
+    for (let i = 0; i < 6; i += 1) {
+      engine.applyPoll(response([measured()]), at);
+      at += POLL_MS;
+    }
+    for (let i = 0; i < 6; i += 1) {
+      engine.applyPoll(
+        response([measured({ queued: null, messagesPerSec: null, avgProcessingTime: null })]),
+        at,
+      );
+      at += POLL_MS;
+    }
+
+    // 12 polls, 6 of them unmeasurable -> still warming, because there are only 6 samples.
+    assert.equal(
+      engine.snapshot().state,
+      'warming',
+      'skipped samples must leave the host short of minBaselineSamples, not silently full',
+    );
+  });
+
+  it('still records a genuine measured zero', () => {
+    // The distinction that matters: 0 is a reading, null is not. If this regressed to
+    // skipping zeros, an idle host would never baseline at all.
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    let at = T0;
+    for (let i = 0; i < 14; i += 1) {
+      engine.applyPoll(response([measured({ queued: 0, avgQueueingTime: 0 })]), at);
+      at += POLL_MS;
+    }
+    assert.equal(
+      engine.snapshot().state,
+      'ok',
+      'a genuinely idle host must reach a warm baseline of zero',
+    );
+  });
+});
+
+/**
+ * No finding message may ever contain the literal string "null" (#51).
+ *
+ * Found by @tanifgit reviewing #49's fix. Widening `Host.queued` to `number | null` made
+ * tsc audit every ARITHMETIC site for free and every STRINGIFICATION site not at all —
+ * template literals stringify null happily. `stalled_host` interpolates the depth directly,
+ * and its null guard was nested inside `if (rule.requiresQueued)`, so whether an
+ * unmeasurable depth was handled depended on a hot-reloadable config flag (ADR 0003):
+ *
+ *     requiresQueued=false -> "No activity for 900s while null message(s) are queued"
+ *
+ * One config edit from a projector, and `CLAUDE.md` §2.4 has Dev C render `message`
+ * verbatim and authoritative.
+ */
+describe('no message ever stringifies a null (#51)', () => {
+  /** Every nullable proxy count absent at once — the worst case for message building. */
+  function unmeasurable(overrides: Partial<ProxyHost> = {}): ProxyHost {
+    return proxyHost({
+      queued: null,
+      errored: null,
+      messagesPerSec: null,
+      avgProcessingTime: null,
+      avgQueueingTime: null,
+      lastActivityElapsedSeconds: 900,
+      ...overrides,
+    });
+  }
+
+  /** Sweep the config flags that change which guards run, not just the default config. */
+  const flagSets: ReadonlyArray<readonly [string, (c: ThresholdConfig) => void]> = [
+    ['defaults', () => {}],
+    ['requiresQueued=false', (c) => { c.rules.stalled_host.requiresQueued = false; }],
+    ['absoluteFloor=0', (c) => { c.rules.queue_buildup.absoluteFloor = 0; }],
+    [
+      'both relaxed',
+      (c) => {
+        c.rules.stalled_host.requiresQueued = false;
+        c.rules.queue_buildup.absoluteFloor = 0;
+      },
+    ],
+  ];
+
+  for (const [label, mutate] of flagSets) {
+    it(`emits no "null" in any message with ${label}`, () => {
+      const config = structuredClone(DEFAULT_CONFIG);
+      mutate(config);
+      const engine = new DetectionEngine(config, () => {});
+
+      let at = T0;
+      // Warm on measurable traffic, then take every count away.
+      for (let i = 0; i < 14; i += 1) {
+        engine.applyPoll(response([proxyHost()]), at);
+        at += POLL_MS;
+      }
+      for (let i = 0; i < 20; i += 1) {
+        engine.applyPoll(response([unmeasurable()]), at);
+        at += POLL_MS;
+      }
+
+      for (const finding of engine.snapshot().findings) {
+        assert.ok(
+          !finding.message.includes('null'),
+          `${finding.type} rendered a null: "${finding.message}"`,
+        );
+        assert.ok(
+          !finding.message.includes('undefined') && !finding.message.includes('NaN'),
+          `${finding.type} rendered a non-value: "${finding.message}"`,
+        );
+      }
+    });
+  }
+
+  /**
+   * The case that actually builds a message from an unknown count.
+   *
+   * The four sweeps above null EVERY count, so every rule correctly declines and the
+   * assertion loop inspects zero findings — which is the fix working, but it means only
+   * the two cases that relax a gate can ever fail. @tanifgit spotted that on #51 and
+   * pointed out the gap it leaves: `dead_host` is the one rule that fires DESPITE a null
+   * count, because it is absolute, so it is the only rule whose message string can contain
+   * an unknown depth. Nothing in the suite asserted a dead_host message at all.
+   *
+   * Worth pinning rather than hand-checking: dead_host is one of only two findings that
+   * fire reliably against live IRIS, so its message is the one most likely to be on screen.
+   */
+  /*
+   * NOTE ON WHAT THIS PINS, having tried to break it three ways: it does NOT distinguish
+   * raw from coerced. A coerced 0 fails the `> 0` test, so the note is omitted either way
+   * and this passes even with orZero() restored and the rule reading `host.queued`. I
+   * claimed otherwise before checking; it isn't true.
+   *
+   * What it does pin is the OUTPUT — the exact string on screen for the demo's headline
+   * finding, which nothing asserted before. Combined with the test below, it pins that the
+   * note appears when there is a depth and not when there isn't. That is worth having; it
+   * is just a weaker claim than "guards the raw read".
+   */
+  it('dead_host omits the queue note when the depth is unknown, rather than faking 0', () => {
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    let at = T0;
+    for (let i = 0; i < 3; i += 1) {
+      engine.applyPoll(
+        response([unmeasurable({ host: 'Cloud API', status: 'Disabled' })]),
+        at,
+      );
+      at += POLL_MS;
+    }
+
+    const dead = engine.snapshot().findings.filter((f) => f.type === 'dead_host');
+    assert.equal(dead.length, 1, 'dead_host is absolute and must fire without a depth');
+    const [finding] = dead;
+    assert.ok(finding !== undefined);
+    assert.equal(
+      finding.message,
+      'Cloud API is Disabled',
+      'an unknown depth must be omitted, not rendered as "0 message(s) queued"',
+    );
+  });
+
+  it('dead_host DOES report a measured depth', () => {
+    // The other half: 0 is a reading and a positive depth must appear. Without this, the
+    // test above would pass on a rule that had simply lost the note entirely.
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    let at = T0;
+    for (let i = 0; i < 3; i += 1) {
+      engine.applyPoll(
+        response([proxyHost({ host: 'Cloud API', status: 'Disabled', queued: 6 })]),
+        at,
+      );
+      at += POLL_MS;
+    }
+    const [finding] = engine.snapshot().findings.filter((f) => f.type === 'dead_host');
+    assert.ok(finding !== undefined);
+    assert.equal(finding.message, 'Cloud API is Disabled with 6 message(s) queued');
+  });
+});

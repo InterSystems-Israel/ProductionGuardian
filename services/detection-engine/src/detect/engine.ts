@@ -8,6 +8,7 @@
  *   4. Expose current hosts and confirmed findings
  */
 
+import type { MetricName } from '../baseline/window.ts';
 import { BaselineStore } from '../baseline/window.ts';
 import type { ThresholdConfig } from '../config/thresholds.ts';
 import { configFor, inertOverrideHosts } from '../config/thresholds.ts';
@@ -90,6 +91,22 @@ export class DetectionEngine {
     this.#stale = true;
   }
 
+  /**
+   * Record a baseline sample only if it was actually measured (#49).
+   *
+   * `null` means "IRIS does not expose this per host", not zero. Recording it as zero
+   * fabricates history, and history is what every comparative rule divides by.
+   */
+  #recordIfMeasured(
+    host: string,
+    metric: MetricName,
+    value: number | null,
+    now: number,
+  ): void {
+    if (value === null) return;
+    this.#baselines.record(host, metric, value, now);
+  }
+
   /** Apply one proxy poll. `now` is epoch ms, passed in to keep this testable. */
   applyPoll(response: ProxyResponse, now: number): void {
     const seenHosts = new Set<string>();
@@ -103,10 +120,23 @@ export class DetectionEngine {
 
       const errorsPerMinute = this.#errorsPerMinute(proxyHost, now);
 
-      this.#baselines.record(host.host, 'queued', host.queued, now);
-      this.#baselines.record(host.host, 'messagesPerSec', host.messagesPerSec, now);
-      this.#baselines.record(host.host, 'avgProcessingTime', host.avgProcessingTime, now);
-      this.#baselines.record(host.host, 'avgQueueingTime', host.avgQueueingTime, now);
+      // Record from the RAW proxy values, never the normalized host: normalizeHost()
+      // collapses null to 0 for the wire, and an unmeasurable count recorded as a measured
+      // zero DEFLATES the baseline it feeds. Five minutes of absent data was enough to turn
+      // an unchanged queue of 60 into "6.5x baseline" (#49) — a warning whose arithmetic is
+      // internally consistent and factually meaningless.
+      //
+      // Skipping leaves a GAP in the window rather than a false sample. That is the honest
+      // representation and it fails safe: fewer samples can only take a host back below
+      // minBaselineSamples, i.e. to `warming`, where comparative rules stay silent (ADR
+      // 0002). It can never invent a comparison.
+      //
+      // The `errorsPerMinute` guard below was already doing this. The current value was
+      // protected in every rule; the historical values were protected nowhere.
+      this.#recordIfMeasured(host.host, 'queued', proxyHost.queued, now);
+      this.#recordIfMeasured(host.host, 'messagesPerSec', proxyHost.messagesPerSec, now);
+      this.#recordIfMeasured(host.host, 'avgProcessingTime', proxyHost.avgProcessingTime, now);
+      this.#recordIfMeasured(host.host, 'avgQueueingTime', proxyHost.avgQueueingTime, now);
       if (errorsPerMinute !== null) {
         this.#baselines.record(host.host, 'errorsPerMinute', errorsPerMinute, now);
       }
@@ -279,9 +309,9 @@ export function normalizeHost(proxyHost: ProxyHost, now: number): Host {
     host: proxyHost.host,
     type: normalizeHostType(proxyHost.type),
     status: proxyHost.status as HostStatus,
-    queued: orZero(proxyHost.queued),
+    queued: proxyHost.queued,
     messagesPerSec: orZero(proxyHost.messagesPerSec),
-    errored: orZero(proxyHost.errored),
+    errored: proxyHost.errored,
     avgProcessingTime: orZero(proxyHost.avgProcessingTime),
     avgQueueingTime: orZero(proxyHost.avgQueueingTime),
     // A host with no activity line has never run, so "now" is the only defensible
@@ -292,6 +322,21 @@ export function normalizeHost(proxyHost: ProxyHost, now: number): Host {
 
 /**
  * Collapse an unmeasurable count to 0 for the published `Host` shape.
+ *
+ * SCOPE, after #49: this now applies ONLY to the three fields the schema still declares as
+ * plain numbers -- messagesPerSec, avgProcessingTime, avgQueueingTime. `queued` and
+ * `errored` pass through as `number | null`, because #35 made them `["integer","null"]` and
+ * Dev C's dashboard needs the distinction (guards.ts asNullableNumber, formatCount renders
+ * an em dash). Every premise of the original justification below had expired:
+ *
+ *   "declares them as REQUIRED integers"          -> integer|null since #35, still required
+ *   "Dev C's guard would reject the host"         -> their guard now REQUIRES nullable
+ *   "queue_buildup is blocked upstream (#12)"     -> #12/#36 landed; depth is measured
+ *
+ * Making the remaining three nullable is a contract change request to `contracts/`, not
+ * something to do here -- which is what the note at the end of this comment said, and it
+ * was right both times.
+ *
  *
  * This is a lie we tell deliberately and narrowly, and it is worth being explicit about
  * why. `contracts/healthscan.schema.json` declares `Host.queued` and `Host.errored` as

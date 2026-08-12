@@ -40,9 +40,16 @@ export interface Host {
   /** 'service' | 'process' | 'operation'. IRIS 'actor' is normalized to 'process'. */
   type: string;
   status: HostStatus;
-  queued: number;
+  /**
+   * Current queue depth. `null` means the depth is not measurable for this host, which is
+   * distinct from a measured zero — Dev C renders '—', never 0 (Q13). Nullable since #35;
+   * this transcription had drifted back to `number` and the engine was coercing to match
+   * it, which is how #49's fabricated zeros reached the wire.
+   */
+  queued: number | null;
   messagesPerSec: number;
-  errored: number;
+  /** Cumulative errored count. `null` means not measurable, not zero errors (Q13). */
+  errored: number | null;
   /** Seconds. Aggregated across message types, weighted by sample count. */
   avgProcessingTime: number;
   /** Seconds. Aggregated across message types, weighted by sample count. */
