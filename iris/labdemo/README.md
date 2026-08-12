@@ -220,13 +220,13 @@ stops working.
 | `growing_queue_wait` | Same `hang 1` — watch `Cloud API` while the generator keeps running | Messages wait behind the hung one. Floor is 0.15 s and 3× the ~0.03 s baseline, so a 1 s hang clears it once traffic overlaps |
 | `elevated_error_rate` | Set `Cloud API`'s `HTTPPort` to a closed port (e.g. 59999) | Every message errors. Floor is 1.0 errors/min and 3× baseline; at one message per 2 s that is ~30/min |
 | `stalled_host` | Disable `Cloud API` so its queue holds messages, then wait | Needs no activity for `inactiveSeconds` (300) **while messages are queued** — so it takes **5 minutes**, and `requiresQueued` means an idle-but-empty host will not do |
-| `queue_buildup` | **Does not currently fire — see the caveat below.** The queue builds; no finding appears | Depth must exceed the absolute floor of **50** *and* 5× baseline. Clearing the floor is easy; the 5× is unreachable against a growing queue |
+| `queue_buildup` | Use the `elevated_error_rate` trigger below — a closed port makes `Cloud API` retry, and the queue runs away past a baseline it already learned. **Disabling the host does NOT work**; see the caveat | Depth must exceed the floor of **50** *and* 5× baseline. Measured live: `Queue depth 110 is 14x baseline` against a baseline of 7.97 |
 | `system_alert` | Enable `Alert on Error` on `Cloud API`, then induce the error-rate trigger above | An errored message with alerting on writes an alert that `/api/monitor/alerts` serves. This is the only rule that can produce an `info` finding |
 
 Disabling a host induces `dead_host` too, so the `stalled_host` and `queue_buildup`
 triggers each surface two findings. That is correct behaviour, not a duplicate.
 
-> **`queue_buildup` caveat — the plumbing is fixed, the rule still cannot fire (#43).**
+> **`queue_buildup` caveat — it fires, but only when a baseline existed first (#43).**
 >
 > The old caveat here said per-host depth was missing from the Prometheus text and the
 > engine therefore could not see the queue. **That half is solved:** #12 landed, the proxy
@@ -234,18 +234,23 @@ triggers each surface two findings. That is correct behaviour, not a duplicate.
 > receives real numbers — `dead_host` reports them in its message (*"Cloud API is Disabled
 > with 6 message(s) queued"*).
 >
-> **But the rule still does not fire, for a different reason.** Measured on live LABDEMO:
-> disabling `Cloud API` grew the queue 6 → 122 and `queue_buildup` stayed silent the whole
-> way, well past its floor of 50. The rolling baseline rises *with* the queue, so the ratio
-> never reaches the 5× gate — and **no generator rate changes that**, because scaling a ramp
-> scales its mean identically (pinned in `services/detection-engine/test/baseline.test.ts`).
-> The closed form and the multiplier values that *would* fire are worked out on #45; that
-> argument belongs there and in #25, not in a README.
+> **Which trigger you use decides whether it fires**, and the deciding factor is whether a
+> non-zero baseline existed *before* the depth ran away — not how fast the queue grows.
 >
-> So there is currently **no way to induce this finding on a live instance**, and the old
-> `Run(80, 0.2)` instruction did not work. Demo mode still shows all eight types. Tracked
-> in #43; the fix changes what the baseline is compared against and belongs with #25's
-> thresholds ADR rather than a tuning change.
+> | | **Disable** the host | **Break its target** (closed port) |
+> |---|---|---|
+> | host behaviour | stops consuming at once | stays up and keeps retrying |
+> | queue while the baseline warms | 0, then ramps | small but real |
+> | baseline when depth runs away | rises *with* the ramp | already learned (7.97 measured) |
+> | ratio | ceiling **2.18×**, under the 5× gate | **13.8×** — fires |
+>
+> So disabling `Cloud API` grew the queue 6 → 122 in silence, and the old `Run(80, 0.2)`
+> instruction never worked. The closed-port trigger produced `Queue depth 110 is 14x
+> baseline` live. A queue that builds **from idle** is still invisible, which is the open
+> half of #43 — and it is the `dead_host`-adjacent case, where the queue is most obviously a
+> problem. The ramp arithmetic is pinned in
+> `services/detection-engine/test/baseline.test.ts`; the closed form is on #45 and the fix
+> belongs with #25's thresholds ADR.
 >
 > The lesson worth keeping: the fixture at
 > `services/detection-engine/fixtures/proxy/queue-buildup.json` jumps 0 → 486 in a single
