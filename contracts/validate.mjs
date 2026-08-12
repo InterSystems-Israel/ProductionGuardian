@@ -124,6 +124,42 @@ const MUST_REJECT = [
       },
     ],
   },
+  {
+    // Q13 widened `queued` to accept null. It must not have widened to accept
+    // anything else — a string count is what an unvalidated proxy would leak.
+    name: 'queued as a string',
+    definition: 'HostsResponse',
+    data: [
+      {
+        host: 'X',
+        type: 'process',
+        status: 'OK',
+        queued: '0',
+        messagesPerSec: 0,
+        errored: 0,
+        avgProcessingTime: 0,
+        avgQueueingTime: 0,
+        lastActivity: '2026-08-06T15:00:00Z',
+      },
+    ],
+  },
+  {
+    // `null` is a value, not an excuse to omit the key (§1).
+    name: 'queued key omitted entirely',
+    definition: 'HostsResponse',
+    data: [
+      {
+        host: 'X',
+        type: 'process',
+        status: 'OK',
+        messagesPerSec: 0,
+        errored: 0,
+        avgProcessingTime: 0,
+        avgQueueingTime: 0,
+        lastActivity: '2026-08-06T15:00:00Z',
+      },
+    ],
+  },
 ];
 
 /**
@@ -163,6 +199,29 @@ const MUST_ACCEPT = [
         baselineValue: null,
         detectedAt: '2026-08-06T15:00:00.123456Z',
         message: 'm',
+      },
+    ],
+  },
+  {
+    /*
+     * Q13. This is what the live proxy actually sends for every host today, so it
+     * is the shape the samples do NOT carry — the samples hold measured LABDEMO
+     * values from `EnumerateHostStatus`, which the proxy does not read. Without
+     * this case the nullability is declared and never exercised.
+     */
+    name: 'host with unmeasurable queued and errored counts',
+    definition: 'HostsResponse',
+    data: [
+      {
+        host: 'Lab Router',
+        type: 'process',
+        status: 'OK',
+        queued: null,
+        messagesPerSec: 1.2,
+        errored: null,
+        avgProcessingTime: 0.08,
+        avgQueueingTime: 0.02,
+        lastActivity: '2026-08-12T10:00:00Z',
       },
     ],
   },

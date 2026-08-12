@@ -342,6 +342,24 @@ for (const file of readdirSync(FIXTURES).filter((f) => f.startsWith('scenario-')
   const scenario = JSON.parse(readFileSync(join(FIXTURES, file), 'utf8'));
   const hostByName = new Map(scenario.hosts.map((host) => [host.host, host]));
 
+  /*
+   * `queued` and `errored` are nullable as of Q13, and this file mirrors the engine
+   * with comparisons like `host.queued <= 0` — which `null` satisfies, silently
+   * reading "depth unknown" as "nothing queued". Refuse the shape rather than judge
+   * it wrongly: the engine's own null semantics are still undecided (PR #33), so
+   * there is nothing faithful to mirror yet. Every fixture carries measured LABDEMO
+   * values, so this is a tripwire for whoever adds the first null, not a live case.
+   */
+  for (const host of scenario.hosts) {
+    for (const field of ['queued', 'errored']) {
+      if (host[field] === null) {
+        failures += 1;
+        console.error(`FAIL  ${file} — ${host.host}.${field} is null`);
+        console.error('        nullable counts are valid per the contract but not judgeable here');
+      }
+    }
+  }
+
   for (const finding of scenario.findings) {
     const host = hostByName.get(finding.host);
     const problems = [

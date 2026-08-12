@@ -22,7 +22,14 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
-/** `baselineValue` may legitimately be absent or null during baseline warm-up. */
+/**
+ * For the fields the contract declares nullable: `baselineValue` during baseline
+ * warm-up, and `queued` / `errored` when the count is not measurable (Q13).
+ *
+ * Anything non-numeric collapses to `null` rather than to `0`, because `0` has to
+ * keep meaning *measured* zero. A count we never measured, rendered as a count,
+ * is the one failure mode the em dash exists to prevent.
+ */
 function asNullableNumber(value: unknown): number | null {
   return isFiniteNumber(value) ? value : null;
 }
@@ -42,15 +49,17 @@ function parseHost(entry: unknown, index: number): HostView | null {
     warn('hosts', index, 'missing `host`', entry);
     return null;
   }
-  // Numeric metrics default to 0 rather than dropping the host: a host present
-  // in the production still belongs on the grid even if one metric is absent.
+  // An absent metric never drops the host: a host present in the production still
+  // belongs on the grid. The two *nullable* counts keep their absence (Q13); the
+  // rest still default to 0, since the contract declares them always numeric and
+  // a missing one is drift rather than a documented state.
   return {
     host: entry.host,
     type: isNonEmptyString(entry.type) ? entry.type : 'unknown',
     status: isNonEmptyString(entry.status) ? entry.status : 'unknown',
-    queued: isFiniteNumber(entry.queued) ? entry.queued : 0,
+    queued: asNullableNumber(entry.queued),
     messagesPerSec: isFiniteNumber(entry.messagesPerSec) ? entry.messagesPerSec : 0,
-    errored: isFiniteNumber(entry.errored) ? entry.errored : 0,
+    errored: asNullableNumber(entry.errored),
     avgProcessingTime: isFiniteNumber(entry.avgProcessingTime) ? entry.avgProcessingTime : 0,
     avgQueueingTime: isFiniteNumber(entry.avgQueueingTime) ? entry.avgQueueingTime : 0,
     lastActivity: isNonEmptyString(entry.lastActivity) ? entry.lastActivity : '',

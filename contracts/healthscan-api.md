@@ -36,12 +36,15 @@ Current state of every interoperability host in the monitored production.
 | `host` | string | Config item name, exactly as it appears in IRIS. The join key — see Q8. |
 | `type` | string | `service` \| `process` \| `operation`. Normalized — see Q10. |
 | `status` | string | See the enum in Q1. Treat as open: render unknown values neutrally. |
-| `queued` | number | Current queue depth. Integer ≥ 0. |
+| `queued` | number \| null | Current queue depth. Integer ≥ 0, or `null` when not measurable — see Q13. |
 | `messagesPerSec` | number | Throughput over the last sampling interval. |
-| `errored` | number | Cumulative errored count since production start. Integer ≥ 0. |
+| `errored` | number \| null | Cumulative errored count since production start. Integer ≥ 0, or `null` — see Q13. |
 | `avgProcessingTime` | number | **Seconds** — see Q6. |
 | `avgQueueingTime` | number | **Seconds** — see Q6. |
 | `lastActivity` | string | ISO 8601 UTC, `Z`-suffixed. Derived — see Q11. |
+
+Every field is always **present**. `queued` and `errored` may be `null`; the others are always
+numbers or strings. A missing key is a contract violation, a `null` value is not.
 
 Hosts are returned in stable alphabetical order by `host`.
 
@@ -137,6 +140,7 @@ Dev C raised nine (issue #1); three more surfaced from live IRIS metrics while b
 | **Q10** | *(new)* `type` vocabulary | IRIS reports business processes as **`actor`**, not `process`. We normalize: `actor → process`, `service → service`, `operation → operation`. The contract keeps the MVP doc's vocabulary; the IRIS word never reaches you. |
 | **Q11** | *(new)* `lastActivity` precision | IRIS gives *elapsed seconds since last activity*, not a timestamp. We compute `now − elapsed`, so accuracy is bounded by proxy poll timing — treat it as ±10 s, correct for "2 minutes ago", not for sub-second ordering. |
 | **Q12** | *(new)* `avgProcessingTime` is aggregated | IRIS emits these per `(host, messagetype)`, so a host has *several* series. We aggregate into one number, weighted by `iris_interop_sample_count`. A host handling two message types reports their weighted mean, not either one. |
+| **Q13** | *(new)* `queued` / `errored` nullability | **`null` means "not measurable for this host", never "zero".** `iris_interop_queued` carries no `host` label — it emits once per production — so per-host depth is unavailable from the metrics text alone. Rather than publish a `0` nobody measured, we publish `null`. Consumers render `—`; **rules must skip rather than compare.** |
 
 ### 4.1 What changes for Dev C
 
@@ -151,6 +155,13 @@ export type HostStatus =
 `Warning` should come out. Nothing else in the transcription needs to change — and because
 unknown statuses already render neutral (§2.4 of `apps/dashboard/CLAUDE.md`), the existing code
 degrades correctly even before that edit.
+
+**Q13 is the second contradiction, added 2026-08-12.** `queued` and `errored` widen to
+`number | null` in the `Host` transcription. The dashboard already renders `—` for a null count
+(`formatCount`), so the visible behaviour was correct before the type was; what changed is that
+the guards stop coercing an unmeasured count to `0`, and any consumer comparing these values
+must skip on `null` rather than compare against it. See the `CHANGELOG.md` entry for the
+reproduction that motivated it.
 
 ---
 

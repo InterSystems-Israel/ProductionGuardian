@@ -29,6 +29,16 @@ function MetricRow({ label, value, emphasis = false }: MetricRowProps): JSX.Elem
   );
 }
 
+/**
+ * A nullable count is *unknown*, not zero (Q13), so it earns no emphasis — the
+ * `—` in the value column already says everything we know. Written out rather
+ * than `(count ?? 0) > 0` because the two readings differ and the coalescing
+ * form hides which one is meant.
+ */
+function isPositiveCount(count: number | null): boolean {
+  return count !== null && count > 0;
+}
+
 export interface HostCardProps {
   host: HostView;
   /** Worst severity among this host's findings; null when it has none. */
@@ -50,9 +60,17 @@ export function HostCard({ host, worst, findingCount, now }: HostCardProps): JSX
       </header>
 
       <div className="pg-host__metrics">
-        <MetricRow label="Queued" value={formatCount(host.queued)} emphasis={host.queued > 0} />
+        <MetricRow
+          label="Queued"
+          value={formatCount(host.queued)}
+          emphasis={isPositiveCount(host.queued)}
+        />
         <MetricRow label="Msg/sec" value={formatRate(host.messagesPerSec)} />
-        <MetricRow label="Errors" value={formatCount(host.errored)} emphasis={host.errored > 0} />
+        <MetricRow
+          label="Errors"
+          value={formatCount(host.errored)}
+          emphasis={isPositiveCount(host.errored)}
+        />
         <MetricRow label="Avg processing" value={formatDuration(host.avgProcessingTime)} />
         <MetricRow label="Avg queueing" value={formatDuration(host.avgQueueingTime)} />
         <MetricRow label="Last activity" value={formatRelative(host.lastActivity, now)} />
