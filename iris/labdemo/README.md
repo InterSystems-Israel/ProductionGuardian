@@ -63,13 +63,25 @@ class.
 | Dispatch class | `ProductionGuardian.LabDemo.REST.HostStatusDispatcher` |
 | Allowed authentication | Password (or Unauthenticated for local demo) |
 
-Live at `http://localhost:52773/labdemo/monitor/hoststatus`. Verify:
+**The port is whichever web server fronts your instance — do not assume 52773.** That is the
+private web server, and it is not always published. On the instance this was verified against
+(`irishealth` behind a `webgateway` container) the only HTTP port is **80**, and 52773 refuses the
+connection outright. Use the same host and port that serve `/api/monitor/metrics` in your browser —
+it is the same web server, and the proxy reaches both through one `IRIS_HOST`/`IRIS_PORT` pair.
+
+Verified on that instance, port 80:
 
 ```bash
-curl -s -u user:pass http://localhost:52773/labdemo/monitor/hoststatus
+$ curl -s -u user:pass http://localhost/labdemo/monitor/hoststatus
+# HTTP/1.1 200 OK   Content-Type: application/json
 # {"hosts":[{"host":"Cloud API","status":"OK","queued":0,"errored":0,"messageCount":17860}, ...],
 #  "_meta":{"production":"LABDEMO.Production","productionState":"Running","hostCount":13, ...}}
 ```
+
+The equivalent on an instance whose private web server *is* published would be
+`http://localhost:52773/labdemo/monitor/hoststatus`. Getting this wrong is quiet in exactly the way
+`IRIS_BASE_PATH` is: the proxy logs one failed poll and then reports `queued`/`errored` as `null`,
+which reads as an idle production rather than a bad URL.
 
 **Why this exists:** `iris_interop_queued` and `iris_interop_messages_errored` are emitted once per
 production with no `host` label, so per-host queue depth and error counts are not in
