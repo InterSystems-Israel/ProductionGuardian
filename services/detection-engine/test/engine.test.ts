@@ -847,3 +847,76 @@ describe('unmeasurable counts never enter the baseline (#49)', () => {
     );
   });
 });
+
+/**
+ * No finding message may ever contain the literal string "null" (#51).
+ *
+ * Found by @tanifgit reviewing #49's fix. Widening `Host.queued` to `number | null` made
+ * tsc audit every ARITHMETIC site for free and every STRINGIFICATION site not at all —
+ * template literals stringify null happily. `stalled_host` interpolates the depth directly,
+ * and its null guard was nested inside `if (rule.requiresQueued)`, so whether an
+ * unmeasurable depth was handled depended on a hot-reloadable config flag (ADR 0003):
+ *
+ *     requiresQueued=false -> "No activity for 900s while null message(s) are queued"
+ *
+ * One config edit from a projector, and `CLAUDE.md` §2.4 has Dev C render `message`
+ * verbatim and authoritative.
+ */
+describe('no message ever stringifies a null (#51)', () => {
+  /** Every nullable proxy count absent at once — the worst case for message building. */
+  function unmeasurable(overrides: Partial<ProxyHost> = {}): ProxyHost {
+    return proxyHost({
+      queued: null,
+      errored: null,
+      messagesPerSec: null,
+      avgProcessingTime: null,
+      avgQueueingTime: null,
+      lastActivityElapsedSeconds: 900,
+      ...overrides,
+    });
+  }
+
+  /** Sweep the config flags that change which guards run, not just the default config. */
+  const flagSets: ReadonlyArray<readonly [string, (c: ThresholdConfig) => void]> = [
+    ['defaults', () => {}],
+    ['requiresQueued=false', (c) => { c.rules.stalled_host.requiresQueued = false; }],
+    ['absoluteFloor=0', (c) => { c.rules.queue_buildup.absoluteFloor = 0; }],
+    [
+      'both relaxed',
+      (c) => {
+        c.rules.stalled_host.requiresQueued = false;
+        c.rules.queue_buildup.absoluteFloor = 0;
+      },
+    ],
+  ];
+
+  for (const [label, mutate] of flagSets) {
+    it(`emits no "null" in any message with ${label}`, () => {
+      const config = structuredClone(DEFAULT_CONFIG);
+      mutate(config);
+      const engine = new DetectionEngine(config, () => {});
+
+      let at = T0;
+      // Warm on measurable traffic, then take every count away.
+      for (let i = 0; i < 14; i += 1) {
+        engine.applyPoll(response([proxyHost()]), at);
+        at += POLL_MS;
+      }
+      for (let i = 0; i < 20; i += 1) {
+        engine.applyPoll(response([unmeasurable()]), at);
+        at += POLL_MS;
+      }
+
+      for (const finding of engine.snapshot().findings) {
+        assert.ok(
+          !finding.message.includes('null'),
+          `${finding.type} rendered a null: "${finding.message}"`,
+        );
+        assert.ok(
+          !finding.message.includes('undefined') && !finding.message.includes('NaN'),
+          `${finding.type} rendered a non-value: "${finding.message}"`,
+        );
+      }
+    });
+  }
+});

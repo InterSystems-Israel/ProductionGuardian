@@ -67,14 +67,22 @@ const stalledHost: Rule = {
     // already become 0, so the gate was never satisfied and the rule was SILENTLY off
     // against live IRIS -- a sixth live break, found by Dev C on #33.
     //
-    // Deliberate choice, not an accident: when the depth is unknown we still decline to
-    // fire. An idle host with an unknown queue is more likely quiet than hung, and firing
-    // on absent data is the false positive MVP §6 names as the top risk. The distinction
-    // is now visible in the code rather than an emergent property of a coerced zero.
-    if (rule.requiresQueued) {
-      if (raw.queued === null) return null;
-      if (raw.queued <= 0) return null;
-    }
+    // The null check is HOISTED out of the requiresQueued branch on purpose. Nested, whether
+    // an unmeasurable depth was handled depended on a config flag unrelated to nullability —
+    // and `requiresQueued` is hot-reloaded from thresholds.json (ADR 0003), so flipping it
+    // put the literal string "null" in the message, one config edit from a projector:
+    //
+    //     requiresQueued=false -> "No activity for 900s while null message(s) are queued"
+    //
+    // tsc cannot catch that: template literals stringify null happily. Widening a type
+    // audits every arithmetic site for free and every stringification site not at all.
+    //
+    // Unlike dead_host, this rule cannot just omit the depth — it is the whole point of the
+    // sentence — so an unknown depth declines to fire. An idle host with an unknown queue is
+    // more likely quiet than hung, and firing on absent data is the false positive MVP §6
+    // names as the top risk.
+    if (raw.queued === null) return null;
+    if (rule.requiresQueued && raw.queued <= 0) return null;
 
     const idleSeconds = (now - Date.parse(host.lastActivity)) / 1000;
     if (!Number.isFinite(idleSeconds) || idleSeconds < rule.inactiveSeconds) return null;
@@ -85,7 +93,7 @@ const stalledHost: Rule = {
       currentValue: Math.round(idleSeconds),
       baselineValue: null,
       message:
-        `No activity for ${Math.round(idleSeconds)}s while ${host.queued} message(s) are queued`,
+        `No activity for ${Math.round(idleSeconds)}s while ${raw.queued} message(s) are queued`,
     };
   },
 };
