@@ -1,0 +1,269 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://production-guardian/contracts/proxy.schema.json",
+  "title": "Production Guardian — metrics proxy API",
+  "description": "Schemas for GET /proxy/metrics, /proxy/alerts and /proxy/health. Owner: Dev A. See proxy-api.md.",
+
+  "definitions": {
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$",
+      "description": "ISO 8601 UTC, Z-suffixed. Sub-second digits optional: JS toISOString() emits milliseconds, Python isoformat() microseconds. Same pattern as healthscan.schema.json."
+    },
+
+    "NullableNumber": {
+      "type": ["number", "null"],
+      "description": "null means IRIS reported no series for this metric; 0 means IRIS measured zero. Never conflate them — see proxy-api.md §1.1."
+    },
+
+    "NullableCount": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Cumulative count. null means the metric family was absent, not zero."
+    },
+
+    "ProxyHost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "type",
+        "status",
+        "isFramework",
+        "queued",
+        "messages",
+        "messagesPerSec",
+        "errored",
+        "avgProcessingTime",
+        "avgQueueingTime",
+        "lastActivity",
+        "lastActivityElapsedSeconds"
+      ],
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Config item name from the IRIS `host` label. Display name, so it contains spaces ('Lab Router'). The join key through to Finding.host — NOT `name`, see proxy-api.md Q9."
+        },
+        "type": {
+          "type": "string",
+          "description": "Normalized host type. IRIS reports processes as 'actor'; the proxy maps actor -> process. 'unknown' when IRIS emitted no avg_* series for the host, which is the only place the hosttype label rides — a real value, not a defect.",
+          "enum": ["service", "process", "operation", "unknown"]
+        },
+        "status": {
+          "type": "string",
+          "description": "The IRIS `status` label, passed through. 'Unknown' when no iris_interop_hosts line was emitted for this host. There is no 'Active' and no 'Warning'. Enumerated for validation; consumers must still render unrecognized values neutrally rather than failing.",
+          "enum": [
+            "OK",
+            "Error",
+            "Inactive",
+            "Retry",
+            "Stopped",
+            "Unconfigured",
+            "Disabled",
+            "Unknown"
+          ]
+        },
+        "isFramework": {
+          "type": "boolean",
+          "description": "True for IRIS's own plumbing (Ens.*, EnsLib.*, and the bare 'ActivityReporter' spelling). A flag rather than a filter: dropping these at the proxy would hide them from the consumer with no way to ask why. 11 of 15 hosts in samples/metrics-dump.txt are framework."
+        },
+        "queued": {
+          "$ref": "#/definitions/NullableCount",
+          "description": "Per-host queue depth. null on every host today: iris_interop_queued carries no host label, so the value is not in /api/monitor/metrics at all. The per-production total is _meta.productionQueued. 0 is the contract-conformant placeholder — see proxy-api.md §6.1, issue #12."
+        },
+        "messages": {
+          "$ref": "#/definitions/NullableCount",
+          "description": "Cumulative messages processed since production start."
+        },
+        "messagesPerSec": {
+          "$ref": "#/definitions/NullableNumber",
+          "description": "Throughput over the IRIS sampling window."
+        },
+        "errored": {
+          "$ref": "#/definitions/NullableCount",
+          "description": "Cumulative errored messages. null on every host today: iris_interop_messages_errored carries no host label either, and unlike queued no per-production total is published. See proxy-api.md Q8 and §6.3. Named `errored` to match the ratified healthscan contract, not `messagesErrored` — §6.2 is a request for a decision."
+        },
+        "avgProcessingTime": {
+          "$ref": "#/definitions/NullableNumber",
+          "description": "SECONDS. Aggregated across message types, weighted by iris_interop_sample_count — IRIS emits one series per (host, messagetype). null when the host has processed nothing since stats were enabled."
+        },
+        "avgQueueingTime": {
+          "$ref": "#/definitions/NullableNumber",
+          "description": "SECONDS. Same aggregation as avgProcessingTime."
+        },
+        "lastActivity": {
+          "oneOf": [{ "$ref": "#/definitions/Timestamp" }, { "type": "null" }],
+          "description": "Derived as polledAt minus lastActivityElapsedSeconds, so accuracy is bounded by poll timing — treat as +/-10s. null when IRIS emitted no last_activity line, rather than reading as 'active just now'."
+        },
+        "lastActivityElapsedSeconds": {
+          "$ref": "#/definitions/NullableNumber",
+          "description": "Seconds since last activity as iris_interop_last_activity holds it — ELAPSED SECONDS, not an epoch timestamp. This is the measurement; prefer it over lastActivity for stalled_host."
+        }
+      }
+    },
+
+    "ProxyAlert": {
+      "type": "object",
+      "description": "One /api/monitor/alerts entry, forwarded upstream-shaped. additionalProperties stays open deliberately: the alerts payload is pinned by a single capture obtained on a first-ever read, so an unfamiliar key must not fail validation.",
+      "required": ["time", "severity", "message"],
+      "properties": {
+        "time": {
+          "type": "string",
+          "minLength": 1,
+          "description": "As IRIS emits it. Not pattern-constrained: this is upstream's format, not ours."
+        },
+        "severity": {
+          "type": "string",
+          "description": "A NUMERIC STRING ('2'), matching the level column in alerts.log — not a word. Mapping it to info/warning/critical is the consumer's decision, see proxy-api.md §6.2."
+        },
+        "message": { "type": "string" },
+        "observedAt": {
+          "$ref": "#/definitions/Timestamp",
+          "description": "The proxy's addition: the poll that observed this alert. IRIS alert bodies carry no unique id, so this is what distinguishes two identical repeated messages."
+        }
+      }
+    },
+
+    "MetricsMeta": {
+      "type": "object",
+      "description": "Diagnostics, not payload. Nothing here should feed a finding.",
+      "required": ["polledAt"],
+      "properties": {
+        "polledAt": {
+          "oneOf": [{ "$ref": "#/definitions/Timestamp" }, { "type": "null" }],
+          "description": "When the proxy sampled IRIS. null while warming. The only staleness signal — there is no X-Proxy-State header."
+        },
+        "production": { "type": ["string", "null"] },
+        "productionQueued": {
+          "$ref": "#/definitions/NullableCount",
+          "description": "iris_interop_queued: the per-PRODUCTION total. The only real queue number available from /api/monitor/metrics."
+        },
+        "absentFamilies": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tracked metric families IRIS did not emit. A family listed here is 'unmeasurable on this instance', NOT zero."
+        },
+        "hostCount": { "type": "integer", "minimum": 0 },
+        "applicationHostCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "AlertsMeta": {
+      "type": "object",
+      "required": ["polledAt", "shape", "count"],
+      "properties": {
+        "polledAt": {
+          "oneOf": [{ "$ref": "#/definitions/Timestamp" }, { "type": "null" }]
+        },
+        "shape": {
+          "type": ["string", "null"],
+          "description": "How the upstream payload was interpreted. Anything other than array/empty/wrapped:* means a zero count is a mapping gap, not a healthy production. Open string: `wrapped:<key>` and `unrecognized-<type>` are parameterized."
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Alerts in the accumulating buffer — NOT the last poll's count."
+        },
+        "newInLastPoll": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The last poll's own count. 0 is the normal steady state under consume-on-read."
+        },
+        "accumulatedSince": {
+          "oneOf": [{ "$ref": "#/definitions/Timestamp" }, { "type": "null" }]
+        },
+        "droppedCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Alerts evicted from the 500-entry buffer. Non-zero means the list is no longer complete, and the data is unrecoverable."
+        },
+        "consumeOnRead": { "type": "boolean" },
+        "systemAlertsNew": { "$ref": "#/definitions/NullableCount" },
+        "systemAlertsLog": { "$ref": "#/definitions/NullableCount" },
+        "suspectShapeMismatch": {
+          "type": "boolean",
+          "description": "True when metrics saw unread alerts the last alerts poll did not return. A hint toward a mapping problem, not a verdict."
+        },
+        "keys": { "type": "array", "items": { "type": "string" } },
+        "error": { "type": "string" },
+        "raw": {
+          "description": "The unrecognized payload, kept rather than discarded. Any type."
+        }
+      }
+    },
+
+    "MetricsResponse": {
+      "type": "object",
+      "description": "GET /proxy/metrics. Always 200, including during the startup window — see the warming note below and proxy-api.md §4.",
+      "additionalProperties": false,
+      "required": ["hosts", "_meta"],
+      "properties": {
+        "hosts": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/ProxyHost" },
+          "description": "Stable alphabetical order by host. Empty while warming, or when the production is stopped."
+        },
+        "systemAlertsNew": {
+          "$ref": "#/definitions/NullableCount",
+          "description": "iris_system_alerts_new. Consume-on-read, so it reads 0 almost always on a proxy that polls alerts."
+        },
+        "systemAlertsLog": {
+          "$ref": "#/definitions/NullableCount",
+          "description": "iris_system_alerts_log. Durable count from alerts.log; does not reset on read."
+        },
+        "warming": {
+          "type": "boolean",
+          "description": "Present and true ONLY before the first poll completes; absent afterwards. 200 rather than 503 deliberately: a 503 read to the engine as 'proxy is down' and produced a spurious finding on every restart (issue #10)."
+        },
+        "_meta": { "$ref": "#/definitions/MetricsMeta" }
+      }
+    },
+
+    "AlertsResponse": {
+      "type": "object",
+      "description": "GET /proxy/alerts. `alerts` is cumulative since proxy start, not per-poll — /api/monitor/alerts is consume-on-read and the proxy's own poll is what clears it from IRIS.",
+      "additionalProperties": false,
+      "required": ["alerts", "_meta"],
+      "properties": {
+        "alerts": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/ProxyAlert" }
+        },
+        "warming": { "type": "boolean" },
+        "_meta": { "$ref": "#/definitions/AlertsMeta" }
+      }
+    },
+
+    "HealthResponse": {
+      "type": "object",
+      "description": "GET /proxy/health. The endpoint a smoke test should assert on: 'ok' means a poll completed AND described a production, which 'a poll succeeded' alone did not.",
+      "additionalProperties": false,
+      "required": ["status", "uptime", "lastPoll"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["starting", "ok", "reachable, but no interop metrics"],
+          "description": "'reachable, but no interop metrics' is the %SYS-namespace case: HTTP 200, hundreds of real metric lines, not one iris_interop_* family. Indistinguishable from a stopped production without this."
+        },
+        "uptime": {
+          "type": "number",
+          "minimum": 0,
+          "description": "process.uptime() in seconds."
+        },
+        "lastPoll": {
+          "oneOf": [{ "$ref": "#/definitions/Timestamp" }, { "type": "null" }],
+          "description": "null while status is 'starting'."
+        },
+        "production": { "type": ["string", "null"] },
+        "hostCount": { "type": "integer", "minimum": 0 },
+        "applicationHostCount": { "type": "integer", "minimum": 0 },
+        "hint": {
+          "type": "string",
+          "description": "Present only on 'reachable, but no interop metrics'. Names the likely cause, usually a wrong IRIS_BASE_PATH."
+        }
+      }
+    }
+  }
+}

@@ -3,6 +3,8 @@
  *
  *   node contracts/validate.mjs
  *
+ * Covers both contracts: healthscan (Dev B -> Dev C) and proxy (Dev A -> Dev B).
+ *
  * Exits non-zero on the first failure, so it works unchanged as a CI step.
  *
  * Why a script rather than an ajv-cli one-liner:
@@ -27,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_ID = 'https://production-guardian/contracts/healthscan.schema.json';
+const PROXY_SCHEMA_ID = 'https://production-guardian/contracts/proxy.schema.json';
 
 /** Each sample is validated against ONE named definition, never "either". */
 const CASES = [
@@ -165,13 +168,171 @@ const MUST_ACCEPT = [
   },
 ];
 
+/**
+ * The proxy contract's own cases. Separate arrays rather than a `schema` field on the
+ * existing ones, so nothing above changes shape.
+ *
+ * `samples/metrics-dump.txt` is raw Prometheus text, not JSON, so it cannot be validated
+ * against a schema the way the healthscan samples are — the structural check below is
+ * what covers it. The snapshot here carries the real Lab Router values that
+ * `services/metrics-proxy/src/parser.js` produces from that capture, so a schema that
+ * stopped accepting the proxy's actual output fails here.
+ */
+const REAL_LAB_ROUTER = {
+  host: 'Lab Router',
+  type: 'process',
+  status: 'OK',
+  isFramework: false,
+  queued: null,
+  messages: 126,
+  messagesPerSec: 1.2,
+  errored: null,
+  avgProcessingTime: 0.08,
+  avgQueueingTime: 0,
+  lastActivity: '2026-08-11T23:59:55.162Z',
+  lastActivityElapsedSeconds: 4.838,
+};
+
+const PROXY_MUST_ACCEPT = [
+  {
+    name: 'real Lab Router host, nulls included',
+    definition: 'ProxyHost',
+    data: REAL_LAB_ROUTER,
+  },
+  {
+    name: 'warming metrics response (200, not 503)',
+    definition: 'MetricsResponse',
+    data: { hosts: [], systemAlertsNew: null, warming: true, _meta: { polledAt: null } },
+  },
+  {
+    name: 'real metrics response',
+    definition: 'MetricsResponse',
+    data: {
+      hosts: [REAL_LAB_ROUTER],
+      systemAlertsNew: 1,
+      systemAlertsLog: 1,
+      _meta: {
+        polledAt: '2026-08-12T00:00:00Z',
+        production: 'LABDEMO.Production',
+        productionQueued: 0,
+        absentFamilies: [],
+        hostCount: 15,
+        applicationHostCount: 4,
+      },
+    },
+  },
+  {
+    name: 'real alert, severity as the numeric string IRIS emits',
+    definition: 'ProxyAlert',
+    data: {
+      time: '2026-08-11T04:12:07.382Z',
+      severity: '2',
+      message: '^ISCSOAP in Namespace MAIN has been active for 452 day(s).',
+      observedAt: '2026-08-12T08:45:30.264Z',
+    },
+  },
+  {
+    name: 'health reporting a reachable instance with no interop metrics',
+    definition: 'HealthResponse',
+    data: {
+      status: 'reachable, but no interop metrics',
+      uptime: 2.58,
+      lastPoll: '2026-08-12T08:50:16.079Z',
+      production: null,
+      hostCount: 0,
+      applicationHostCount: 0,
+      hint: 'IRIS answered but sent no iris_interop_* families.',
+    },
+  },
+];
+
+/**
+ * The proxy cases that must FAIL. The last two are the engine's current shape
+ * (`name`, `messagesErrored`) — see `proxy-api.md` §5.2. They are here so that if the
+ * naming question in §6.2 is settled the other way, this check says so.
+ */
+const PROXY_MUST_REJECT = [
+  {
+    name: 'status "Active" — not in the IRIS enum',
+    definition: 'ProxyHost',
+    data: { ...REAL_LAB_ROUTER, status: 'Active' },
+  },
+  {
+    name: 'type "actor" — must be normalized to process',
+    definition: 'ProxyHost',
+    data: { ...REAL_LAB_ROUTER, type: 'actor' },
+  },
+  {
+    name: 'lastActivity with an offset instead of Z',
+    definition: 'ProxyHost',
+    data: { ...REAL_LAB_ROUTER, lastActivity: '2026-08-11T23:59:55+00:00' },
+  },
+  {
+    name: 'null host name',
+    definition: 'ProxyHost',
+    data: { ...REAL_LAB_ROUTER, host: null },
+  },
+  {
+    name: 'metrics response with no _meta',
+    definition: 'MetricsResponse',
+    data: { hosts: [] },
+  },
+  {
+    name: 'alerts response served in the metrics position',
+    definition: 'MetricsResponse',
+    data: { alerts: [], _meta: { polledAt: null, shape: 'empty', count: 0 } },
+  },
+  {
+    name: 'engine-shaped host: `name` instead of `host`',
+    definition: 'ProxyHost',
+    data: (() => {
+      const { host, ...rest } = REAL_LAB_ROUTER;
+      return { ...rest, name: host };
+    })(),
+  },
+  {
+    name: 'engine-shaped host: `messagesErrored` instead of `errored`',
+    definition: 'ProxyHost',
+    data: (() => {
+      const { errored, ...rest } = REAL_LAB_ROUTER;
+      return { ...rest, messagesErrored: 0 };
+    })(),
+  },
+];
+
+/**
+ * Structural claims about the raw capture. Not a schema check — it is a text body — but
+ * the contract quotes label shapes out of it, so a capture that lost them would make
+ * `proxy-api.md` describe something no longer in the repo.
+ *
+ * Both `_absent` lines are the point: they are what §6.1 and §6.3 are about, and an
+ * assertion that a label is *missing* is the only way a future capture silently gaining
+ * it gets noticed.
+ */
+const CAPTURE_CLAIMS = [
+  { name: 'host label is `host`, with spaces', re: /^iris_interop_hosts\{[^}]*host="Lab Router"/m },
+  { name: 'status is a label, and reads OK', re: /^iris_interop_hosts\{[^}]*status="OK"/m },
+  { name: 'last_activity is elapsed seconds', re: /^iris_interop_last_activity\{[^}]*host="Lab Router"[^}]*\} 4\.838$/m },
+  { name: 'hosttype rides on avg_processing_time as `actor`', re: /^iris_interop_avg_processing_time\{[^}]*hosttype="actor"/m },
+  { name: 'sample_count is its own family, per (host, messagetype)', re: /^iris_interop_sample_count\{[^}]*host="Lab Router"[^}]*messagetype="ORM_O01"/m },
+  { name: 'queued carries NO host label (§6.1)', re: /^iris_interop_queued\{id="LABDEMO",production="LABDEMO\.Production"\} 0$/m },
+  { name: 'messages_errored carries NO host label (§6.3)', re: /^iris_interop_messages_errored\{id="LABDEMO",production="LABDEMO\.Production"\} 0$/m },
+];
+
 const ajv = new Ajv({ strict: false, allErrors: true });
 addFormats(ajv);
 ajv.addSchema(JSON.parse(readFileSync(join(here, 'healthscan.schema.json'), 'utf8')));
+ajv.addSchema(JSON.parse(readFileSync(join(here, 'proxy.schema.json'), 'utf8')));
 
 const validatorFor = (definition) => {
   const validate = ajv.getSchema(`${SCHEMA_ID}#/definitions/${definition}`);
   if (validate === undefined) throw new Error(`no such definition: ${definition}`);
+  return validate;
+};
+
+const proxyValidatorFor = (definition) => {
+  const validate = ajv.getSchema(`${PROXY_SCHEMA_ID}#/definitions/${definition}`);
+  if (validate === undefined) throw new Error(`no such proxy definition: ${definition}`);
   return validate;
 };
 
@@ -201,9 +362,27 @@ for (const { name, definition, data } of MUST_REJECT) {
   report(!validate(data), `rejects: ${name}`);
 }
 
+for (const { name, definition, data } of PROXY_MUST_ACCEPT) {
+  const validate = proxyValidatorFor(definition);
+  const ok = validate(data);
+  report(ok, `proxy accepts: ${name}`);
+  if (!ok) console.log(`      ${ajv.errorsText(validate.errors)}`);
+}
+
+for (const { name, definition, data } of PROXY_MUST_REJECT) {
+  const validate = proxyValidatorFor(definition);
+  report(!validate(data), `proxy rejects: ${name}`);
+}
+
+const capture = readFileSync(join(here, 'samples/metrics-dump.txt'), 'utf8');
+for (const { name, re } of CAPTURE_CLAIMS) {
+  report(re.test(capture), `metrics-dump.txt: ${name}`);
+}
+
 console.log(
   failures === 0
-    ? `\nall checks passed (${CASES.length} samples, ${MUST_ACCEPT.length} accept, ${MUST_REJECT.length} reject)`
+    ? `\nall checks passed (${CASES.length} samples, ${MUST_ACCEPT.length + PROXY_MUST_ACCEPT.length} accept, `
+      + `${MUST_REJECT.length + PROXY_MUST_REJECT.length} reject, ${CAPTURE_CLAIMS.length} capture claims)`
     : `\n${failures} check(s) failed`,
 );
 process.exit(failures === 0 ? 0 : 1);
