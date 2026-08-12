@@ -94,7 +94,7 @@ export class DetectionEngine {
     const seenHosts = new Set<string>();
 
     for (const proxyHost of response.hosts) {
-      if (isFrameworkHost(proxyHost.name)) continue;
+      if (isFrameworkHost(proxyHost.host)) continue;
 
       const host = normalizeHost(proxyHost, now);
       seenHosts.add(host.host);
@@ -188,14 +188,19 @@ export class DetectionEngine {
    * means the production restarted, so we reset rather than report a negative rate.
    */
   #errorsPerMinute(proxyHost: ProxyHost, now: number): number | null {
-    const prior = this.#priorErrored.get(proxyHost.name);
-    this.#priorErrored.set(proxyHost.name, { errored: proxyHost.messagesErrored, at: now });
+    // `errored` is null on every host today: iris_interop_messages_errored has no `host`
+    // label (#31). Without a count there is no rate, so return null and let
+    // elevated_error_rate stay silent rather than compare against a fabricated 0.
+    if (proxyHost.errored === null) return null;
+
+    const prior = this.#priorErrored.get(proxyHost.host);
+    this.#priorErrored.set(proxyHost.host, { errored: proxyHost.errored, at: now });
 
     if (prior === undefined) return null;
     const elapsedMs = now - prior.at;
     if (elapsedMs <= 0) return null;
 
-    const delta = proxyHost.messagesErrored - prior.errored;
+    const delta = proxyHost.errored - prior.errored;
     if (delta < 0) return null;
 
     return (delta / elapsedMs) * 60_000;
@@ -261,16 +266,39 @@ export class DetectionEngine {
  */
 export function normalizeHost(proxyHost: ProxyHost, now: number): Host {
   return {
-    host: proxyHost.name,
+    host: proxyHost.host,
     type: normalizeHostType(proxyHost.type),
     status: proxyHost.status as HostStatus,
-    queued: proxyHost.queued,
-    messagesPerSec: proxyHost.messagesPerSec,
-    errored: proxyHost.messagesErrored,
-    avgProcessingTime: proxyHost.avgProcessingTime,
-    avgQueueingTime: proxyHost.avgQueueingTime,
-    lastActivity: isoSeconds(now - proxyHost.lastActivityElapsedSeconds * 1000),
+    queued: orZero(proxyHost.queued),
+    messagesPerSec: orZero(proxyHost.messagesPerSec),
+    errored: orZero(proxyHost.errored),
+    avgProcessingTime: orZero(proxyHost.avgProcessingTime),
+    avgQueueingTime: orZero(proxyHost.avgQueueingTime),
+    // A host with no activity line has never run, so "now" is the only defensible
+    // reading — and lastActivity is +-10s anyway (contract Q11).
+    lastActivity: isoSeconds(now - (proxyHost.lastActivityElapsedSeconds ?? 0) * 1000),
   };
+}
+
+/**
+ * Collapse an unmeasurable count to 0 for the published `Host` shape.
+ *
+ * This is a lie we tell deliberately and narrowly, and it is worth being explicit about
+ * why. `contracts/healthscan.schema.json` declares `Host.queued` and `Host.errored` as
+ * REQUIRED integers, and Dev C's grid renders them unconditionally. Emitting `null`
+ * against a required-integer field would do to Dev C exactly what the proxy's `null`
+ * did to us -- their guard would reject the host and the grid would blank (#32). So the
+ * wire stays contract-conformant.
+ *
+ * The 0 is not load-bearing for detection: `#errorsPerMinute` reads the raw nullable
+ * value BEFORE this conversion and returns null when it is absent, so no rule compares
+ * against the fabricated zero. `queue_buildup` is blocked upstream regardless (#12).
+ *
+ * The real fix is a contract change making these two fields `number | null`, which is a
+ * PR to `contracts/` with all three reviewers -- not something to slip in here.
+ */
+function orZero(value: number | null): number {
+  return value ?? 0;
 }
 
 /** Contract Q10: IRIS 'actor' means a business process. */

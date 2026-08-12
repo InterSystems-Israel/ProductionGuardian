@@ -1,82 +1,83 @@
 /**
  * Dev A's metrics-proxy output (:3001).
  *
- * ┌──────────────────────────────────────────────────────────────────────────┐
- * │ UNRATIFIED. contracts/proxy-api.md does not exist yet, so this file is    │
- * │ OUR ASSUMPTION of Dev A's shape, not an agreed contract.                  │
- * │                                                                          │
- * │ Every assumption is tagged // PROXY-Q<n>. Reconciling when Dev A lands    │
- * │ their contract must be a grep, not an audit:                             │
- * │     grep -rn "PROXY-Q" src/                                              │
- * └──────────────────────────────────────────────────────────────────────────┘
+ * RATIFIED. Transcribed from `contracts/proxy-api.md` and `contracts/proxy.schema.json`.
+ * The five `PROXY-Q` markers this file used to carry are resolved and gone — the answers
+ * live in §5 of `proxy-api.md`, and three of the five contradicted what we had assumed.
+ * Do not drift from the contract: a change here without a matching PR to `contracts/` is
+ * the failure mode that breaks integration.
  *
- * Open questions for Dev A:
+ * What the assumptions got wrong, because it explains the shape of this file:
  *
- * PROXY-Q1  Are per-host entries an array (assumed) or an object keyed by host name?
- *           And is `status` passed through exactly as IRIS reports it (assumed), or
- *           already normalized?
+ *   Q1  the host field is `host`, not `name`, and the error count is `errored`, not
+ *       `messagesErrored`. Our guard rejected every real host on those two names alone.
+ *   Q2  `queued` is `null` on every host. `iris_interop_queued` has no `host` label — it
+ *       is emitted once per production, with the real total in `_meta.productionQueued`.
+ *   Q5  framework hosts DO reach us, flagged `isFramework`. We filter anyway (below),
+ *       because trusting an upstream flag for a correctness-critical filter is worse than
+ *       one redundant check.
  *
- * PROXY-Q2  Is `queued` present per host? It is NOT in the Prometheus text —
- *           iris_interop_queued carries no `host` label, only `production`. Per-host
- *           depth requires reading Ens.Util.Statistics:EnumerateHostStatus.
- *           Verified on live LABDEMO: Cloud API = 48 while disabled.
- *           Raised in ADR 0001 and PR #4. THIS ONE BLOCKS queue_buildup.
- *
- * PROXY-Q3  Are avgProcessingTime / avgQueueingTime already aggregated across
- *           messagetype (assumed), or passed through as raw per-messagetype series?
- *           IRIS emits one series per (host, messagetype). If raw, aggregation moves
- *           here and must be weighted by sampleCount — a plain mean is wrong.
- *
- * PROXY-Q4  Is last-activity given as elapsed seconds (assumed — that is what
- *           iris_interop_last_activity holds) or already converted to a timestamp?
- *
- * PROXY-Q5  Are framework hosts (Ens.MonitorService, Ens.Alarm, EnsLib.Testing.*,
- *           Ens.Activity.Operation.Local, …) filtered by the proxy, or do they reach
- *           us? We assume they reach us and filter here — filtering our own side is
- *           safe either way.
+ * And one the questions did not think to ask: `errored` is null for the same reason as
+ * `queued` — `iris_interop_messages_errored` is also per-production (#31). Unlike
+ * `queued` there is no per-production total published at all, so the figure is simply
+ * absent rather than relocated.
  */
+
+/**
+ * A count that may be unmeasurable. `null` means "IRIS does not expose this per host",
+ * NOT "zero" — the distinction matters because a rule must stay silent rather than
+ * compare against a fabricated 0.
+ */
+export type NullableCount = number | null;
 
 /** One host as the proxy reports it. */
 export interface ProxyHost {
-  /** Config item name, e.g. "Lab Router". */
-  name: string;
-  /** PROXY-Q1: IRIS vocabulary — 'service' | 'process' | 'actor' | 'operation'. */
+  /** Config item name, e.g. "Lab Router". A display name, so it contains spaces. */
+  host: string;
+  /** Normalized by the proxy: 'service' | 'process' | 'operation' | 'unknown'. */
   type: string;
-  /** PROXY-Q1: raw IRIS status, e.g. 'OK' | 'Error' | 'Inactive' | 'Disabled'. */
+  /** Raw IRIS status, passed through. `Unknown` when no status line was emitted. */
   status: string;
-  /** PROXY-Q2: per-host queue depth. Requires host-status read, not /metrics. */
-  queued: number;
-  /** Cumulative messages processed since production start. */
-  messages: number;
-  messagesPerSec: number;
-  messagesErrored: number;
-  /** PROXY-Q3: seconds, assumed already aggregated across message types. */
-  avgProcessingTime: number;
-  /** PROXY-Q3: seconds, assumed already aggregated across message types. */
-  avgQueueingTime: number;
-  /** PROXY-Q4: seconds since last activity, as iris_interop_last_activity gives it. */
-  lastActivityElapsedSeconds: number;
-  /** PROXY-Q3: total samples behind the avg* figures. Needed to weight aggregation. */
-  sampleCount?: number;
+  /** The proxy's own view of whether this is framework infrastructure. Advisory. */
+  isFramework: boolean;
+  /** null — not exposed per host by IRIS. See #12 and `_meta.productionQueued`. */
+  queued: NullableCount;
+  messages: NullableCount;
+  messagesPerSec: NullableCount;
+  /** null — not exposed per host by IRIS. See #31; no production total is published. */
+  errored: NullableCount;
+  /** Seconds, aggregated across message types weighted by sample count (Q3). */
+  avgProcessingTime: NullableCount;
+  /** Seconds, aggregated the same way. */
+  avgQueueingTime: NullableCount;
+  /** ISO 8601, computed by the proxy as `polledAt - elapsed`. null if no activity line. */
+  lastActivity: string | null;
+  /** Raw elapsed seconds as IRIS emits it. We prefer this and derive our own timestamp. */
+  lastActivityElapsedSeconds: NullableCount;
 }
 
-/** One entry from /api/monitor/alerts, forwarded by the proxy. */
+/** One entry from `/api/monitor/alerts`, forwarded on `GET /proxy/alerts`. */
 export interface ProxyAlert {
-  /** ISO 8601 timestamp as IRIS emits it. */
+  /** As IRIS emits it. Deliberately not pattern-constrained — upstream's format. */
   time: string;
-  /** IRIS severity is a numeric string ("1", "2", …), not a word. */
+  /** A NUMERIC STRING ('2'), not a word. Mapping it to a severity is our decision. */
   severity: string;
   message: string;
+  /** When the proxy first saw it. Present on newer proxy builds. */
+  observedAt?: string;
 }
 
-/** A complete proxy poll response. */
+/** What the engine consumes each poll, assembled from BOTH proxy endpoints. */
 export interface ProxyResponse {
-  /** When the proxy sampled IRIS. ISO 8601. */
+  /** When the proxy sampled IRIS, from `_meta.polledAt`. */
   sampledAt: string;
-  /** Production name, e.g. "LABDEMO.Production". */
   production: string;
   hosts: ProxyHost[];
   alerts: ProxyAlert[];
+  /** True while the proxy has polled nothing yet — serve empty, do not treat as an error. */
+  warming: boolean;
+  /** Production-wide queue depth, since it is not available per host. */
+  productionQueued: NullableCount;
 }
 
 /** What the engine reads metrics from. Both real and mock clients satisfy it. */
@@ -85,8 +86,13 @@ export interface ProxyClient {
 }
 
 /**
- * Framework hosts that must never reach the findings API (PROXY-Q5).
- * Exact names plus prefixes — the Ens.* and EnsLib.* namespaces are IRIS's own.
+ * Framework hosts that must never reach the findings API.
+ *
+ * The proxy now flags these itself as `isFramework`, and we still check independently.
+ * Two reasons: a prefix test is cheap, and the upstream flag is derived from the item
+ * name rather than the class name — which is exactly how `Ens.ActivityReporter` leaked
+ * once before (#10). Believing a single upstream flag for a correctness-critical filter
+ * is worse than running a redundant test.
  */
 const FRAMEWORK_HOST_PREFIXES: readonly string[] = ['Ens.', 'EnsLib.'] as const;
 
@@ -96,26 +102,43 @@ export function isFrameworkHost(name: string): boolean {
 }
 
 /**
+ * A metric value we can use, or null.
+ *
+ * NaN and Infinity are rejected rather than passed through: the proxy maps Prometheus
+ * `NaN`/`+Inf` to null already, so this is the belt to that braces — a number that
+ * breaks arithmetic silently is worse than an absent one.
+ */
+export function isNullableCount(value: unknown): value is NullableCount {
+  return value === null || (typeof value === 'number' && Number.isFinite(value));
+}
+
+/**
  * Runtime shape validation at the process boundary.
  *
- * Log-and-skip a malformed host rather than rejecting the whole payload: one bad
- * entry should not blind us to the other three hosts.
+ * Log-and-skip a malformed host rather than rejecting the whole payload: one bad entry
+ * should not blind us to the others. The previous version demanded a finite `queued` and
+ * a `messagesErrored` field, so it rejected **every** real host and the engine reported
+ * zero — a blank dashboard rather than a degraded one (#32). Nullable counts are now
+ * accepted as unknown, which is what they are.
+ *
+ * `isFramework` is deliberately NOT required: it is advisory, we filter by prefix
+ * ourselves, and an older proxy build that omits it should still be consumable.
  */
 export function isProxyHost(value: unknown): value is ProxyHost {
   if (typeof value !== 'object' || value === null) return false;
   const h = value as Record<string, unknown>;
   return (
-    typeof h['name'] === 'string' &&
-    h['name'].length > 0 &&
+    typeof h['host'] === 'string' &&
+    h['host'].length > 0 &&
     typeof h['type'] === 'string' &&
     typeof h['status'] === 'string' &&
-    isFiniteNumber(h['queued']) &&
-    isFiniteNumber(h['messages']) &&
-    isFiniteNumber(h['messagesPerSec']) &&
-    isFiniteNumber(h['messagesErrored']) &&
-    isFiniteNumber(h['avgProcessingTime']) &&
-    isFiniteNumber(h['avgQueueingTime']) &&
-    isFiniteNumber(h['lastActivityElapsedSeconds'])
+    isNullableCount(h['queued']) &&
+    isNullableCount(h['messages']) &&
+    isNullableCount(h['messagesPerSec']) &&
+    isNullableCount(h['errored']) &&
+    isNullableCount(h['avgProcessingTime']) &&
+    isNullableCount(h['avgQueueingTime']) &&
+    isNullableCount(h['lastActivityElapsedSeconds'])
   );
 }
 
@@ -127,9 +150,4 @@ export function isProxyAlert(value: unknown): value is ProxyAlert {
     typeof a['severity'] === 'string' &&
     typeof a['message'] === 'string'
   );
-}
-
-/** NaN and Infinity are not usable metric values, so reject them explicitly. */
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
 }

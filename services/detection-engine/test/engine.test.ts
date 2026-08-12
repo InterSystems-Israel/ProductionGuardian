@@ -18,15 +18,17 @@ const POLL_MS = 10_000;
 
 function proxyHost(overrides: Partial<ProxyHost> = {}): ProxyHost {
   return {
-    name: 'Lab Router',
+    host: 'Lab Router',
     type: 'actor',
     status: 'OK',
+    isFramework: false,
     queued: 0,
     messages: 100,
     messagesPerSec: 1.2,
-    messagesErrored: 0,
+    errored: 0,
     avgProcessingTime: 0.08,
     avgQueueingTime: 0,
+    lastActivity: null,
     lastActivityElapsedSeconds: 4,
     ...overrides,
   };
@@ -38,6 +40,8 @@ function response(hosts: ProxyHost[]): ProxyResponse {
     production: 'LABDEMO.Production',
     hosts,
     alerts: [],
+    warming: false,
+    productionQueued: null,
   };
 }
 
@@ -78,10 +82,10 @@ describe('normalization', () => {
     const engine = new DetectionEngine(DEFAULT_CONFIG);
     engine.applyPoll(
       response([
-        proxyHost({ name: 'Lab Router' }),
-        proxyHost({ name: 'Ens.MonitorService' }),
-        proxyHost({ name: 'EnsLib.Testing.Process' }),
-        proxyHost({ name: 'Ens.Activity.Operation.Local' }),
+        proxyHost({ host: 'Lab Router' }),
+        proxyHost({ host: 'Ens.MonitorService' }),
+        proxyHost({ host: 'EnsLib.Testing.Process' }),
+        proxyHost({ host: 'Ens.Activity.Operation.Local' }),
       ]),
       T0,
     );
@@ -93,9 +97,9 @@ describe('normalization', () => {
     const engine = new DetectionEngine(DEFAULT_CONFIG);
     engine.applyPoll(
       response([
-        proxyHost({ name: 'Lab Router' }),
-        proxyHost({ name: 'Cloud API' }),
-        proxyHost({ name: 'EMR Source' }),
+        proxyHost({ host: 'Lab Router' }),
+        proxyHost({ host: 'Cloud API' }),
+        proxyHost({ host: 'EMR Source' }),
       ]),
       T0,
     );
@@ -295,7 +299,7 @@ describe('stale handling', () => {
 describe('error rate derivation', () => {
   it('does not fire on the first poll, when rate is unknowable', () => {
     const engine = new DetectionEngine(DEFAULT_CONFIG);
-    engine.applyPoll(response([proxyHost({ messagesErrored: 500 })]), T0);
+    engine.applyPoll(response([proxyHost({ errored: 500 })]), T0);
     assert.equal(engine.snapshot().findings.length, 0);
   });
 
@@ -303,10 +307,10 @@ describe('error rate derivation', () => {
     const engine = new DetectionEngine(DEFAULT_CONFIG);
     let at = warmUp(engine);
 
-    engine.applyPoll(response([proxyHost({ messagesErrored: 100 })]), at);
+    engine.applyPoll(response([proxyHost({ errored: 100 })]), at);
     at += POLL_MS;
     // Counter resets to 0: a negative delta must not become a negative rate.
-    engine.applyPoll(response([proxyHost({ messagesErrored: 0 })]), at);
+    engine.applyPoll(response([proxyHost({ errored: 0 })]), at);
 
     const errorFindings = engine
       .snapshot()
@@ -450,7 +454,7 @@ describe('inert override warning reaches the log (#25)', () => {
     const engine = new DetectionEngine(withOverride, (msg) => logs.push(msg));
     let at = T0;
     for (let i = 0; i < 5; i += 1) {
-      engine.applyPoll(response([proxyHost({ name: 'Tick Feed' })]), at);
+      engine.applyPoll(response([proxyHost({ host: 'Tick Feed' })]), at);
       at += POLL_MS;
     }
     assert.equal(logs.length, 1, `expected one warning, got ${logs.length}`);
@@ -461,16 +465,16 @@ describe('inert override warning reaches the log (#25)', () => {
   it('stays silent when the override applies', () => {
     const logs: string[] = [];
     const engine = new DetectionEngine(withOverride, (msg) => logs.push(msg));
-    engine.applyPoll(response([proxyHost({ name: 'Cloud API' })]), T0);
+    engine.applyPoll(response([proxyHost({ host: 'Cloud API' })]), T0);
     assert.deepEqual(logs, []);
   });
 
   it('warns again after reconfigure, so a corrected file is re-checked', () => {
     const logs: string[] = [];
     const engine = new DetectionEngine(withOverride, (msg) => logs.push(msg));
-    engine.applyPoll(response([proxyHost({ name: 'Tick Feed' })]), T0);
+    engine.applyPoll(response([proxyHost({ host: 'Tick Feed' })]), T0);
     engine.reconfigure(withOverride);
-    engine.applyPoll(response([proxyHost({ name: 'Tick Feed' })]), T0 + POLL_MS);
+    engine.applyPoll(response([proxyHost({ host: 'Tick Feed' })]), T0 + POLL_MS);
     assert.equal(logs.length, 2);
   });
 });

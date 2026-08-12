@@ -4,57 +4,61 @@
   "production": "LABDEMO.Production",
   "hosts": [
     {
-      "name": "EMR Source",
+      "host": "EMR Source",
       "type": "service",
       "status": "OK",
       "queued": 0,
       "messages": 196,
       "messagesPerSec": 0.2,
-      "messagesErrored": 0,
+      "errored": 0,
       "avgProcessingTime": 0.01,
       "avgQueueingTime": 0,
       "lastActivityElapsedSeconds": 4.083,
-      "sampleCount": 12
+      "sampleCount": 12,
+      "isFramework": false
     },
     {
-      "name": "Lab Router",
+      "host": "Lab Router",
       "type": "actor",
       "status": "OK",
       "queued": 0,
       "messages": 1176,
       "messagesPerSec": 1.2,
-      "messagesErrored": 0,
+      "errored": 0,
       "avgProcessingTime": 0.08,
       "avgQueueingTime": 0,
       "lastActivityElapsedSeconds": 3.966,
-      "sampleCount": 24
+      "sampleCount": 24,
+      "isFramework": false
     },
     {
-      "name": "Cloud API",
+      "host": "Cloud API",
       "type": "operation",
       "status": "OK",
       "queued": 0,
       "messages": 392,
       "messagesPerSec": 0.4,
-      "messagesErrored": 0,
+      "errored": 0,
       "avgProcessingTime": 0.05,
       "avgQueueingTime": 0.02,
       "lastActivityElapsedSeconds": 3.973,
-      "sampleCount": 24
+      "sampleCount": 24,
+      "isFramework": false
     },
     {
       "_comment": "Framework host, present to prove the engine filters it out (PROXY-Q5).",
-      "name": "Ens.MonitorService",
+      "host": "Ens.MonitorService",
       "type": "service",
       "status": "OK",
       "queued": 0,
       "messages": 12,
       "messagesPerSec": 0.2,
-      "messagesErrored": 0,
+      "errored": 0,
       "avgProcessingTime": 0,
       "avgQueueingTime": 0,
       "lastActivityElapsedSeconds": 1.2,
-      "sampleCount": 12
+      "sampleCount": 12,
+      "isFramework": true
     }
   ],
   "alerts": []
