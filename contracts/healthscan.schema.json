@@ -44,9 +44,9 @@
           ]
         },
         "queued": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 0,
-          "description": "Current queue depth."
+          "description": "Current queue depth. null means the depth is not measurable for this host — not that it is zero. Render as an em dash, never as 0. See Q13."
         },
         "messagesPerSec": {
           "type": "number",
@@ -54,9 +54,9 @@
           "description": "Throughput over the last sampling interval."
         },
         "errored": {
-          "type": "integer",
+          "type": ["integer", "null"],
           "minimum": 0,
-          "description": "Cumulative errored message count since production start."
+          "description": "Cumulative errored message count since production start. null means not measurable for this host — not zero errors. Render as an em dash, never as 0. See Q13."
         },
         "avgProcessingTime": {
           "type": "number",

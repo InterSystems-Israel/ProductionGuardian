@@ -4,6 +4,111 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-08-12 — `Host.queued` and `Host.errored` become `number | null` (Dev C)
+
+**A real field-type change on the published contract, and the first one that requires an edit on
+both sides.** `queued` and `errored` widen from `integer` to `integer | null`. `null` means *"not
+measurable for this host"* and never *"zero"*. Both keys stay **required** — a `null` value is
+legal, an absent key is not.
+
+**Why: the engine publishes a `0` nobody measured, and one rule reads that `0` as a symptom.**
+`iris_interop_queued` carries no `host` label (it emits once per production), so at the time of
+writing the proxy sent `queued: null` for **every** host — established in issue #12 and confirmed
+against the real capture on PR #33. The engine's `normalizeHost()` collapses that `null` to `0`
+because this schema declared the field a required integer. So the coercion exists *to satisfy this
+file*, which makes the fix belong here rather than in the engine.
+
+That coercion is not inert. Two reproductions from the PR #33 review, both by probing rather than
+reading:
+
+```
+after 20 healthy polls at 1.2 msg/s  : []
+after 2 polls with messagesPerSec=null: ["throughput_drop"]
+   -> throughput_drop | Throughput 0.0 msg/sec is 100% below baseline
+```
+
+```
+Host idle 400s, status OK:
+  queued: null  (what live sends)  -> Host.queued=0  -> findings=[NONE]
+  queued: 5     (measurable depth) -> Host.queued=5  -> findings=[stalled_host]
+```
+
+The first is a critical-looking finding about a production running perfectly; the second is a rule
+silently switched off, because `requiresQueued && host.queued <= 0` can never be satisfied when
+every host reports `0`. **Note the asymmetry** — coercing to zero is harmless for every rule where
+higher is worse (`slow_processing`, `growing_queue_wait` fall under their floors and stay quiet) and
+unsafe for the one rule where lower is worse. That is what makes it a type problem and not a
+threshold problem.
+
+Dev A's parser already carries the argument, in `parser.js:264`:
+
+> *Every numeric field starts null, not 0. IRIS omits whole families rather than emitting zeros,
+> and `0` has to keep meaning "measured zero" or every comparative rule downstream reasons about
+> invented data.*
+
+The pipeline preserves `null` end to end and then discards it in the last function before the rules
+run. This change lets it survive to the consumer, so **rules skip instead of comparing** and
+`stalled_host` can tell *"nothing queued"* from *"depth unknown"*.
+
+**Supersedes the "Known gap" note of 2026-08-06**, which concluded that `Host.queued` stays a
+required number because per-host depth is available from `Ens.Util.Statistics:EnumerateHostStatus`.
+That is still true of IRIS, and it is how the measured `48` in `samples/hosts-response.json` was
+obtained — but the proxy read the Prometheus metrics text only, so the note's own condition
+(*"no contract impact if that holds"*) did not hold.
+
+### PR #36 changes which case is normal, and does not remove the need for this
+
+**#36 makes per-host counts measurable** — a host-status REST endpoint in `iris/`, merged by the
+proxy on host name — so the counts arrive as real numbers and the all-null era ends. That does not
+make this change unnecessary; it changes `null` from *the norm* into *the documented exception*, and
+an exception still has to be expressible:
+
+- a host the endpoint's response did not describe (`_meta.hostStatus.unmatchedHosts`),
+- the endpoint unreachable, 404 on a missing CSP application, or the third poll failing,
+- the merge switched off with an empty `IRIS_HOSTSTATUS_PATH`.
+
+**#36 holds exactly this invariant on its own side** — *"a host the endpoint did not describe keeps
+`null`, not `0`"* — and its proxy contract already types both counts as `NullableCount`. Without
+this change the published contract is the one place in the chain that cannot represent what the
+proxy is careful to preserve, and the engine has to flatten it on the last hop. The two changes
+agree; they are not alternatives.
+
+Note this also means the *reproductions above stay reachable after #36*, on any host the merge
+misses — which is the argument for landing both.
+
+**Changes:**
+
+- `healthscan.schema.json` — `queued` and `errored` → `"type": ["integer", "null"]`. `minimum: 0`
+  is kept and still applies; draft-07 `minimum` does not constrain `null`.
+- `healthscan.d.ts` — `queued: number | null`, `errored: number | null`.
+- `healthscan-api.md` — §1 field table, an explicit present-but-null sentence under it, and **Q13**
+  in §4. §4.1 records this as the second contradiction of a Dev C assumption after Q1.
+- `validate.mjs` — one must-accept (`queued`/`errored` both null, the shape the live proxy sends
+  today) and two must-reject: `queued` as a **string**, and the key **omitted entirely**. The
+  accept case is what makes the change real; the reject cases are what stop it from meaning
+  "anything goes". 14 checks, was 11.
+
+**The samples are deliberately unchanged.** They carry measured LABDEMO values, and `queued: 48`
+on a disabled Cloud API was genuinely observed. Rewriting them to `null` would trade a real number
+for a synthetic one and would move the bytes Dev B's fixtures and Dev C's eight scenarios are
+anchored to, mid-sprint, for no gain. The null shape is exercised in `validate.mjs` instead, which
+is where a shape with no measured instance belongs.
+
+Verified: `node validate.mjs` → 14/14. Reverting the schema to `"type": "integer"` fails the new
+accept case, so it bites rather than decorating.
+
+### Open on the consumer side, not resolved here
+
+**`messagesPerSec` has the same argument and is deliberately left alone.** It is a *rate*, and
+`parser.js:81` maps `NaN`/`Inf` to `null` — a zero-length sample window right after a production
+restart yields exactly that. If the engine keeps coercing it, the dashboard prints a measured-looking
+`0.0` msg/sec for a host whose throughput is simply unknown, which is this same defect in the grid
+rather than in a rule. Widening it is a larger change than this PR (it is the metric `throughput_drop`
+is built on), so it is raised as a question for Dev B rather than decided unilaterally.
+
+**Whether `stalled_host` should skip or fire on an unknown depth is Dev B's call**, and PR #33's
+review asks for it to be written down either way. This change only makes the choice expressible.
+
 ## 2026-08-12 — Metrics proxy contract published (Dev B, on Dev A's behalf)
 
 Initial publication of `proxy-api.md`, `proxy.schema.json`, `samples/metrics-dump.txt`.
@@ -81,6 +186,7 @@ Verified: `npm run validate` → 31/31. Confirmed the new checks can fail, rathe
 adding `Active` to the status enum fails 1, narrowing `NullableCount` to `integer` fails 3, and
 stripping the `messages_errored` line from the capture fails 1. A validator never seen to fail is
 not known to be testing anything.
+
 
 ## 2026-08-10 — `FHIR Transform` removed from the samples (Dev A)
 

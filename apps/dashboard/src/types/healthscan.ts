@@ -45,9 +45,16 @@ export interface Host {
   // business processes; Dev B normalizes it to `process` before it reaches us (Q10).
   type: string;
   status: HostStatus;
-  queued: number;
+  /**
+   * `null` means the depth is **not measurable** for this host, not that it is
+   * zero (Q13). Neither count carries a `host` label in the metrics text, so both
+   * come from a host-status endpoint merged on host name — a host that merge does
+   * not reach stays null. Render `—`; never treat it as a count.
+   */
+  queued: number | null;
   messagesPerSec: number;
-  errored: number;
+  /** `null` means not measurable, not zero errors (Q13). Render `—`. */
+  errored: number | null;
   // Seconds, confirmed empirically (Q6). Aggregated across message types,
   // weighted by sample count, so a host handling two types reports the weighted
   // mean rather than either one (Q12).
