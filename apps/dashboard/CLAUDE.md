@@ -108,9 +108,9 @@ export interface Host {
   host: string;
   type: string;            // 'service' | 'process' | 'operation' — treat as open string
   status: HostStatus;
-  queued: number;
+  queued: number | null;       // null = not measurable for this host, NOT zero (Q13)
   messagesPerSec: number;
-  errored: number;
+  errored: number | null;      // null = not measurable, NOT zero errors (Q13)
   avgProcessingTime: number;   // seconds
   avgQueueingTime: number;     // seconds
   lastActivity: string;        // ISO 8601 UTC
@@ -143,9 +143,9 @@ The contract will drift during the sprint. The UI must never crash or blank out 
 
 ### 2.5 The Day-1 questions — answered
 
-All twelve are settled in **`contracts/healthscan-api.md` §4** (issue #1, PR #3). That document is the source of record; this is the summary.
+All thirteen are settled in **`contracts/healthscan-api.md` §4** (issue #1, PR #3, and Q13 from PR #35). That document is the source of record; this is the summary.
 
-Eight of the nine original assumptions held. **Only Q1 was wrong**, and it is fixed:
+Eight of the nine original assumptions held. **Q1 and Q13 are the two corrections**, and both are fixed:
 
 | # | Answer |
 |---|---|
@@ -161,6 +161,7 @@ Eight of the nine original assumptions held. **Only Q1 was wrong**, and it is fi
 | Q10 | IRIS says `actor` for business processes; Dev B normalizes to `process`. |
 | Q11 | `lastActivity` is derived from elapsed seconds — trust it to ±10s, not for sub-second ordering. |
 | Q12 | `avgProcessingTime` is a sample-count-weighted aggregate across message types. |
+| Q13 | `queued` / `errored` are `number \| null`. `null` is **"not measurable for this host"**, never zero — the counts come from a host-status endpoint merged on host name, and a host that merge does not reach stays null. Render `—`; never compare against it. |
 
 **Keep the `// CONTRACT-Q<n>` convention** for future contract-dependent work. Tagging each assumption site with a greppable marker made reconciliation a `grep` rather than an audit — ADR 0004 recommends promoting it to practice.
 
@@ -305,7 +306,7 @@ Going through the dev proxy means **CORS is never your problem** and Dev B can b
 
 Demo mode is a **first-class deliverable**, not a stub — it is the Day-5 fallback and the screencast source.
 
-- **Fixtures name only components that really exist in the monitored production**, so demo and live look continuous. For LABDEMO today that is **EMR Source** (service), **Lab Router** (process), **Cloud API** (operation) — read from the `<Item>` set in `iris/labdemo/Production.cls`, which is the authority. Do not treat that list as a constant: there was a fourth, `FHIR Transform`, until `contracts/` PR #15, and the rule being enforced here is *never invent a host*, not *there are three hosts*. **Nothing in `src/` may hardcode a host name or a host count** — issue #25 has the reasoning and the evidence that the runtime is production-agnostic.
+- **Fixtures name only components that really exist in the monitored production**, so demo and live look continuous. **Read the host list from the `<Item>` set in `iris/labdemo/Production.cls`, which is the authority — do not restate it here.** A copied host list is the thing that keeps going stale: `FHIR Transform` was removed in `contracts/` PR #15 and had to be chased out of the contract samples, the engine fixtures, these fixtures, the CI count and the root `CLAUDE.md` separately. The rule being enforced is *never invent a host*, not *there are N hosts*. **Nothing in `src/` may hardcode a host name or a host count** — issue #25 has the reasoning and the evidence that the runtime is production-agnostic; issue #34 is the live case where the repo and the deployed instance disagree about the count.
 - Fixture files are plain JSON matching the contract exactly — the same guards run over them. If a fixture fails validation, the contract transcription is wrong.
 - Each fixture is a scenario file containing `{ hosts: Host[], findings: Finding[] }`. `scenario-healthy.json` has zero findings — that exercises the empty state, which is easy to forget and looks bad if broken on stage.
 - `mockClient` supports a **scripted progression**: healthy → degrading → findings appear, advancing on each poll so the dashboard visibly comes alive during the demo without anyone touching IRIS. Make it loop, and make it restartable from the UI.
