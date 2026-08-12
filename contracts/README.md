@@ -7,8 +7,15 @@ path all three developers read, which is why it is PR-gated.
 |---|---|---|
 | `proxy-api.md`, `proxy.schema.json` | Dev A | Dev B |
 | `healthscan-api.md`, `healthscan.schema.json`, `healthscan.d.ts` | Dev B | Dev C |
-| `samples/metrics-dump.txt`, `samples/alerts.json`, `samples/proxy-response.json` | Dev A | Dev B |
+| `samples/metrics-dump.txt` | Dev A | Dev B |
 | `samples/hosts-response.json`, `samples/findings-response.json` | Dev B | Dev C |
+
+`samples/alerts.json` and `samples/proxy-response.json` were planned in `CONTRIBUTING.md` §1 and do
+not exist. Both are derivable without inventing anything — a real alerts capture is at
+`services/metrics-proxy/fixtures/alerts-live-capture.json`, and a proxy response is
+`src/parser.js` applied to `samples/metrics-dump.txt` — but neither is committed here yet, so a
+consumer mocking Dev A must run the parser or point at `npm run mock`. Noted rather than quietly
+left off the table.
 
 ## Why the samples matter
 
@@ -19,6 +26,11 @@ what makes "works against the mock" predict "works against the real thing."
 Samples are captured from live IRIS wherever possible, not invented. The Health Scan samples in
 this directory use real measured values from the LABDEMO production — `avgProcessingTime: 0.08`
 for Lab Router is what IRIS actually reported, not a plausible-looking number.
+
+`samples/metrics-dump.txt` is the strongest form of this: a raw 1236-line `/api/monitor/metrics`
+body, not a reshaped one. It is what proved the proxy's original parser wrong in six places
+(issue #10) and what turned up two further mismatches while `proxy-api.md` was written — both
+found by running real code over real bytes, neither visible from a hand-written fixture.
 
 ## Never edit a contract in place
 
@@ -63,12 +75,19 @@ the shared fixtures disagree, CI says so — rather than the Day-5 rehearsal.
 cd contracts && npm install && npm run validate
 ```
 
-It checks three things, and the last two are what make the first mean anything:
+It checks four things, and the middle two are what make the first mean anything:
 
-- each sample against **one named definition** (`HostsResponse` / `FindingsResponse`)
-- structural cases that must **pass** — `[]`, and sub-second timestamps from any language
+- each JSON sample against **one named definition** (`HostsResponse` / `FindingsResponse`)
+- structural cases that must **pass** — `[]`, sub-second timestamps from any language, and the real
+  proxy payloads including their `null`s
 - cases that must **fail** — a retired `Warning` status, an unknown finding type, a hosts array
-  served in the findings position
+  served in the findings position, an alerts response in the metrics position, and the engine's
+  current `name`/`messagesErrored` host shape
+- **claims about `samples/metrics-dump.txt`**, which is Prometheus text and cannot be schema-checked
+  at all. Regexes over the label shapes `proxy-api.md` quotes, two of them asserting a label is
+  **absent** — `iris_interop_queued` and `iris_interop_messages_errored` carry no `host` label, and
+  an assertion that something is missing is the only way a future capture silently gaining it gets
+  noticed
 
 **Do not replace this with an `ajv-cli` one-liner.** Three reasons, all learned the hard way on
 PR #3:
