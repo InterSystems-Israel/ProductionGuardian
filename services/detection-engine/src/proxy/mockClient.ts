@@ -83,6 +83,10 @@ export class MockProxyClient implements ProxyClient {
       production: typeof body['production'] === 'string' ? body['production'] : 'LABDEMO.Production',
       hosts,
       alerts: rawAlerts.filter(isProxyAlert),
+      // Fixtures always carry data, so the mock is never warming. Production-wide queue
+      // depth is not something a fixture asserts -- it is a proxy-level figure (#12).
+      warming: false,
+      productionQueued: null,
     };
     this.#cache.set(name, response);
     return response;

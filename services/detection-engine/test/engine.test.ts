@@ -18,15 +18,17 @@ const POLL_MS = 10_000;
 
 function proxyHost(overrides: Partial<ProxyHost> = {}): ProxyHost {
   return {
-    name: 'Lab Router',
+    host: 'Lab Router',
     type: 'actor',
     status: 'OK',
+    isFramework: false,
     queued: 0,
     messages: 100,
     messagesPerSec: 1.2,
-    messagesErrored: 0,
+    errored: 0,
     avgProcessingTime: 0.08,
     avgQueueingTime: 0,
+    lastActivity: null,
     lastActivityElapsedSeconds: 4,
     ...overrides,
   };
@@ -38,6 +40,8 @@ function response(hosts: ProxyHost[]): ProxyResponse {
     production: 'LABDEMO.Production',
     hosts,
     alerts: [],
+    warming: false,
+    productionQueued: null,
   };
 }
 
@@ -78,10 +82,10 @@ describe('normalization', () => {
     const engine = new DetectionEngine(DEFAULT_CONFIG);
     engine.applyPoll(
       response([
-        proxyHost({ name: 'Lab Router' }),
-        proxyHost({ name: 'Ens.MonitorService' }),
-        proxyHost({ name: 'EnsLib.Testing.Process' }),
-        proxyHost({ name: 'Ens.Activity.Operation.Local' }),
+        proxyHost({ host: 'Lab Router' }),
+        proxyHost({ host: 'Ens.MonitorService' }),
+        proxyHost({ host: 'EnsLib.Testing.Process' }),
+        proxyHost({ host: 'Ens.Activity.Operation.Local' }),
       ]),
       T0,
     );
@@ -93,9 +97,9 @@ describe('normalization', () => {
     const engine = new DetectionEngine(DEFAULT_CONFIG);
     engine.applyPoll(
       response([
-        proxyHost({ name: 'Lab Router' }),
-        proxyHost({ name: 'Cloud API' }),
-        proxyHost({ name: 'EMR Source' }),
+        proxyHost({ host: 'Lab Router' }),
+        proxyHost({ host: 'Cloud API' }),
+        proxyHost({ host: 'EMR Source' }),
       ]),
       T0,
     );
@@ -295,7 +299,7 @@ describe('stale handling', () => {
 describe('error rate derivation', () => {
   it('does not fire on the first poll, when rate is unknowable', () => {
     const engine = new DetectionEngine(DEFAULT_CONFIG);
-    engine.applyPoll(response([proxyHost({ messagesErrored: 500 })]), T0);
+    engine.applyPoll(response([proxyHost({ errored: 500 })]), T0);
     assert.equal(engine.snapshot().findings.length, 0);
   });
 
@@ -303,10 +307,10 @@ describe('error rate derivation', () => {
     const engine = new DetectionEngine(DEFAULT_CONFIG);
     let at = warmUp(engine);
 
-    engine.applyPoll(response([proxyHost({ messagesErrored: 100 })]), at);
+    engine.applyPoll(response([proxyHost({ errored: 100 })]), at);
     at += POLL_MS;
     // Counter resets to 0: a negative delta must not become a negative rate.
-    engine.applyPoll(response([proxyHost({ messagesErrored: 0 })]), at);
+    engine.applyPoll(response([proxyHost({ errored: 0 })]), at);
 
     const errorFindings = engine
       .snapshot()
@@ -450,7 +454,7 @@ describe('inert override warning reaches the log (#25)', () => {
     const engine = new DetectionEngine(withOverride, (msg) => logs.push(msg));
     let at = T0;
     for (let i = 0; i < 5; i += 1) {
-      engine.applyPoll(response([proxyHost({ name: 'Tick Feed' })]), at);
+      engine.applyPoll(response([proxyHost({ host: 'Tick Feed' })]), at);
       at += POLL_MS;
     }
     assert.equal(logs.length, 1, `expected one warning, got ${logs.length}`);
@@ -461,16 +465,94 @@ describe('inert override warning reaches the log (#25)', () => {
   it('stays silent when the override applies', () => {
     const logs: string[] = [];
     const engine = new DetectionEngine(withOverride, (msg) => logs.push(msg));
-    engine.applyPoll(response([proxyHost({ name: 'Cloud API' })]), T0);
+    engine.applyPoll(response([proxyHost({ host: 'Cloud API' })]), T0);
     assert.deepEqual(logs, []);
   });
 
   it('warns again after reconfigure, so a corrected file is re-checked', () => {
     const logs: string[] = [];
     const engine = new DetectionEngine(withOverride, (msg) => logs.push(msg));
-    engine.applyPoll(response([proxyHost({ name: 'Tick Feed' })]), T0);
+    engine.applyPoll(response([proxyHost({ host: 'Tick Feed' })]), T0);
     engine.reconfigure(withOverride);
-    engine.applyPoll(response([proxyHost({ name: 'Tick Feed' })]), T0 + POLL_MS);
+    engine.applyPoll(response([proxyHost({ host: 'Tick Feed' })]), T0 + POLL_MS);
     assert.equal(logs.length, 2);
+  });
+});
+
+describe('unmeasurable metrics through the full poll path (#33)', () => {
+  // These belong at engine level, not rule level: the defects were in what
+  // normalizeHost() hands the rules, so a rule test that supplies both the normalized and
+  // raw values itself cannot see them. I found that out by injecting the original defect
+  // into the rule and watching the rule tests still pass.
+
+  it('a metric going absent on a healthy production produces NOTHING', () => {
+    const engine = new DetectionEngine(DEFAULT_CONFIG, () => {});
+    let at = T0;
+    for (let i = 0; i < 20; i += 1) {
+      engine.applyPoll(response([proxyHost()]), at);
+      at += POLL_MS;
+    }
+    assert.deepEqual(engine.snapshot().findings, [], 'precondition: healthy is silent');
+
+    // IRIS omits whole metric families rather than emitting zeros, and a rate over a
+    // zero-length window parses as NaN -> null. Either route previously became 0 and reported
+    // a 100% collapse.
+    for (let i = 0; i < 3; i += 1) {
+      engine.applyPoll(response([proxyHost({ messagesPerSec: null })]), at);
+      at += POLL_MS;
+    }
+    assert.deepEqual(
+      engine.snapshot().findings.map((f) => `${f.severity} ${f.type}`),
+      [],
+      'an absent rate must not be reported as a collapse',
+    );
+  });
+
+  it('but a REAL collapse still fires', () => {
+    const engine = new DetectionEngine(DEFAULT_CONFIG, () => {});
+    let at = T0;
+    for (let i = 0; i < 20; i += 1) {
+      engine.applyPoll(response([proxyHost()]), at);
+      at += POLL_MS;
+    }
+    for (let i = 0; i < 3; i += 1) {
+      engine.applyPoll(response([proxyHost({ messagesPerSec: 0 })]), at);
+      at += POLL_MS;
+    }
+    const types = engine.snapshot().findings.map((f) => f.type);
+    assert.ok(types.includes('throughput_drop'), `expected throughput_drop, got ${types.join(', ')}`);
+  });
+
+  it('stalled_host fires on a measurable queue, through normalization', () => {
+    // The live case has queued: null, which normalizes to 0 and silently disabled this
+    // rule. With a real depth it must still fire.
+    const engine = new DetectionEngine(DEFAULT_CONFIG, () => {});
+    let at = T0;
+    for (let i = 0; i < 16; i += 1) {
+      engine.applyPoll(
+        response([proxyHost({ queued: 5, lastActivityElapsedSeconds: 400 })]),
+        at,
+      );
+      at += POLL_MS;
+    }
+    const types = engine.snapshot().findings.map((f) => f.type);
+    assert.ok(types.includes('stalled_host'), `expected stalled_host, got ${types.join(', ')}`);
+  });
+
+  it('stalled_host declines when the depth is unknown, as it does live', () => {
+    const engine = new DetectionEngine(DEFAULT_CONFIG, () => {});
+    let at = T0;
+    for (let i = 0; i < 16; i += 1) {
+      engine.applyPoll(
+        response([proxyHost({ queued: null, lastActivityElapsedSeconds: 400 })]),
+        at,
+      );
+      at += POLL_MS;
+    }
+    const types = engine.snapshot().findings.map((f) => f.type);
+    assert.ok(
+      !types.includes('stalled_host'),
+      'firing on an unknown depth would be the false positive §6 warns about',
+    );
   });
 });

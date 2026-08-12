@@ -17,10 +17,36 @@ export interface RuleInput {
   host: Host;
   /** Errors observed per minute, derived from the cumulative counter across samples. */
   errorsPerMinute: number | null;
+  /**
+   * The RAW nullable values, before normalization collapsed them for the wire.
+   *
+   * A rule must be able to tell "measured zero" from "not measurable on this host", and
+   * `Host` cannot express the difference: `contracts/healthscan.schema.json` declares
+   * `queued` and `errored` as required integers, so `normalizeHost()` turns null into 0.
+   *
+   * Reading `Host` instead produced two real defects, both found by Dev C on #33:
+   *   - a null `messagesPerSec` became 0 and fired `throughput_drop` reporting a 100%
+   *     collapse of a healthy production
+   *   - a null `queued` became 0, so `stalled_host`'s `requiresQueued` gate was never
+   *     satisfied and the rule was silently switched off live
+   *
+   * Rules that care about absence read these; rules that only care about magnitude may
+   * keep using `host`.
+   */
+  raw: RawHostMetrics;
   baselines: BaselineStore;
   config: ThresholdConfig;
   /** Poll time, epoch ms. Passed in so rules stay pure. */
   now: number;
+}
+
+/** The proxy's values as sent, where null means "IRIS does not expose this per host". */
+export interface RawHostMetrics {
+  queued: number | null;
+  messagesPerSec: number | null;
+  errored: number | null;
+  avgProcessingTime: number | null;
+  avgQueueingTime: number | null;
 }
 
 /**

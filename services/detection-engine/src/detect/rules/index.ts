@@ -52,13 +52,26 @@ const deadHost: Rule = {
 const stalledHost: Rule = {
   type: 'stalled_host',
   absolute: true,
-  evaluate({ host, config, now }: RuleInput): RuleVerdict | null {
+  evaluate({ host, raw, config, now }: RuleInput): RuleVerdict | null {
     const rule = configFor(config, 'stalled_host', host.host);
     if (!rule.enabled) return null;
 
     // A dead host is reported as dead, not stalled — one condition, one finding.
     if (DEAD_STATUSES.includes(host.status)) return null;
-    if (rule.requiresQueued && host.queued <= 0) return null;
+
+    // `requiresQueued` exists to stop an idle-but-empty host reading as stalled. Read the
+    // RAW depth: previously this read the normalized Host, where an unmeasurable depth had
+    // already become 0, so the gate was never satisfied and the rule was SILENTLY off
+    // against live IRIS -- a sixth live break, found by Dev C on #33.
+    //
+    // Deliberate choice, not an accident: when the depth is unknown we still decline to
+    // fire. An idle host with an unknown queue is more likely quiet than hung, and firing
+    // on absent data is the false positive MVP §6 names as the top risk. The distinction
+    // is now visible in the code rather than an emergent property of a coerced zero.
+    if (rule.requiresQueued) {
+      if (raw.queued === null) return null;
+      if (raw.queued <= 0) return null;
+    }
 
     const idleSeconds = (now - Date.parse(host.lastActivity)) / 1000;
     if (!Number.isFinite(idleSeconds) || idleSeconds < rule.inactiveSeconds) return null;
@@ -205,9 +218,23 @@ function durationRule(
 const throughputDrop: Rule = {
   type: 'throughput_drop',
   absolute: false,
-  evaluate({ host, baselines, config }: RuleInput): RuleVerdict | null {
+  evaluate({ host, raw, baselines, config }: RuleInput): RuleVerdict | null {
     const rule = configFor(config, 'throughput_drop', host.host);
     if (!rule.enabled) return null;
+
+    // An UNMEASURABLE rate is not a collapsed one. This rule is the only comparative
+    // rule where LOWER is worse, so it is the only one for which a coerced 0 reads as a
+    // symptom rather than as "nothing to see" -- every other rule falls under its floor
+    // and stays quiet. Without this guard, a null messagesPerSec became 0 and produced
+    // "Throughput 0.0 msg/sec is 100% below baseline" against a perfectly healthy
+    // production, two polls after the metric went absent (Dev C, #33).
+    //
+    // Both routes to null are real, not hypothetical. Dev A's parser maps Prometheus
+    // NaN/+Inf to null -- and a rate over a zero-length window is NaN, which happens
+    // right after a production restart. IRIS also omits whole metric families rather
+    // than emitting zeros, which would have made EVERY host report a collapse in the
+    // same poll.
+    if (raw.messagesPerSec === null) return null;
 
     const baseline = baselines.baseline(host.host, 'messagesPerSec');
     if (baseline === null) return null;

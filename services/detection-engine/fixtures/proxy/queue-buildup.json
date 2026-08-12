@@ -1,46 +1,49 @@
 {
-  "_comment": "Cloud API alive but throttled: it still processes, slowly, so the queue climbs past the absoluteFloor of 50 while status stays OK. Derived from the same LABDEMO capture as cloud-api-dead, with Latency raised rather than the host disabled \u2014 this is what the FailurePercent/Latency triggers on LABDEMO.Operation.CloudAPI produce. Distinct from cloud-api-dead on purpose: that one stops at depth 48 and correctly does NOT trip queue_buildup.",
+  "_comment": "Cloud API alive but throttled: it still processes, slowly, so the queue climbs past the absoluteFloor of 50 while status stays OK. Derived from the same LABDEMO capture as cloud-api-dead, with Latency raised rather than the host disabled — this is what the FailurePercent/Latency triggers on LABDEMO.Operation.CloudAPI produce. Distinct from cloud-api-dead on purpose: that one stops at depth 48 and correctly does NOT trip queue_buildup.",
   "sampledAt": "2026-08-06T15:46:02Z",
   "production": "LABDEMO.Production",
   "hosts": [
     {
-      "name": "EMR Source",
+      "host": "EMR Source",
       "type": "service",
       "status": "OK",
       "queued": 0,
       "messages": 300,
       "messagesPerSec": 0.2,
-      "messagesErrored": 0,
+      "errored": 0,
       "avgProcessingTime": 0.01,
       "avgQueueingTime": 0,
       "lastActivityElapsedSeconds": 3.9,
-      "sampleCount": 12
+      "sampleCount": 12,
+      "isFramework": false
     },
     {
-      "name": "Lab Router",
+      "host": "Lab Router",
       "type": "actor",
       "status": "OK",
       "queued": 0,
       "messages": 1800,
       "messagesPerSec": 1.2,
-      "messagesErrored": 0,
+      "errored": 0,
       "avgProcessingTime": 0.08,
       "avgQueueingTime": 0,
       "lastActivityElapsedSeconds": 3.9,
-      "sampleCount": 24
+      "sampleCount": 24,
+      "isFramework": false
     },
     {
-      "name": "Cloud API",
+      "host": "Cloud API",
       "type": "operation",
       "status": "OK",
       "queued": 486,
       "messages": 500,
       "messagesPerSec": 0.1,
-      "messagesErrored": 37,
+      "errored": 37,
       "avgProcessingTime": 2.4,
       "avgQueueingTime": 1.84,
       "lastActivityElapsedSeconds": 2.1,
-      "sampleCount": 24
+      "sampleCount": 24,
+      "isFramework": false
     }
   ],
   "alerts": []
