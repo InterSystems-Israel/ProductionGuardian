@@ -36,16 +36,21 @@ Verification: `iris_interop_queued` and `iris_interop_avg_processing_time` must 
 
 ## 3. LABDEMO production
 
-Four components (match exactly — these names appear in the proxy JSON contract):
+Three application components. **The `<Item Name="...">` set in `iris/labdemo/Production.cls`
+is authoritative** — do not maintain a second copy of the host list here, because a
+duplicated list is exactly what went stale when `FHIR Transform` was removed.
 
-| Component name | Type | Role |
-|---|---|---|
-| `EMRSource` | Business Service (HL7 file/TCP) | Inbound HL7 v2 messages |
-| `LabRouter` | Business Process (routing rule) | Routes by message type |
-| `FHIRTransform` | Business Process (DTL) | Transforms HL7 → FHIR R4 |
-| `CloudAPI` | Business Operation (HTTP) | Forwards to downstream endpoint |
+Note the names carry a space (`EMR Source`, not `EMRSource`). The spaced form is what
+appears in `/api/monitor/metrics`, in the proxy JSON, and in the dashboard, so use it
+verbatim. Class names differ from config item names: the `Cloud API` item is
+`ProductionGuardian.LabDemo.Operation.PatientDemographicsOperation`.
 
-The synthetic HL7 generator (`iris/labdemo/HL7Generator.cls`) emits ADT^A01 and ORU^R01 messages on a configurable interval.
+`Ens.Activity.Operation.Local` is a fourth item, but it is framework plumbing for metrics
+and the findings API filters it out — it is not an application host.
+
+The synthetic HL7 generator (`iris/labdemo/HL7Generator.cls`) emits ADT^A01 messages on a
+configurable interval. That is the only type it emits and the only type the routing rule
+routes.
 
 ---
 

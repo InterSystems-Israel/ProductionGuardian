@@ -1,8 +1,9 @@
-/// Routing rule for the LabRouter Business Process.
-/// Routes HL7 messages by message type to PIDExtractProcess:
-///   ADT^A01 → PIDExtractProcess  (admit — always has a full PID segment)
-///   ORU^R01 → PIDExtractProcess  (lab result — also carries PID)
-///   All others → discarded (logged as unrouted by LabRouter)
+/// Routing rule for the Lab Router Business Process.
+/// Routes HL7 messages by message type, applying the HL7ToPID DTL inline:
+///   ADT^A01 → Cloud API, transformed by HL7ToPID  (admit — has a full PID segment)
+///   All others → discarded (logged as unrouted by Lab Router)
+///
+/// ADT^A01 is the only type routed, and the only type HL7Generator emits.
 Class ProductionGuardian.LabDemo.RoutingRule Extends Ens.Rule.Definition
 {
 

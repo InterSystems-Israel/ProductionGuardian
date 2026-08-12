@@ -155,6 +155,6 @@ Storage Default
 <IndexLocation>^PG.LabDemo.PatientRecordX</IndexLocation>
 <StreamLocation>^PG.LabDemo.PatientRecordS</StreamLocation>
 <Type>%Storage.Persistent</Type>
-</Storage>
+}
 
 }
