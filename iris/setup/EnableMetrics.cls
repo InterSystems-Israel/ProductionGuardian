@@ -14,6 +14,19 @@
 ///
 /// After running, verify with:
 ///   do ##class(ProductionGuardian.Setup.EnableMetrics).Verify()
+///
+/// Verify() builds its own URL for the local monitor API. Where that API lives is
+/// instance-specific, so three optional globals override the defaults:
+///
+///   ^ProductionGuardian.Setup("WebAppPrefix")  path in front of /api/monitor/  (default "")
+///   ^ProductionGuardian.Setup("WebHost")       host to request                 (default 127.0.0.1)
+///   ^ProductionGuardian.Setup("WebPort")       port to request                 (default: see WebPort())
+///
+/// Set them to match the URL that already works in a browser. This mirrors the
+/// metrics proxy's IRIS_BASE_PATH / IRIS_HOST / IRIS_PORT — same problem, same fix:
+///
+///   http://localhost:52773/api/monitor/metrics        -> all three defaults are fine
+///   http://localhost/iris4health_2024_1/api/monitor/  -> WebAppPrefix="/iris4health_2024_1", WebPort=80
 Class ProductionGuardian.Setup.EnableMetrics
 {
 
@@ -96,42 +109,91 @@ ClassMethod CheckActivityOperation()
     }
 }
 
+/// Path prefix in front of /api/monitor/, or "" when the API is at the web server root.
+/// On an instance fronted by an external web server the instance name is a path segment,
+/// e.g. http://localhost/iris4health_2024_1/api/monitor/metrics — requesting the bare
+/// path there returns the web server's 404, which reads as "metrics are not enabled" on
+/// an instance where they are working correctly.
+ClassMethod WebAppPrefix() As %String
+{
+    set prefix = $get(^ProductionGuardian.Setup("WebAppPrefix"), "")
+    quit:prefix="" ""
+    // Normalise to leading-slash, no-trailing-slash so path joining stays predictable.
+    set prefix = $zstrip(prefix, ">", "/")
+    quit $case($extract(prefix), "/": prefix, : "/" _ prefix)
+}
+
+/// Host to request the monitor API on. 127.0.0.1 is right for an instance whose web
+/// server shares its network namespace; a containerised instance reaching a gateway
+/// web server needs the override.
+ClassMethod WebHost() As %String
+{
+    quit $get(^ProductionGuardian.Setup("WebHost"), "127.0.0.1")
+}
+
+/// Port to request the monitor API on.
+///
+/// ^%SYS("WebServer","Port") is NOT a safe source for this. On an instance served by an
+/// external web server that node exists and holds 0 — so `$get(...,52773)` returns 0, not
+/// the default, and the request fails with "Unable to open TCP/IP socket to ...:0". A
+/// $get default only applies when the node is undefined, and this node is defined-but-zero.
+ClassMethod WebPort() As %Integer
+{
+    set port = $get(^ProductionGuardian.Setup("WebPort"), "")
+    quit:+port>0 +port
+    set sysPort = $get(^%SYS("WebServer","Port"), 0)
+    quit $select(+sysPort>0: +sysPort, 1: 52773)
+}
+
 /// Verify that the expected interop metrics are present in /api/monitor/metrics.
 /// Call after Run() and after the production is running with Ens.Activity.Operation.Local.
 ///
 /// Requires the %Net.HttpRequest class (available in all IRIS instances).
 ClassMethod Verify() As %Status
 {
-    write "=== Verifying interop metrics in /api/monitor/metrics ===",!
+    set prefix = ..WebAppPrefix()
+    set host = ..WebHost()
+    set port = ..WebPort()
 
-    // Build an HTTP request to the local /api/monitor/metrics endpoint.
+    write "=== Verifying interop metrics in /api/monitor/metrics ===",!
+    // Print the URL actually requested. A wrong prefix or port is otherwise invisible at
+    // the one moment you would want to see it.
+    write "Requesting: http://", host, ":", port, prefix, "/api/monitor/metrics",!
+
     set req = ##class(%Net.HttpRequest).%New()
-    set req.Server = "127.0.0.1"
-    set req.Port = $get(^%SYS("WebServer","Port"), 52773)  // default IRIS web port
+    set req.Server = host
+    set req.Port = port
     set req.Https = 0
     // Use the _SYSTEM account only for local verification — never in production code.
     set req.Username = $get(^ProductionGuardian.Setup("IRISUser"), "_SYSTEM")
     set req.Password = $get(^ProductionGuardian.Setup("IRISPass"), "SYS")
 
-    set sc = req.Get("/api/monitor/metrics")
+    set sc = req.Get(prefix _ "/api/monitor/metrics")
     if $$$ISERR(sc) {
         write "HTTP request failed: "
         do $system.Status.DisplayError(sc)
+        do ..WriteURLHint()
         quit sc
+    }
+
+    // A reachable web server that does not serve this path answers 404 with an OK status —
+    // Get() only errors when the socket itself fails. Without this check the 404 body is
+    // scanned for metric names, every one is reported MISSING, and the operator is sent to
+    // re-run EnableSAMForNamespace() when the real fault is the URL.
+    set status = req.HttpResponse.StatusCode
+    if (status < 200) || (status > 299) {
+        write "  FAILED: HTTP ", status, " — the monitor API is not at this URL.",!
+        do ..WriteURLHint()
+        quit $$$ERROR($$$GeneralError, "GET " _ prefix _ "/api/monitor/metrics returned HTTP " _ status)
     }
 
     set body = req.HttpResponse.Data.Read(1000000)
 
-    // Check for the two critical metric families.
-    set checks = $listbuild(
-        "iris_interop_queued",
-        "iris_interop_avg_processing_time",
-        "iris_interop_messages_per_sec",
-        "iris_interop_messages_errored",
-        "iris_interop_avg_queueing_time",
-        "iris_last_activity",
-        "iris_interop_hosts"
-    )
+    // The seven families the metrics proxy consumes. Names must match the metric text
+    // exactly: the last-activity family is iris_interop_last_activity, and the bare
+    // iris_last_activity this list used to carry appears nowhere in the output, so it
+    // reported MISSING on a healthy instance.
+    set checks = $listbuild("iris_interop_queued", "iris_interop_avg_processing_time", "iris_interop_messages_per_sec", "iris_interop_messages_errored", "iris_interop_avg_queueing_time", "iris_interop_last_activity", "iris_interop_hosts")
     set allFound = 1
     set ptr = 0
     while $listnext(checks, ptr, metric) {
@@ -143,17 +205,34 @@ ClassMethod Verify() As %Status
         }
     }
 
+    // A 200 carrying no iris_interop_* at all is the quiet failure: on port 80 without a
+    // prefix you reach the %SYS namespace's monitor web app, which answers with several
+    // hundred lines of real system metrics and not one interop family. Nothing looks
+    // broken; you simply get no hosts.
+    if '(body [ "iris_interop_") {
+        write !,"  NOTE: this response has no iris_interop_* families at all.",!
+        write "  That is what a monitor API in the wrong namespace looks like — the request",!
+        write "  succeeded, but against a namespace with no interoperability metrics.",!
+        do ..WriteURLHint()
+    }
+
     // Check alerts endpoint separately.
-    write !,"Checking /api/monitor/alerts ...",!
+    //
+    // Reading /api/monitor/alerts CLEARS the alerts it returns; only mgr/alerts.log keeps
+    // them. This call therefore steals any pending alerts from the metrics proxy, which
+    // cannot get them back. Run Verify() before starting the proxy, not alongside it.
+    write !,"Checking /api/monitor/alerts (consume-on-read — see comment) ...",!
     set req2 = ##class(%Net.HttpRequest).%New()
     set req2.Server = req.Server
     set req2.Port = req.Port
     set req2.Https = 0
     set req2.Username = req.Username
     set req2.Password = req.Password
-    set sc2 = req2.Get("/api/monitor/alerts")
+    set sc2 = req2.Get(prefix _ "/api/monitor/alerts")
     if $$$ISERR(sc2) {
         write "  FAILED to reach /api/monitor/alerts",!
+    } elseif (req2.HttpResponse.StatusCode < 200) || (req2.HttpResponse.StatusCode > 299) {
+        write "  FAILED: /api/monitor/alerts returned HTTP ", req2.HttpResponse.StatusCode, !
     } else {
         set alertBody = req2.HttpResponse.Data.Read(10000)
         if alertBody [ "[" {
@@ -169,11 +248,22 @@ ClassMethod Verify() As %Status
         write "All expected metrics found. Metrics proxy can now be started.",!
     } else {
         write "Some metrics are missing. Check:",!
+        write "  - Is the URL above the one that works in your browser?",!
         write "  - Is the production running?",!
         write "  - Was EnableSAMForNamespace() called in this namespace?",!
         write "  - Is Ens.Activity.Operation.Local in the production?",!
     }
     quit $$$OK
+}
+
+/// Print how to point Verify() at the URL that actually serves the monitor API.
+ClassMethod WriteURLHint()
+{
+    write "  Open /api/monitor/metrics in a browser, then set the globals to match it:",!
+    write "    set ^ProductionGuardian.Setup(""WebAppPrefix"") = ""/iris4health_2024_1""",!
+    write "    set ^ProductionGuardian.Setup(""WebPort"")      = 80",!
+    write "    set ^ProductionGuardian.Setup(""WebHost"")      = ""127.0.0.1""",!
+    write "  These mirror the metrics proxy's IRIS_BASE_PATH / IRIS_PORT / IRIS_HOST.",!
 }
 
 }

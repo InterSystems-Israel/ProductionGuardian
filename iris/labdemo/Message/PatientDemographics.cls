@@ -43,58 +43,9 @@ Property SourceMessageID As %String(MAXLEN = 64);
 /// ISO 8601 timestamp when this message was created (set by the DTL).
 Property ExtractedAt As %String(MAXLEN = 32);
 
-Storage Default
-{
-<Data name="PatientDemographicsDefaultData">
-<Value name="1">
-<Value>%%CLASSNAME</Value>
-</Value>
-<Value name="2">
-<Value>PatientID</Value>
-</Value>
-<Value name="3">
-<Value>LastName</Value>
-</Value>
-<Value name="4">
-<Value>FirstName</Value>
-</Value>
-<Value name="5">
-<Value>MiddleName</Value>
-</Value>
-<Value name="6">
-<Value>DateOfBirth</Value>
-</Value>
-<Value name="7">
-<Value>Sex</Value>
-</Value>
-<Value name="8">
-<Value>AddressStreet</Value>
-</Value>
-<Value name="9">
-<Value>AddressCity</Value>
-</Value>
-<Value name="10">
-<Value>AddressState</Value>
-</Value>
-<Value name="11">
-<Value>AddressZip</Value>
-</Value>
-<Value name="12">
-<Value>HomePhone</Value>
-</Value>
-<Value name="13">
-<Value>SourceMessageID</Value>
-</Value>
-<Value name="14">
-<Value>ExtractedAt</Value>
-</Value>
-</Data>
-<DataLocation>^ProductionGuardian.LabDemo.Msg.PatD</DataLocation>
-<DefaultData>PatientDemographicsDefaultData</DefaultData>
-<IdLocation>^ProductionGuardian.LabDemo.Msg.PatI</IdLocation>
-<IndexLocation>^ProductionGuardian.LabDemo.Msg.PatX</IndexLocation>
-<StreamLocation>^ProductionGuardian.LabDemo.Msg.PatS</StreamLocation>
-<Type>%Storage.Persistent</Type>
-</Storage>
+// No Storage block. Ens.Request inherits its storage from Ens.MessageBody, which pins
+// DataLocation to ^Ens.MessageBodyD; a Default map naming its own globals here fails to
+// compile with "keyword 'DataLocation' must be '^Ens.MessageBodyD'". Message bodies are
+// stored and purged by the interoperability framework, not by this class.
 
 }
