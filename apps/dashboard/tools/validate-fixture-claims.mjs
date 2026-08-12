@@ -96,8 +96,12 @@ function checkArithmetic(finding, host) {
 
   // A finding must agree with the host row it describes, or the drawer and the card
   // disagree about the same number on the same screen.
+  // A null count is reported once, by the null-semantics check, which says the engine
+  // would decline the rule outright. Comparing against it here would report the same
+  // fixture twice and would do it by coercion — `null !== 5` and `null <= 0` are both
+  // true for the wrong reason.
   const metric = METRIC_FOR[finding.type];
-  if (metric !== undefined && host !== undefined && current !== host[metric]) {
+  if (metric !== undefined && host !== undefined && host[metric] !== null && current !== host[metric]) {
     problems.push(`currentValue ${current} != host.${metric} ${host[metric]}`);
   }
 
@@ -105,7 +109,7 @@ function checkArithmetic(finding, host) {
     if (finding.type === 'dead_host' && !DEAD_STATUSES.includes(host.status)) {
       problems.push(`dead_host but host.status is "${host.status}"`);
     }
-    if (finding.type === 'stalled_host' && host.queued <= 0) {
+    if (finding.type === 'stalled_host' && host.queued !== null && host.queued <= 0) {
       problems.push(`stalled_host but host.queued is ${host.queued}`);
     }
   }
@@ -286,6 +290,11 @@ function wouldEmit(host, base, warming) {
   if (
     stalled?.enabled !== false &&
     !DEAD_STATUSES.includes(host.status) &&
+    // Explicit, ahead of the `<= 0` test and independent of requiresQueued: `null <= 0` is
+    // true, so relying on the coercion would be right by accident. That is the exact
+    // defect the engine carried until #51, where the null guard sat INSIDE the
+    // requiresQueued branch and a config flip put "null" in a finding message.
+    host.queued !== null &&
     !(stalled.requiresQueued && host.queued <= 0) &&
     host.lastActivitySecondsAgo >= stalled.inactiveSeconds
   ) {
@@ -305,6 +314,11 @@ function wouldEmit(host, base, warming) {
   const queue = rule('queue_buildup');
   if (
     queue?.enabled !== false &&
+    // Both sides must be measured. A null CURRENT depth is declined outright by the rule;
+    // a null in the baseline row means the engine never recorded that sample at all (#51),
+    // so there is no baseline to divide by and the rule stays in `warming`.
+    host.queued !== null &&
+    base.queued !== null &&
     overBoth(host.queued, base.queued, queue.absoluteFloor, queue.baselineMultiplier)
   ) {
     hit.push('queue_buildup');
@@ -335,7 +349,23 @@ function wouldEmit(host, base, warming) {
   return hit;
 }
 
+/* Rules the engine refuses to evaluate without a measured count, and the field each one
+   needs. Mirrors the guards in `detect/rules/index.ts`; `dead_host` is deliberately absent
+   because it is absolute and fires without a depth. */
+const RULE_NEEDS_MEASURED = {
+  stalled_host: 'queued',
+  queue_buildup: 'queued',
+  elevated_error_rate: 'errored',
+};
+
+/** `dead_host`'s optional tail: "... with 6 message(s) queued". */
+const QUOTES_DEPTH = /message\(s\) queued/;
+
 const BASELINE = baselineHosts();
+
+/* Every null count found, so the em-dash path can be required rather than merely allowed.
+   See the check after the loop for why an empty list is a failure. */
+const nullCounts = [];
 
 let failures = 0;
 for (const file of readdirSync(FIXTURES).filter((f) => f.startsWith('scenario-'))) {
@@ -343,35 +373,46 @@ for (const file of readdirSync(FIXTURES).filter((f) => f.startsWith('scenario-')
   const hostByName = new Map(scenario.hosts.map((host) => [host.host, host]));
 
   /*
-   * `queued` and `errored` are nullable as of Q13, and this file mirrors the engine
-   * with comparisons like `host.queued <= 0` — which `null` satisfies, silently
-   * reading "depth unknown" as "nothing queued". So the shape is refused rather than
-   * judged wrongly.
+   * `queued` and `errored` are `integer | null` since #35, and `null` means "not
+   * measurable for this host", never zero (Q13).
    *
-   * The refusal stands. Its ORIGINAL reason does not: "the engine's null semantics are
-   * still undecided (PR #33)" was true when written and is not now — #35 made both
-   * fields `integer | null`, #36 made them measured per host, and Q13 anchors `null` on
-   * the exception path. Recording the live reason instead, because a tripwire whose
-   * stated reason has expired is the thing this file exists to catch:
+   * This block used to REFUSE every null, and that was right for as long as the engine
+   * published a coerced 0: a fixture showing a null depicted behaviour the product did
+   * not have. #51 removed the coercion, so the refusal is now inverted exactly as its
+   * own instruction said it should be — mirror the engine's null handling rather than
+   * decline to judge it.
    *
-   * `normalizeHost()` in the engine still collapses an unmeasurable count to 0 before
-   * publishing, so NO null can reach these fixtures end to end (#49). A fixture
-   * depicting one would assert behaviour the shipped engine does not have — the same
-   * class of false claim as a message whose arithmetic does not divide.
+   * What the engine does with an unmeasurable count (`detect/rules/index.ts`):
    *
-   * Lift this when the engine publishes null, not before, or the first null fixture
-   * becomes the lie. At that point the right move is not to delete these lines but to
-   * invert them: mirror the engine's null handling, and require that at least one
-   * fixture exercise the em dash, since it is the live exception path and nothing
-   * currently renders it.
+   *   stalled_host         declines — an unknown depth cannot satisfy requiresQueued
+   *   queue_buildup        declines — an unmeasurable depth is not a small one
+   *   elevated_error_rate  declines — no count means no rate
+   *   dead_host            FIRES, and OMITS the queue note rather than quoting a 0
+   *
+   * So a fixture is wrong if it shows one of the first three against a null count, or a
+   * dead_host message quoting a depth its host does not have.
    */
+  for (const finding of scenario.findings) {
+    const host = hostByName.get(finding.host);
+    if (host === undefined) continue; // reported by the per-finding loop below
+
+    const field = RULE_NEEDS_MEASURED[finding.type];
+    if (field !== undefined && host[field] === null) {
+      failures += 1;
+      console.error(`FAIL  ${file} — ${finding.id} ${finding.type} @ ${finding.host}`);
+      console.error(`        host.${field} is null, and the engine declines this rule when it is unmeasured`);
+    }
+
+    if (finding.type === 'dead_host' && host.queued === null && QUOTES_DEPTH.test(finding.message)) {
+      failures += 1;
+      console.error(`FAIL  ${file} — ${finding.id} dead_host @ ${finding.host}`);
+      console.error('        message quotes a queue depth but host.queued is null — the engine omits the note');
+    }
+  }
+
   for (const host of scenario.hosts) {
     for (const field of ['queued', 'errored']) {
-      if (host[field] === null) {
-        failures += 1;
-        console.error(`FAIL  ${file} — ${host.host}.${field} is null`);
-        console.error('        nullable counts are valid per the contract but not judgeable here');
-      }
+      if (host[field] === null) nullCounts.push(`${file}: ${host.host}.${field}`);
     }
   }
 
@@ -422,6 +463,27 @@ for (const file of readdirSync(FIXTURES).filter((f) => f.startsWith('scenario-')
   }
 }
 
+/*
+ * REQUIRE the em-dash path, do not merely permit it.
+ *
+ * `null` is what live mode sends whenever the host-status endpoint does not describe a host
+ * (#36's `undescribedHosts`), and `formatCount` renders it as an em dash. Until now no
+ * fixture carried one, so the only rendering path built specifically for a live failure mode
+ * had never been rendered by anything.
+ *
+ * A failure rather than a warning, deliberately. Today's lesson across #49 and #51 is that
+ * the un-coerced wire had nothing defending it: a test asserting "no nulls" actively kept
+ * the coercion alive, and once it was removed, nothing failed if it came back. This is the
+ * dashboard-side equivalent — if someone "tidies" the null out of a fixture, the em dash
+ * stops being exercised and something should say so.
+ */
+if (nullCounts.length === 0) {
+  failures += 1;
+  console.error('FAIL  no fixture carries a null queued/errored, so the em dash is never rendered');
+  console.error('        null is a real live state (#36 undescribedHosts, Q13) and needs a fixture');
+  console.error('        see scenario-baseline-warming.json — EMR Source.errored');
+}
+
 if (failures > 0) {
   console.error(`\n${failures} finding(s) failed.`);
   process.exit(1);
@@ -438,6 +500,9 @@ if (thresholds === null) {
 } else {
   console.log('All fixture findings are self-consistent and engine-emittable.');
   console.log(`      no host breaches a rule silently, across ${RULES_REVERSE_CHECKED.length} of the 8 rules`);
+  const plural = nullCounts.length === 1 ? 'exercises' : 'exercise';
+  console.log(`      null counts mirror the engine, and ${nullCounts.length} ${plural} the em dash:`);
+  for (const where of nullCounts) console.log(`        ${where}`);
   console.log(`note  ${RULES_NOT_REVERSE_CHECKABLE.join(' and ')} are NOT swept — neither is derivable`);
   console.log('      from a single host row, so a fixture could omit one and this would not say so');
 }

@@ -10,7 +10,7 @@
       "status": "OK",
       "queued": 0,
       "messagesPerSec": 0.2,
-      "errored": 0,
+      "errored": null,
       "avgProcessingTime": 0,
       "avgQueueingTime": 0,
       "lastActivitySecondsAgo": 2
