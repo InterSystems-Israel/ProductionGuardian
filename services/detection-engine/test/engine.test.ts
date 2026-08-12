@@ -9,7 +9,11 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { DEFAULT_CONFIG, type ThresholdConfig } from '../src/config/thresholds.ts';
+import {
+  DEFAULT_CONFIG,
+  DEFAULT_POLL_INTERVAL_MS,
+  type ThresholdConfig,
+} from '../src/config/thresholds.ts';
 import { DetectionEngine, normalizeHostType } from '../src/detect/engine.ts';
 import type { ProxyHost, ProxyResponse } from '../src/types/proxy.ts';
 
@@ -393,7 +397,13 @@ describe('system_alert', () => {
   });
 
   it('ignores an alert that names no known host', () => {
-    const engine = new DetectionEngine({ ...DEFAULT_CONFIG, sustainedSamples: 1 });
+    // sustainedSeconds: 0 alongside sustainedSamples: 1 is how "confirm on the first
+    // poll" is expressed now that the sustained bar has a time gate too (#44).
+    const engine = new DetectionEngine({
+      ...DEFAULT_CONFIG,
+      sustainedSamples: 1,
+      sustainedSeconds: 0,
+    });
     engine.applyPoll(
       {
         ...response([proxyHost()]),
@@ -405,7 +415,13 @@ describe('system_alert', () => {
   });
 
   it('escalates a low numeric IRIS severity to critical', () => {
-    const engine = new DetectionEngine({ ...DEFAULT_CONFIG, sustainedSamples: 1 });
+    // sustainedSeconds: 0 alongside sustainedSamples: 1 is how "confirm on the first
+    // poll" is expressed now that the sustained bar has a time gate too (#44).
+    const engine = new DetectionEngine({
+      ...DEFAULT_CONFIG,
+      sustainedSamples: 1,
+      sustainedSeconds: 0,
+    });
     engine.applyPoll(
       {
         ...response([proxyHost()]),
@@ -422,7 +438,13 @@ describe('system_alert', () => {
 
 describe('findings ordering (contract §2)', () => {
   it('sorts detectedAt desc with severity as tiebreak', () => {
-    const engine = new DetectionEngine({ ...DEFAULT_CONFIG, sustainedSamples: 1 });
+    // sustainedSeconds: 0 alongside sustainedSamples: 1 is how "confirm on the first
+    // poll" is expressed now that the sustained bar has a time gate too (#44).
+    const engine = new DetectionEngine({
+      ...DEFAULT_CONFIG,
+      sustainedSamples: 1,
+      sustainedSeconds: 0,
+    });
     let at = warmUp(engine);
 
     // Two conditions on one host confirmed at the same instant: severity breaks the tie.
@@ -554,6 +576,182 @@ describe('unmeasurable metrics through the full poll path (#33)', () => {
       !types.includes('stalled_host'),
       'firing on an unknown depth would be the false positive §6 warns about',
     );
+  });
+});
+
+/**
+ * The sustained bar is two gates, samples AND wall-clock seconds (#44).
+ *
+ * These exist because the fix for #44 was to poll twice as fast, and a sample-only
+ * bar would have silently halved the debounce *duration* at the same time — trading
+ * false-positive protection for latency without anyone choosing to. The tests below
+ * are the check that the trade did not happen.
+ */
+describe('sustained breach is time-gated as well as sample-gated (#44)', () => {
+  /** DEFAULT_CONFIG with the sustained gates overridden. */
+  function config(sustainedSamples: number, sustainedSeconds: number): ThresholdConfig {
+    return { ...structuredClone(DEFAULT_CONFIG), sustainedSamples, sustainedSeconds };
+  }
+
+  /** A host that breaches dead_host — absolute, so no baseline warm-up is needed. */
+  function deadHost(): ProxyHost {
+    return proxyHost({ status: 'Disabled', queued: 6 });
+  }
+
+  it('withholds a finding while the sample gate is met but the time gate is not', () => {
+    // Two breaching samples 1s apart: samples satisfied, 8s of wall clock not.
+    const engine = new DetectionEngine(config(2, 8), () => {});
+    engine.applyPoll(response([deadHost()]), T0);
+    engine.applyPoll(response([deadHost()]), T0 + 1_000);
+
+    assert.deepEqual(
+      engine.snapshot().findings.map((f) => f.type),
+      [],
+      'two fast samples must not confirm — this is the protection a faster poll would have lost',
+    );
+  });
+
+  it('emits once the time gate is also satisfied', () => {
+    const engine = new DetectionEngine(config(2, 8), () => {});
+    engine.applyPoll(response([deadHost()]), T0);
+    engine.applyPoll(response([deadHost()]), T0 + 1_000);
+    engine.applyPoll(response([deadHost()]), T0 + 8_000);
+
+    const types = engine.snapshot().findings.map((f) => f.type);
+    assert.ok(types.includes('dead_host'), `expected dead_host, got ${types.join(', ') || 'none'}`);
+  });
+
+  it('withholds when the time gate is met but the sample gate is not', () => {
+    // One sample, long after the condition began: time alone must not confirm.
+    const engine = new DetectionEngine(config(3, 1), () => {});
+    engine.applyPoll(response([deadHost()]), T0);
+    engine.applyPoll(response([deadHost()]), T0 + 60_000);
+
+    assert.deepEqual(
+      engine.snapshot().findings.map((f) => f.type),
+      [],
+      'two samples cannot satisfy a three-sample gate however much time has passed',
+    );
+  });
+
+  it('restarts the clock when a breach clears and returns', () => {
+    const engine = new DetectionEngine(config(2, 8), () => {});
+    engine.applyPoll(response([deadHost()]), T0);
+    engine.applyPoll(response([proxyHost()]), T0 + 5_000); // recovered: condition dropped
+    engine.applyPoll(response([deadHost()]), T0 + 6_000);
+    engine.applyPoll(response([deadHost()]), T0 + 7_000);
+
+    assert.deepEqual(
+      engine.snapshot().findings.map((f) => f.type),
+      [],
+      'a flapping host must not inherit elapsed time from a cleared condition',
+    );
+  });
+
+  it('at the 5s poll rate we now ship, detection lands inside the 10s bar', () => {
+    // The whole point of #44: prove the configured defaults meet the acceptance
+    // criterion, rather than asserting the mechanism in the abstract.
+    const engine = new DetectionEngine(
+      { ...structuredClone(DEFAULT_CONFIG) },
+      () => {},
+    );
+    const POLL = 5_000;
+    let at = T0;
+    let detectedAt: number | undefined;
+    for (let i = 0; i < 6 && detectedAt === undefined; i += 1) {
+      engine.applyPoll(response([deadHost()]), at);
+      if (engine.snapshot().findings.length > 0) detectedAt = at;
+      at += POLL;
+    }
+
+    assert.ok(detectedAt !== undefined, 'must detect at all');
+    const elapsed = (detectedAt - T0) / 1000;
+    assert.ok(
+      elapsed <= 10,
+      `engine-side detection must fit the 10s bar, took ${elapsed}s`,
+    );
+  });
+
+  it('the shipped gate is reachable within sustainedSamples polls, WITH MARGIN', () => {
+    // Two traps this has caught, both "a timing number without the rate it runs at":
+    //   8 at a 5s poll -> unreachable in 2 samples, confirms on the 3rd (12.8s measured)
+    //   5 at a 5s poll -> reachable only by EXACT equality, so fetch jitter slips it to
+    //                     the 3rd sample on ~half of detections (10.2s vs 5.3s)
+    //
+    // Hence STRICT `<`, not `<=`: "reachable in N polls" has to mean reachable when the
+    // observed gap is a little under nominal, because `applyPoll` is stamped after a
+    // variable-duration fetch. `<=` admitted the zero-margin case and passed on 5.
+    //
+    // Reads DEFAULT_POLL_INTERVAL_MS rather than a local copy — a hardcoded 5_000 here
+    // left this test green while the relationship it asserts became false.
+    const { sustainedSamples, sustainedSeconds } = DEFAULT_CONFIG;
+    const spanCoveredBySamples = (sustainedSamples - 1) * DEFAULT_POLL_INTERVAL_MS;
+
+    assert.ok(
+      sustainedSeconds * 1000 < spanCoveredBySamples,
+      `sustainedSeconds=${sustainedSeconds} needs to be reachable in ${sustainedSamples} ` +
+        `polls of ${DEFAULT_POLL_INTERVAL_MS}ms with room to spare, but covers ` +
+        `${spanCoveredBySamples}ms exactly or more — it would force an extra poll`,
+    );
+
+    // End to end at the nominal rate: two polls must confirm.
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    engine.applyPoll(response([deadHost()]), T0);
+    engine.applyPoll(response([deadHost()]), T0 + DEFAULT_POLL_INTERVAL_MS);
+    assert.ok(
+      engine.snapshot().findings.some((f) => f.type === 'dead_host'),
+      'two polls at the shipped interval must be enough to confirm',
+    );
+  });
+
+  /**
+   * The jitter case, which the nominal-rate test above cannot see.
+   *
+   * `src/index.ts` stamps `applyPoll(response, Date.now())` AFTER awaiting the fetch, so
+   * the gap between consecutive stamps is `POLL_INTERVAL + (fetch_n − fetch_{n−1})`, not
+   * the interval. A poll quicker than its predecessor produces a short gap.
+   *
+   * Reproduced from @tanifgit's review on #46 — at `sustainedSeconds: 5` these four cases
+   * gave 5.3 / 10.2 / 10.05 / 10.12 seconds, i.e. an intermittent doubling. At 4 they all
+   * land near 5.
+   */
+  it('confirms on the second poll even when a fetch is quicker than the last (#46)', () => {
+    const POLL = DEFAULT_POLL_INTERVAL_MS;
+
+    /** Detection latency in seconds, simulating stamp = pollStart + fetchDuration. */
+    const detectAfter = (fetchMs: readonly number[]): number => {
+      const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+      for (let i = 0; i < 8; i += 1) {
+        const stamp = T0 + i * POLL + (fetchMs[i] ?? fetchMs[fetchMs.length - 1] ?? 0);
+        engine.applyPoll(response([deadHost()]), stamp);
+        if (engine.snapshot().findings.length > 0) return (stamp - T0) / 1000;
+      }
+      return Number.POSITIVE_INFINITY;
+    };
+
+    const cases: ReadonlyArray<readonly [string, readonly number[]]> = [
+      ['constant latency', [300, 300]],
+      ['2nd poll 100ms quicker', [300, 200]],
+      ['2nd poll 250ms quicker', [300, 50]],
+      ['cold connect, then warm', [800, 120]],
+    ];
+
+    for (const [label, fetchMs] of cases) {
+      const seconds = detectAfter(fetchMs);
+      assert.ok(
+        seconds < POLL * 2 / 1000,
+        `${label}: confirmed after ${seconds}s, which means jitter cost an extra poll`,
+      );
+    }
+  });
+
+  it('sustainedSeconds: 0 preserves the old sample-only behaviour', () => {
+    const engine = new DetectionEngine(config(2, 0), () => {});
+    engine.applyPoll(response([deadHost()]), T0);
+    engine.applyPoll(response([deadHost()]), T0 + 1);
+
+    const types = engine.snapshot().findings.map((f) => f.type);
+    assert.ok(types.includes('dead_host'), 'the escape hatch must actually disable the gate');
   });
 });
 /**

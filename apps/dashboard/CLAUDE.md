@@ -289,11 +289,11 @@ server: {
 
 Going through the dev proxy means **CORS is never your problem** and Dev B can be Node or Python without you changing a line.
 
-**Ports:** Dev A metrics proxy `:3001` · Dev B findings API `:3002` · dashboard dev server `:5173`.
+**Ports:** metrics proxy `:3001` · findings API `:3002` · dashboard dev server `:5173`.
 
 ### 4.4 Polling
 
-- Poll both endpoints on the same tick. Default **5 s** (`VITE_POLL_INTERVAL_MS`) — the acceptance bar is "updates within 10 s of a change", and Dev A's proxy polls IRIS every 10 s, so 5 s of client polling guarantees you are never the bottleneck.
+- Poll both endpoints on the same tick. Default **5 s** (`VITE_POLL_INTERVAL_MS`). This keeps the client off the critical path — it is the shortest of the four stages between a change in IRIS and a change on screen — but do **not** read it as meeting the "updates within 10 s of a change" bar. That bar is the *sum* of four stages: proxy → IRIS, engine → proxy, the engine's own sustained-breach gap, then this poll. Each was chosen defensibly in isolation and nobody multiplied them out, and **every measurement so far has come out over the bar.** Read the two upstream intervals from `services/metrics-proxy/.env.example` and `services/detection-engine/src/index.ts`, and the measured total from #44, rather than quoting either here — all three have already changed once, and a duration copied into this file goes stale silently. #44 owns the bar itself.
 - Pause polling when `document.hidden`; refetch immediately on becoming visible.
 - Abort the in-flight request on unmount and before each new tick (`AbortController`).
 - On error, back off (5 s → 10 s → 20 s, cap 30 s) and reset on the first success.

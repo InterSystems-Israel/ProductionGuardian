@@ -10,6 +10,11 @@
  * And behind MVP §6's requirement that a rule breach on 2+ consecutive samples before
  * emitting, so a single-sample spike produces nothing.
  *
+ * The sustained bar is TWO gates, samples and wall-clock seconds, both of which must
+ * pass. A sample count alone couples false-positive protection to the poll rate, so
+ * polling faster to meet the 10s acceptance bar would silently shorten the debounce
+ * (#44). Keeping the time gate separate lets the two be tuned independently.
+ *
  * State is keyed by (host, type) — one ongoing condition per rule per host.
  */
 
@@ -21,6 +26,8 @@ interface TrackedCondition {
   id: string;
   /** Consecutive breaching samples. Emits once this reaches sustainedSamples. */
   consecutiveBreaches: number;
+  /** When the breach was first OBSERVED. Drives the sustainedSeconds gate. */
+  firstSeenAt: number;
   /** When the condition was first CONFIRMED (i.e. became a finding), not first seen. */
   confirmedAt: number | undefined;
   /** Latest verdict, refreshed each poll so values stay current. */
@@ -32,9 +39,24 @@ export class FindingRegistry {
   #nextId = 1000;
 
   readonly #sustainedSamples: number;
+  readonly #sustainedMs: number;
 
-  constructor(sustainedSamples: number) {
+  constructor(sustainedSamples: number, sustainedSeconds = 0) {
     this.#sustainedSamples = sustainedSamples;
+    this.#sustainedMs = sustainedSeconds * 1000;
+  }
+
+  /**
+   * Both gates must pass. `sustainedSamples` guards against a lone bad scrape;
+   * `sustainedSeconds` guards against a fast poll rate turning that into a shorter
+   * debounce than MVP §6 intends (#44). Either alone is insufficient — samples
+   * scale with poll rate, and time alone would confirm on a single sample.
+   */
+  #isConfirmed(condition: TrackedCondition, now: number): boolean {
+    return (
+      condition.consecutiveBreaches >= this.#sustainedSamples &&
+      now - condition.firstSeenAt >= this.#sustainedMs
+    );
   }
 
   /**
@@ -52,22 +74,23 @@ export class FindingRegistry {
       const existing = this.#conditions.get(key);
 
       if (existing === undefined) {
-        this.#conditions.set(key, {
+        const fresh: TrackedCondition = {
           id: `f-${this.#nextId++}`,
           consecutiveBreaches: 1,
-          confirmedAt: this.#sustainedSamples <= 1 ? now : undefined,
+          firstSeenAt: now,
+          confirmedAt: undefined,
           verdict,
-        });
+        };
+        // A one-sample, zero-second config confirms immediately; both gates still apply.
+        if (this.#isConfirmed(fresh, now)) fresh.confirmedAt = now;
+        this.#conditions.set(key, fresh);
         continue;
       }
 
       existing.consecutiveBreaches += 1;
       // Refresh values so the finding shows current numbers, but never touch the id.
       existing.verdict = verdict;
-      if (
-        existing.confirmedAt === undefined &&
-        existing.consecutiveBreaches >= this.#sustainedSamples
-      ) {
+      if (existing.confirmedAt === undefined && this.#isConfirmed(existing, now)) {
         existing.confirmedAt = now;
       }
     }

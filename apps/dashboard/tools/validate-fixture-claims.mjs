@@ -345,10 +345,25 @@ for (const file of readdirSync(FIXTURES).filter((f) => f.startsWith('scenario-')
   /*
    * `queued` and `errored` are nullable as of Q13, and this file mirrors the engine
    * with comparisons like `host.queued <= 0` — which `null` satisfies, silently
-   * reading "depth unknown" as "nothing queued". Refuse the shape rather than judge
-   * it wrongly: the engine's own null semantics are still undecided (PR #33), so
-   * there is nothing faithful to mirror yet. Every fixture carries measured LABDEMO
-   * values, so this is a tripwire for whoever adds the first null, not a live case.
+   * reading "depth unknown" as "nothing queued". So the shape is refused rather than
+   * judged wrongly.
+   *
+   * The refusal stands. Its ORIGINAL reason does not: "the engine's null semantics are
+   * still undecided (PR #33)" was true when written and is not now — #35 made both
+   * fields `integer | null`, #36 made them measured per host, and Q13 anchors `null` on
+   * the exception path. Recording the live reason instead, because a tripwire whose
+   * stated reason has expired is the thing this file exists to catch:
+   *
+   * `normalizeHost()` in the engine still collapses an unmeasurable count to 0 before
+   * publishing, so NO null can reach these fixtures end to end (#49). A fixture
+   * depicting one would assert behaviour the shipped engine does not have — the same
+   * class of false claim as a message whose arithmetic does not divide.
+   *
+   * Lift this when the engine publishes null, not before, or the first null fixture
+   * becomes the lie. At that point the right move is not to delete these lines but to
+   * invert them: mirror the engine's null handling, and require that at least one
+   * fixture exercise the em dash, since it is the live exception path and nothing
+   * currently renders it.
    */
   for (const host of scenario.hosts) {
     for (const field of ['queued', 'errored']) {

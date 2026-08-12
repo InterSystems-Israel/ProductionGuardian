@@ -62,7 +62,7 @@ export class DetectionEngine {
     this.#log = log;
     this.#config = config;
     this.#baselines = new BaselineStore(config.baselineWindowSeconds, config.minBaselineSamples);
-    this.#registry = new FindingRegistry(config.sustainedSamples);
+    this.#registry = new FindingRegistry(config.sustainedSamples, config.sustainedSeconds);
   }
 
   /**
@@ -74,13 +74,14 @@ export class DetectionEngine {
     const structural =
       next.baselineWindowSeconds !== this.#config.baselineWindowSeconds ||
       next.minBaselineSamples !== this.#config.minBaselineSamples ||
-      next.sustainedSamples !== this.#config.sustainedSamples;
+      next.sustainedSamples !== this.#config.sustainedSamples ||
+      next.sustainedSeconds !== this.#config.sustainedSeconds;
 
     this.#config = next;
     this.#warnedOverrides.clear();
     if (structural) {
       this.#baselines = new BaselineStore(next.baselineWindowSeconds, next.minBaselineSamples);
-      this.#registry = new FindingRegistry(next.sustainedSamples);
+      this.#registry = new FindingRegistry(next.sustainedSamples, next.sustainedSeconds);
       this.#priorErrored.clear();
     }
   }
