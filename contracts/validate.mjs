@@ -204,10 +204,9 @@ const MUST_ACCEPT = [
   },
   {
     /*
-     * Q13. This is what the live proxy actually sends for every host today, so it
-     * is the shape the samples do NOT carry — the samples hold measured LABDEMO
-     * values from `EnumerateHostStatus`, which the proxy does not read. Without
-     * this case the nullability is declared and never exercised.
+     * Q13. The samples carry measured counts, so this is the shape they do NOT
+     * cover: a host the proxy's host-status merge did not reach. Without this case
+     * the nullability is declared and never exercised.
      */
     name: 'host with unmeasurable queued and errored counts',
     definition: 'HostsResponse',

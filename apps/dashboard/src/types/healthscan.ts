@@ -47,8 +47,9 @@ export interface Host {
   status: HostStatus;
   /**
    * `null` means the depth is **not measurable** for this host, not that it is
-   * zero (Q13). `iris_interop_queued` has no `host` label, so the live proxy
-   * sends null for every host today. Render `—`; never treat it as a count.
+   * zero (Q13). Neither count carries a `host` label in the metrics text, so both
+   * come from a host-status endpoint merged on host name — a host that merge does
+   * not reach stays null. Render `—`; never treat it as a count.
    */
   queued: number | null;
   messagesPerSec: number;

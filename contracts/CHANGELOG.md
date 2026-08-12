@@ -11,12 +11,12 @@ both sides.** `queued` and `errored` widen from `integer` to `integer | null`. `
 measurable for this host"* and never *"zero"*. Both keys stay **required** — a `null` value is
 legal, an absent key is not.
 
-**Why: today the engine publishes a `0` nobody measured, and one rule reads that `0` as a
-symptom.** `iris_interop_queued` carries no `host` label (it emits once per production), so Dev A's
-proxy sends `queued: null` for every host — established in issue #12 and confirmed against the real
-capture on PR #33. The engine's `normalizeHost()` collapses that `null` to `0` because this schema
-declared the field a required integer. So the coercion exists *to satisfy this file*, which makes
-the fix belong here rather than in the engine.
+**Why: the engine publishes a `0` nobody measured, and one rule reads that `0` as a symptom.**
+`iris_interop_queued` carries no `host` label (it emits once per production), so at the time of
+writing the proxy sent `queued: null` for **every** host — established in issue #12 and confirmed
+against the real capture on PR #33. The engine's `normalizeHost()` collapses that `null` to `0`
+because this schema declared the field a required integer. So the coercion exists *to satisfy this
+file*, which makes the fix belong here rather than in the engine.
 
 That coercion is not inert. Two reproductions from the PR #33 review, both by probing rather than
 reading:
@@ -53,8 +53,28 @@ run. This change lets it survive to the consumer, so **rules skip instead of com
 **Supersedes the "Known gap" note of 2026-08-06**, which concluded that `Host.queued` stays a
 required number because per-host depth is available from `Ens.Util.Statistics:EnumerateHostStatus`.
 That is still true of IRIS, and it is how the measured `48` in `samples/hosts-response.json` was
-obtained — but the shipped proxy reads the Prometheus metrics text only, and the note's own
-condition (*"no contract impact if that holds"*) did not hold.
+obtained — but the proxy read the Prometheus metrics text only, so the note's own condition
+(*"no contract impact if that holds"*) did not hold.
+
+### PR #36 changes which case is normal, and does not remove the need for this
+
+**#36 makes per-host counts measurable** — a host-status REST endpoint in `iris/`, merged by the
+proxy on host name — so the counts arrive as real numbers and the all-null era ends. That does not
+make this change unnecessary; it changes `null` from *the norm* into *the documented exception*, and
+an exception still has to be expressible:
+
+- a host the endpoint's response did not describe (`_meta.hostStatus.unmatchedHosts`),
+- the endpoint unreachable, 404 on a missing CSP application, or the third poll failing,
+- the merge switched off with an empty `IRIS_HOSTSTATUS_PATH`.
+
+**#36 holds exactly this invariant on its own side** — *"a host the endpoint did not describe keeps
+`null`, not `0`"* — and its proxy contract already types both counts as `NullableCount`. Without
+this change the published contract is the one place in the chain that cannot represent what the
+proxy is careful to preserve, and the engine has to flatten it on the last hop. The two changes
+agree; they are not alternatives.
+
+Note this also means the *reproductions above stay reachable after #36*, on any host the merge
+misses — which is the argument for landing both.
 
 **Changes:**
 
