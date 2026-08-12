@@ -27,6 +27,7 @@ the `<Item Name="...">` set in `Production.cls` is authoritative.
 | `Message/PatientDemographics.cls` | Ens.Request carrying extracted PID fields |
 | `Operation/PatientDemographicsOperation.cls` | BO: HTTP POST to REST dispatcher |
 | `REST/PatientDispatcher.cls` | %CSP.REST dispatcher — POST/GET /labdemo/patients |
+| `REST/HostStatusDispatcher.cls` | %CSP.REST dispatcher — GET /labdemo/monitor/hoststatus, per-host queue depth + error counts for the metrics proxy (read-only) |
 | `Data/PatientRecord.cls` | %Persistent table — upsert keyed on PatientID |
 | `HL7Generator.cls` | Writes synthetic ADT/ORU .hl7 files to drop dir |
 
@@ -47,6 +48,38 @@ Management Portal → System Administration → Security → Applications → We
 | Allowed authentication | Password (or Unauthenticated for local demo) |
 
 Click **Save**. The API is now live at `http://localhost:52773/labdemo/patients`.
+
+### 1b — Register the host-status web application
+
+A **second** web application, for the endpoint the metrics proxy polls to get per-host queue depth
+and error counts. It needs its own entry because a CSP application maps one path to one dispatch
+class.
+
+| Field | Value |
+|---|---|
+| Name / Path | `/labdemo/monitor` |
+| Namespace | `LABDEMO` |
+| Enable | REST |
+| Dispatch class | `ProductionGuardian.LabDemo.REST.HostStatusDispatcher` |
+| Allowed authentication | Password (or Unauthenticated for local demo) |
+
+Live at `http://localhost:52773/labdemo/monitor/hoststatus`. Verify:
+
+```bash
+curl -s -u user:pass http://localhost:52773/labdemo/monitor/hoststatus
+# {"hosts":[{"host":"Cloud API","status":"OK","queued":0,"errored":0,"messageCount":17860}, ...],
+#  "_meta":{"production":"LABDEMO.Production","productionState":"Running","hostCount":13, ...}}
+```
+
+**Why this exists:** `iris_interop_queued` and `iris_interop_messages_errored` are emitted once per
+production with no `host` label, so per-host queue depth and error counts are not in
+`/api/monitor/metrics` at all — which blocked `queue_buildup` (#12) and `elevated_error_rate` (#31).
+This wraps `Ens.Util.Statistics:EnumerateHostStatus` and `Ens.MessageHeader` to supply them. It is
+**read-only**: it reads host state and counts rows, and changes no production setting.
+
+Set `IRIS_HOSTSTATUS_PATH` in the proxy's `.env` to match this path (default
+`/labdemo/monitor/hoststatus`), or empty to disable the poll — the proxy then publishes
+`queued`/`errored` as `null`, as it did before.
 
 ### 2 — Load all classes
 
