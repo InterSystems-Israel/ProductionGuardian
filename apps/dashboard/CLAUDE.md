@@ -108,9 +108,9 @@ export interface Host {
   host: string;
   type: string;            // 'service' | 'process' | 'operation' — treat as open string
   status: HostStatus;
-  queued: number;
+  queued: number | null;       // null = not measurable for this host, NOT zero (Q13)
   messagesPerSec: number;
-  errored: number;
+  errored: number | null;      // null = not measurable, NOT zero errors (Q13)
   avgProcessingTime: number;   // seconds
   avgQueueingTime: number;     // seconds
   lastActivity: string;        // ISO 8601 UTC
@@ -143,9 +143,9 @@ The contract will drift during the sprint. The UI must never crash or blank out 
 
 ### 2.5 The Day-1 questions — answered
 
-All twelve are settled in **`contracts/healthscan-api.md` §4** (issue #1, PR #3). That document is the source of record; this is the summary.
+All thirteen are settled in **`contracts/healthscan-api.md` §4** (issue #1, PR #3, and Q13 from PR #35). That document is the source of record; this is the summary.
 
-Eight of the nine original assumptions held. **Only Q1 was wrong**, and it is fixed:
+Eight of the nine original assumptions held. **Q1 and Q13 are the two corrections**, and both are fixed:
 
 | # | Answer |
 |---|---|
@@ -161,6 +161,7 @@ Eight of the nine original assumptions held. **Only Q1 was wrong**, and it is fi
 | Q10 | IRIS says `actor` for business processes; Dev B normalizes to `process`. |
 | Q11 | `lastActivity` is derived from elapsed seconds — trust it to ±10s, not for sub-second ordering. |
 | Q12 | `avgProcessingTime` is a sample-count-weighted aggregate across message types. |
+| Q13 | `queued` / `errored` are `number \| null`. `null` is **"not measurable for this host"**, never zero — the counts come from a host-status endpoint merged on host name, and a host that merge does not reach stays null. Render `—`; never compare against it. |
 
 **Keep the `// CONTRACT-Q<n>` convention** for future contract-dependent work. Tagging each assumption site with a greppable marker made reconciliation a `grep` rather than an audit — ADR 0004 recommends promoting it to practice.
 
