@@ -80,7 +80,7 @@ describe('our guard against the real proxy output', { skip }, () => {
     assert.deepEqual(leaked, [], 'the namespace leaked through as a host');
   });
 
-  it('normalizes a real host into a contract-shaped Host with no nulls', () => {
+  it('normalizes a real host to the contract shape, nullable only where the schema is', () => {
     const snapshot = buildRealSnapshot();
     const labRouter = snapshot.hosts
       .filter(isProxyHost)
@@ -89,10 +89,23 @@ describe('our guard against the real proxy output', { skip }, () => {
 
     const host = normalizeHost(labRouter, Date.parse('2026-08-12T00:00:00Z'));
 
-    // The published Host contract has no nullable numerics. Emitting null here would do
-    // to Dev C precisely what the proxy's null did to us.
-    for (const field of ['queued', 'messagesPerSec', 'errored', 'avgProcessingTime', 'avgQueueingTime'] as const) {
+    // This test used to assert "no nullable numerics", which was true of the schema as
+    // published on Day 1 and false after #35 made queued/errored `["integer","null"]`.
+    // Asserting the stale premise is what kept orZero() alive past its justification and
+    // let fabricated zeros reach both the wire and the baseline (#49).
+    //
+    // Three fields the schema still declares as plain numbers: coercion is REQUIRED.
+    for (const field of ['messagesPerSec', 'avgProcessingTime', 'avgQueueingTime'] as const) {
       assert.equal(typeof host[field], 'number', `Host.${field} must be a number, not null`);
+    }
+    // Two the schema declares nullable: null must pass THROUGH, because Dev C renders an
+    // em dash for unmeasurable and a coerced 0 is a confident lie about a real host.
+    for (const field of ['queued', 'errored'] as const) {
+      const value = host[field];
+      assert.ok(
+        value === null || typeof value === 'number',
+        `Host.${field} must be number|null per the schema, got ${typeof value}`,
+      );
     }
     assert.match(host.lastActivity, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     assert.equal(host.type, 'process', "IRIS 'actor' must normalize to 'process'");

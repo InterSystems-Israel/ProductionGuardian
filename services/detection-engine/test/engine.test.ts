@@ -556,3 +556,96 @@ describe('unmeasurable metrics through the full poll path (#33)', () => {
     );
   });
 });
+/**
+ * Unmeasurable counts must never enter the baseline (#49).
+ *
+ * Found by @tanifgit. Every RULE was hardened to tell "unknown" from "zero"; the BASELINE
+ * was not, because the four record() calls took the normalized host, where orZero() has
+ * already collapsed null to 0. So a metric going absent deflated the baseline it feeds and
+ * the next genuine reading was judged against fabricated history.
+ *
+ * The measured failure, against shipped thresholds: a steady queue of 40 drops out of the
+ * host-status endpoint for five minutes, returns at an ordinary 60, and the engine reported
+ * "Queue depth 60 is 6.5x baseline" with baseline=9.21 — the mean of twelve real 40s and
+ * sixty fabricated zeros. Internally consistent arithmetic about nothing.
+ *
+ * This is the near-mirror of the self-inflation property in baseline.test.ts: there the
+ * window includes samples it should exclude and a real problem goes silent; here it
+ * includes samples that were never measured and a normal value raises a warning.
+ */
+describe('unmeasurable counts never enter the baseline (#49)', () => {
+  /** A host with every nullable count measurable, so a test can null one field. */
+  function measured(overrides: Partial<ProxyHost> = {}): ProxyHost {
+    return proxyHost({ queued: 40, messagesPerSec: 1.2, avgProcessingTime: 0.08, ...overrides });
+  }
+
+  it('does not deflate the baseline across an outage in the host-status endpoint', () => {
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    let at = T0;
+
+    // Warm on a real, steady queue of 40.
+    for (let i = 0; i < 13; i += 1) {
+      engine.applyPoll(response([measured()]), at);
+      at += POLL_MS;
+    }
+    // The endpoint goes away for 60 polls. Nothing about the production changed.
+    for (let i = 0; i < 60; i += 1) {
+      engine.applyPoll(response([measured({ queued: null })]), at);
+      at += POLL_MS;
+    }
+    // It returns at an ordinary depth for this host.
+    for (let i = 0; i < 3; i += 1) {
+      engine.applyPoll(response([measured({ queued: 60 })]), at);
+      at += POLL_MS;
+    }
+
+    const buildup = engine.snapshot().findings.filter((f) => f.type === 'queue_buildup');
+    assert.deepEqual(
+      buildup.map((f) => f.message),
+      [],
+      'a queue that never changed must not produce a finding',
+    );
+  });
+
+  it('leaves a gap rather than a false sample, for every nullable metric', () => {
+    // Asserted through sampleCount rather than through a finding: the point is that the
+    // window is SHORTER, not merely that no finding appeared. A rule staying silent for an
+    // unrelated reason would hide this.
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    let at = T0;
+    for (let i = 0; i < 6; i += 1) {
+      engine.applyPoll(response([measured()]), at);
+      at += POLL_MS;
+    }
+    for (let i = 0; i < 6; i += 1) {
+      engine.applyPoll(
+        response([measured({ queued: null, messagesPerSec: null, avgProcessingTime: null })]),
+        at,
+      );
+      at += POLL_MS;
+    }
+
+    // 12 polls, 6 of them unmeasurable -> still warming, because there are only 6 samples.
+    assert.equal(
+      engine.snapshot().state,
+      'warming',
+      'skipped samples must leave the host short of minBaselineSamples, not silently full',
+    );
+  });
+
+  it('still records a genuine measured zero', () => {
+    // The distinction that matters: 0 is a reading, null is not. If this regressed to
+    // skipping zeros, an idle host would never baseline at all.
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    let at = T0;
+    for (let i = 0; i < 14; i += 1) {
+      engine.applyPoll(response([measured({ queued: 0, avgQueueingTime: 0 })]), at);
+      at += POLL_MS;
+    }
+    assert.equal(
+      engine.snapshot().state,
+      'ok',
+      'a genuinely idle host must reach a warm baseline of zero',
+    );
+  });
+});
