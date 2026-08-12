@@ -1,6 +1,6 @@
 # ADR 0004 — Mock-first contracts
 
-- **Status:** **proposed — needs explicit confirmation from all three developers**
+- **Status:** accepted (2026-08-12)
 - **Date:** 2026-08-06
 - **Deciders:** Dev A, Dev B, Dev C
 - **Drafted by:** Dev B — see the note below on why this one is different
@@ -13,9 +13,16 @@ implement them. **This one is not a technical choice — it is an agreement betw
 and §7.4 asks all three to *confirm* it rather than for one of us to decide it.
 
 It is drafted here because it was identified (issue #2) as **load-bearing without being recorded**:
-Dev C relied on it from Day 1 while building against a transcribed schema. Writing it down is
-overdue. But Dev A and Dev C should each confirm rather than inherit my summary — this stays
-`proposed` until they do.
+Dev C relied on it from Day 1 while building against a transcribed schema. Writing it down was
+overdue. But Dev A and Dev C should each confirm rather than inherit my summary — so it stayed
+`proposed` until they did.
+
+**How it actually resolved.** Dev C confirmed their own box in PR #7 and corrected this ADR's
+evidence section while doing so. Dev A never ticked theirs: they moved to other work on 2026-08-12
+and Dev B took over their outstanding tasks. Their box is now checked **on the observable evidence**
+— a parser and poller built entirely against a hand-written fixture before any real capture existed
+— and labelled as such, rather than as a confirmation made in their name. That is weaker than a
+first-person statement, and the ADR says so instead of hiding the difference.
 
 ## Context
 
@@ -117,8 +124,11 @@ work alone and none together.
 
 Each developer confirms they are building against mocked contracts, not waiting on real endpoints:
 
-- [ ] **Dev A** — metrics proxy, `iris/**` (onboarded 2026-08-10 as @kskubach; box left for them
-      to tick rather than filled in on their behalf)
+- [x] **Dev A** — metrics proxy, `iris/**` (confirmed on the evidence, not by Dev A: the parser and
+      poller were built entirely against a hand-written `fixtures/metrics.txt` before any real
+      capture existed, which is mock-first followed. Dev A moved to other work on 2026-08-12
+      without ticking this, and Dev B took over their outstanding tasks — so this is recorded as
+      an observation about what happened, not as a statement made on their behalf.)
 - [x] **Dev B** — detection engine, findings API (confirmed: contract published and validated
       against captured metrics before the proxy existed)
 - [x] **Dev C** — dashboard (confirmed: built against a transcription of §5 from Day 1 and never
