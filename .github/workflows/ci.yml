@@ -80,7 +80,11 @@ jobs:
           # success -- verified: `fail 1` with a step exit code of 0. Same precedent as the
           # Compile step below.
           set -o pipefail
-          FILES=$(ls test/*.test.ts | wc -l)
+          # `|| true` AND 2>/dev/null: under -e + pipefail a no-match glob would abort the
+          # step at this line, so the explanatory branch below never runs and the operator
+          # sees a bare `ls: cannot access`. 2>/dev/null alone is NOT enough — ls still exits
+          # 2 and pipefail propagates it (checked). A guard should say why it failed.
+          FILES=$( { ls test/*.test.ts 2>/dev/null || true; } | wc -l )
           if [ "$FILES" -eq 0 ]; then echo "no test files found — refusing to report success"; exit 1; fi
           npm test 2>&1 | tee /tmp/engine-test.log
           # `ℹ tests N` is the spec reporter's summary line, which is the default on
@@ -281,7 +285,7 @@ jobs:
           if ! node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
             echo "metrics-proxy defines no test script — refusing to report success"; exit 1
           fi
-          FILES=$(ls src/*.test.js | wc -l)
+          FILES=$( { ls src/*.test.js 2>/dev/null || true; } | wc -l )   # see the detection-engine job
           if [ "$FILES" -eq 0 ]; then echo "no test files found"; exit 1; fi
           npm test 2>&1 | tee /tmp/proxy-test.log
           RAN=$(sed -n 's/^.*[[:space:]]tests \([0-9]\+\)$/\1/p' /tmp/proxy-test.log | head -1)
