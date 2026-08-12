@@ -159,11 +159,23 @@ onto `Cloud API` would attribute one host's queue depth to another. Divergence i
 | `merged` | How many hosts received values. |
 | `hostCount` | How many hosts the endpoint described, before matching. |
 | `unmatchedHosts` | Hosts the endpoint named that the metrics text did not. Empty is normal. |
+| `undescribedHosts` | **Application** hosts the metrics text named that the endpoint did **not** describe — the direction a consumer feels, since those keep `queued`/`errored` `null` while others get numbers. Empty is normal. |
 | `skippedEntries` | Entries with no usable host name. |
 | `sampledAt` | When IRIS sampled host state, per the endpoint. Distinct from `polledAt`. |
 | `production`, `productionState` | `productionState` is `Running` \| `Stopped` \| `Suspended` \| `Troubled` \| `Unknown`. |
 | `erroredAvailable` | `false` when IRIS could not count errors — `errored` then stays `null`. |
 | `available` | Present and `false` only when the source was not polled or the request failed. |
+
+**`merged === hostCount` is NOT a sufficient health check.** It looks correct in a failure that
+matters: if one host drops out of the endpoint — a rename, or a query that missed it — both counts
+shrink together and the comparison still passes, while that host alone keeps `queued: null`. Read
+**`undescribedHosts`** for that case; it names the affected hosts.
+
+Framework hosts are deliberately excluded from `undescribedHosts`, because the endpoint legitimately
+omits some of them — on the live instance `Ens.Alarm` and `Ens.MonitorService` are absent by design,
+and counting them would make a healthy state look broken. That is also why
+`snapshot.hosts.length - merged` is not a usable check: it reads `15 - 13 = 2` while everything is
+fine.
 
 **`merged: 0` while `shape` is `"hosts"` is the failure worth watching.** The endpoint answered
 correctly and *no host name matched*, so every `queued` is `null` and nothing looks broken. That is

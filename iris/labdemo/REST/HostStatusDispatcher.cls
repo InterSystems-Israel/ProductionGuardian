@@ -14,12 +14,16 @@
 /// 
 /// URL map (registered in the web application configuration):
 /// 
-///   GET /labdemo/hoststatus     — per-host queue depth, status and error counts
+///   GET /labdemo/monitor/hoststatus  — per-host queue depth, status and error counts
 /// 
-/// Register this dispatcher under a CSP web application, following the same convention
-/// as PatientDispatcher (see ../README.md §1):
+/// Register this dispatcher under its OWN CSP web application — see ../README.md §1b, not
+/// §1. A CSP application maps one path to one dispatch class, so this cannot share
+/// PatientDispatcher's `/labdemo`; pointing `/labdemo` here would break the patients API,
+/// and the endpoint would then answer at `/labdemo/hoststatus` while the proxy polls
+/// `/labdemo/monitor/hoststatus` — a 404 that surfaces only as `queued`/`errored` staying
+/// `null`, which looks like an idle production rather than a misconfiguration.
 ///   Management Portal → System Administration → Security → Applications → Web Applications
-///   Path: /labdemo  →  Dispatch class: ProductionGuardian.LabDemo.REST.HostStatusDispatcher
+///   Path: /labdemo/monitor  →  Dispatch class: ProductionGuardian.LabDemo.REST.HostStatusDispatcher
 ///   Namespace: LABDEMO
 /// 
 /// READ-ONLY. This class reads host state and counts rows; it never writes, never

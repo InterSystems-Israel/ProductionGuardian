@@ -168,12 +168,26 @@ function mergeHostStatus(snapshot, hostStatus) {
   const metricsHosts = new Set(snapshot.hosts.map((h) => h.host));
   const unmatchedHosts = [...byHost.keys()].filter((name) => !metricsHosts.has(name));
 
+  // And the OTHER direction, which is the one a consumer feels: application hosts the
+  // metrics text listed that the status endpoint did NOT describe. Those keep
+  // `queued`/`errored` null while every other host gets real numbers.
+  //
+  // `merged === hostCount` cannot detect this — both counts simply shrink together, so
+  // the check this meta used to recommend reports success while a host silently loses its
+  // data (Dev C, #36). Framework hosts are excluded because the endpoint legitimately
+  // does not enumerate all of them: on the live instance `Ens.Alarm` and
+  // `Ens.MonitorService` are absent by design, so counting them would make the healthy
+  // state look broken.
+  const undescribedHosts = snapshot.hosts
+    .filter((host) => !host.isFramework && !byHost.has(host.host))
+    .map((host) => host.host);
+
   return {
     ...snapshot,
     hosts,
     _meta: {
       ...snapshot._meta,
-      hostStatus: { ...statusMeta, merged, unmatchedHosts },
+      hostStatus: { ...statusMeta, merged, unmatchedHosts, undescribedHosts },
     },
   };
 }

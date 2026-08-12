@@ -258,3 +258,46 @@ describe('mergeHostStatus — this is what closes #12 and #31', () => {
     assert.equal(before.hosts[0].queued, null, 'the input snapshot must be untouched');
   });
 });
+
+describe('undescribedHosts — the direction a consumer feels (#36)', () => {
+  const appHost = (host, isFramework = false) => ({
+    host, type: 'process', status: 'OK', isFramework,
+    queued: null, messages: 100, messagesPerSec: 1.2, errored: null,
+    avgProcessingTime: 0.08, avgQueueingTime: 0,
+    lastActivity: null, lastActivityElapsedSeconds: 4,
+  });
+  const APP = ['Cloud API', 'EMR Source', 'FHIR Transform', 'Lab Router'];
+  const snapshot = () => ({
+    hosts: [...APP.map((h) => appHost(h)), appHost('Ens.Alarm', true), appHost('Ens.MonitorService', true)],
+    _meta: { polledAt: '2026-08-12T12:00:00Z' },
+  });
+  const status = (list) => ({
+    byHost: new Map(list.map((h) => [h, { host: h, status: 'OK', queued: 0, errored: 0, messageCount: 1 }])),
+    _meta: { sampledAt: 'x', hostCount: list.length, shape: 'hosts', available: true, erroredAvailable: true },
+  });
+
+  it('is empty when every application host is described', () => {
+    const meta = mergeHostStatus(snapshot(), status(APP))._meta.hostStatus;
+    assert.deepEqual(meta.undescribedHosts, []);
+  });
+
+  it('names an application host the endpoint did not describe', () => {
+    // The failure that `merged === hostCount` cannot see: both counts shrink together,
+    // so the previously-recommended check reports success while one host keeps null.
+    const merged = mergeHostStatus(snapshot(), status(APP.slice(0, 3)));
+    const meta = merged._meta.hostStatus;
+    assert.equal(meta.merged, meta.hostCount, 'precondition: the old check looks healthy');
+    assert.deepEqual(meta.undescribedHosts, ['Lab Router']);
+    // And the consumer-visible symptom it explains.
+    const labRouter = merged.hosts.find((h) => h.host === 'Lab Router');
+    assert.equal(labRouter.queued, null);
+  });
+
+  it('ignores framework hosts, which the endpoint legitimately omits', () => {
+    // On the live instance Ens.Alarm and Ens.MonitorService are absent from the endpoint
+    // by design. Counting them would make the healthy state look broken.
+    const meta = mergeHostStatus(snapshot(), status(APP))._meta.hostStatus;
+    assert.ok(!meta.undescribedHosts.includes('Ens.Alarm'));
+    assert.ok(!meta.undescribedHosts.includes('Ens.MonitorService'));
+  });
+});

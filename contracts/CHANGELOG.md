@@ -4,6 +4,30 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+
+## 2026-08-12 — `_meta.hostStatus.undescribedHosts` added (Dev B)
+
+Adds one diagnostic field, no change to any host or finding field. Follows the same-day entry
+that made `queued`/`errored` measurable per host.
+
+`merged === hostCount` was documented as the way to check the host-status join, and it does not
+work in the failure that matters: if one host drops out of the endpoint — a rename, or a query
+that missed it — both counts shrink together, the comparison still passes, and that host alone
+keeps `queued: null`. Reproduced by Dev C on #36 and confirmed here:
+
+```
+all four described :  merged=4 hostCount=4  merged===hostCount? true  undescribedHosts=[]
+Lab Router missing :  merged=3 hostCount=3  merged===hostCount? true  undescribedHosts=["Lab Router"]
+```
+
+`unmatchedHosts` already reported the opposite direction (endpoint → metrics). This is the
+direction a consumer feels, because it is the one that leaves a `null` in front of them.
+
+Framework hosts are excluded deliberately: the endpoint legitimately omits some, so on the live
+instance `Ens.Alarm` and `Ens.MonitorService` are absent by design. Counting them would make a
+healthy state look broken — which is also why `snapshot.hosts.length - merged` is not a usable
+check, reading `15 - 13 = 2` while everything is fine.
+
 ## 2026-08-12 — `Host.queued` and `Host.errored` become `number | null` (Dev C)
 
 **A real field-type change on the published contract, and the first one that requires an edit on
