@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "mock": "node mock-server.js",
-    "test": "node --test src/parser.test.js"
+    "test": "node --test src/parser.test.js src/alerts.test.js src/cache.test.js src/poller.test.js",
+    "smoke": "node smoke-test.js"
   },
   "dependencies": {
     "express": "^4.18.2"

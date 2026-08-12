@@ -11,6 +11,7 @@
 const http = require('http');
 const https = require('https');
 const { parsePrometheusText, buildSnapshot } = require('./parser');
+const { normalizeAlerts } = require('./alerts');
 const { setMetricsSnapshot, setAlertsSnapshot } = require('./cache');
 
 const IRIS_HOST      = process.env.IRIS_HOST      || 'localhost';
@@ -19,6 +20,24 @@ const IRIS_USER      = process.env.IRIS_USER      || '_SYSTEM';
 const IRIS_PASS      = process.env.IRIS_PASS      || 'SYS';
 const IRIS_NAMESPACE = process.env.IRIS_NAMESPACE || 'LABDEMO';
 const USE_HTTPS      = process.env.IRIS_HTTPS === 'true';
+
+/**
+ * Path prefix in front of /api/monitor/. Empty on an instance served by its own
+ * private web server on 52773; on an instance served through an external web server
+ * the instance name is a path segment, e.g.
+ *   http://localhost/iris4health_2024_1/api/monitor/metrics
+ * Without this the poller requests /api/monitor/metrics at the web server root and
+ * gets the server's 404 page, which parses as zero metric lines — an empty snapshot
+ * that looks like an idle production rather than a misconfiguration.
+ */
+const IRIS_BASE_PATH = normalizeBasePath(process.env.IRIS_BASE_PATH || '');
+
+/** Trim to a leading-slash, no-trailing-slash form so path joining stays predictable. */
+function normalizeBasePath(raw) {
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
 
 const METRICS_INTERVAL = parseInt(process.env.METRICS_POLL_INTERVAL_MS || '10000', 10);
 const ALERTS_INTERVAL  = parseInt(process.env.ALERTS_POLL_INTERVAL_MS  || '30000', 10);
@@ -29,7 +48,8 @@ const AUTH_HEADER = 'Basic ' + Buffer.from(`${IRIS_USER}:${IRIS_PASS}`).toString
  * Make an authenticated HTTP(S) GET request to the IRIS instance.
  * Returns a promise resolving to the response body string.
  *
- * @param {string} path — e.g. '/api/monitor/metrics'
+ * @param {string} path — endpoint path, e.g. '/api/monitor/metrics'.
+ *   IRIS_BASE_PATH is prepended.
  * @returns {Promise<string>}
  */
 function irisGet(path) {
@@ -38,7 +58,7 @@ function irisGet(path) {
     const options = {
       hostname: IRIS_HOST,
       port: IRIS_PORT,
-      path: path,
+      path: IRIS_BASE_PATH + path,
       method: 'GET',
       headers: {
         'Authorization': AUTH_HEADER,
@@ -86,22 +106,31 @@ async function pollMetrics() {
 }
 
 /**
- * Poll /api/monitor/alerts and store the JSON array.
+ * Poll /api/monitor/alerts and store the normalized JSON.
+ *
+ * Shape handling lives in ./alerts — the payload shape is unverified (no capture of
+ * this endpoint exists yet), so an unfamiliar body is reported rather than silently
+ * flattened to an empty list. `system_alert` is the only finding fed from here.
  */
 async function pollAlerts() {
   const polledAt = new Date().toISOString();
   try {
     const body = await irisGet('/api/monitor/alerts');
-    let alerts;
-    try {
-      alerts = JSON.parse(body);
-    } catch {
-      // Alerts endpoint may return an empty body or malformed JSON — treat as empty.
-      alerts = [];
+    const snapshot = normalizeAlerts(body, polledAt);
+    setAlertsSnapshot(snapshot);
+
+    const { shape, count } = snapshot._meta;
+    // Warn on any shape that produced no alerts for a reason other than "there are
+    // none". Silence here was how a shape mismatch could look like a healthy zero.
+    if (shape === 'array' || shape === 'empty' || shape.startsWith('wrapped:')) {
+      console.log(`[poller] alerts: ${count} alerts (shape: ${shape}) at ${polledAt}`);
+    } else {
+      console.warn(
+        `[poller] alerts: UNEXPECTED payload shape "${shape}" — published 0 alerts. ` +
+        `system_alert findings cannot fire until the mapping is corrected. ` +
+        `See _meta on /proxy/alerts for the raw payload.`
+      );
     }
-    if (!Array.isArray(alerts)) alerts = [];
-    setAlertsSnapshot({ alerts, _meta: { polledAt } });
-    console.log(`[poller] alerts: ${alerts.length} alerts at ${polledAt}`);
   } catch (err) {
     console.error(`[poller] alerts poll failed: ${err.message}`);
   }
@@ -112,7 +141,10 @@ async function pollAlerts() {
  */
 function startPoller() {
   console.log(`[poller] starting — metrics every ${METRICS_INTERVAL}ms, alerts every ${ALERTS_INTERVAL}ms`);
-  console.log(`[poller] IRIS: ${USE_HTTPS ? 'https' : 'http'}://${IRIS_HOST}:${IRIS_PORT} (namespace: ${IRIS_NAMESPACE})`);
+  // Include IRIS_BASE_PATH — it is part of the URL actually requested, and omitting it
+  // from the banner made a wrong prefix invisible at the one moment you would look.
+  console.log(`[poller] IRIS: ${USE_HTTPS ? 'https' : 'http'}://${IRIS_HOST}:${IRIS_PORT}`
+    + `${IRIS_BASE_PATH} (namespace: ${IRIS_NAMESPACE})`);
 
   // Run immediately on startup, then on interval.
   pollMetrics();
