@@ -27,6 +27,7 @@ the `<Item Name="...">` set in `Production.cls` is authoritative.
 | `Message/PatientDemographics.cls` | Ens.Request carrying extracted PID fields |
 | `Operation/PatientDemographicsOperation.cls` | BO: HTTP POST to REST dispatcher |
 | `REST/PatientDispatcher.cls` | %CSP.REST dispatcher — POST/GET /labdemo/patients |
+| `REST/HostStatusDispatcher.cls` | %CSP.REST dispatcher — GET /labdemo/monitor/hoststatus, per-host queue depth + error counts for the metrics proxy (read-only) |
 | `Data/PatientRecord.cls` | %Persistent table — upsert keyed on PatientID |
 | `HL7Generator.cls` | Writes synthetic ADT/ORU .hl7 files to drop dir |
 
@@ -47,6 +48,50 @@ Management Portal → System Administration → Security → Applications → We
 | Allowed authentication | Password (or Unauthenticated for local demo) |
 
 Click **Save**. The API is now live at `http://localhost:52773/labdemo/patients`.
+
+### 1b — Register the host-status web application
+
+A **second** web application, for the endpoint the metrics proxy polls to get per-host queue depth
+and error counts. It needs its own entry because a CSP application maps one path to one dispatch
+class.
+
+| Field | Value |
+|---|---|
+| Name / Path | `/labdemo/monitor` |
+| Namespace | `LABDEMO` |
+| Enable | REST |
+| Dispatch class | `ProductionGuardian.LabDemo.REST.HostStatusDispatcher` |
+| Allowed authentication | Password (or Unauthenticated for local demo) |
+
+**The port is whichever web server fronts your instance — do not assume 52773.** That is the
+private web server, and it is not always published. On the instance this was verified against
+(`irishealth` behind a `webgateway` container) the only HTTP port is **80**, and 52773 refuses the
+connection outright. Use the same host and port that serve `/api/monitor/metrics` in your browser —
+it is the same web server, and the proxy reaches both through one `IRIS_HOST`/`IRIS_PORT` pair.
+
+Verified on that instance, port 80:
+
+```bash
+$ curl -s -u user:pass http://localhost/labdemo/monitor/hoststatus
+# HTTP/1.1 200 OK   Content-Type: application/json
+# {"hosts":[{"host":"Cloud API","status":"OK","queued":0,"errored":0,"messageCount":17860}, ...],
+#  "_meta":{"production":"LABDEMO.Production","productionState":"Running","hostCount":13, ...}}
+```
+
+The equivalent on an instance whose private web server *is* published would be
+`http://localhost:52773/labdemo/monitor/hoststatus`. Getting this wrong is quiet in exactly the way
+`IRIS_BASE_PATH` is: the proxy logs one failed poll and then reports `queued`/`errored` as `null`,
+which reads as an idle production rather than a bad URL.
+
+**Why this exists:** `iris_interop_queued` and `iris_interop_messages_errored` are emitted once per
+production with no `host` label, so per-host queue depth and error counts are not in
+`/api/monitor/metrics` at all — which blocked `queue_buildup` (#12) and `elevated_error_rate` (#31).
+This wraps `Ens.Util.Statistics:EnumerateHostStatus` and `Ens.MessageHeader` to supply them. It is
+**read-only**: it reads host state and counts rows, and changes no production setting.
+
+Set `IRIS_HOSTSTATUS_PATH` in the proxy's `.env` to match this path (default
+`/labdemo/monitor/hoststatus`), or empty to disable the poll — the proxy then publishes
+`queued`/`errored` as `null`, as it did before.
 
 ### 2 — Load all classes
 

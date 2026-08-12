@@ -251,11 +251,102 @@ const REAL_LAB_ROUTER = {
   lastActivityElapsedSeconds: 4.838,
 };
 
+/**
+ * The same host as the proxy publishes it once the host-status endpoint is merged in
+ * (issues #12, #31). Measured live 2026-08-12 from `GET /proxy/metrics` against LABDEMO:
+ * `queued` and `errored` are numbers here, not nulls, and both were 0 — a real drained
+ * queue and a real zero error count, not placeholders.
+ *
+ * Both spellings must validate: `queued: null` stays legal because the endpoint can be
+ * absent, and a schema that only accepted one of the two would reject a real payload.
+ */
+const REAL_LAB_ROUTER_MERGED = {
+  ...REAL_LAB_ROUTER,
+  queued: 0,
+  errored: 0,
+};
+
 const PROXY_MUST_ACCEPT = [
   {
     name: 'real Lab Router host, nulls included',
     definition: 'ProxyHost',
     data: REAL_LAB_ROUTER,
+  },
+  {
+    name: 'real Lab Router host with queued/errored merged in (#12, #31)',
+    definition: 'ProxyHost',
+    data: REAL_LAB_ROUTER_MERGED,
+  },
+  {
+    name: 'a genuinely backed-up host: queued 70, status Disabled',
+    definition: 'ProxyHost',
+    // The state measured on this instance behind #12 — a disabled operation holding 70
+    // messages. `queue_buildup` is the finding that needs this to validate.
+    data: {
+      ...REAL_LAB_ROUTER_MERGED,
+      host: 'Cloud API',
+      type: 'operation',
+      status: 'Disabled',
+      queued: 70,
+      errored: 3,
+      statusFromMetrics: 'OK',
+    },
+  },
+  {
+    name: 'metrics response carrying hostStatus merge diagnostics',
+    definition: 'MetricsResponse',
+    data: {
+      hosts: [REAL_LAB_ROUTER_MERGED],
+      systemAlertsNew: 0,
+      systemAlertsLog: 1,
+      _meta: {
+        polledAt: '2026-08-12T11:07:14.093Z',
+        production: 'LABDEMO.Production',
+        productionQueued: 0,
+        absentFamilies: [],
+        hostCount: 15,
+        applicationHostCount: 4,
+        hostStatus: {
+          polledAt: '2026-08-12T11:07:14.094Z',
+          shape: 'hosts',
+          hostCount: 13,
+          skippedEntries: 0,
+          sampledAt: '2026-08-12T11:07:14.108Z',
+          production: 'LABDEMO.Production',
+          productionState: 'Running',
+          erroredAvailable: true,
+          merged: 13,
+          unmatchedHosts: [],
+        },
+      },
+    },
+  },
+  {
+    name: 'hostStatus reporting the endpoint was unavailable',
+    definition: 'MetricsMeta',
+    // The degraded case: queued/errored are null for a configuration reason, and this is
+    // what says so. Without it a consumer cannot tell it from a genuinely idle production.
+    data: {
+      polledAt: '2026-08-12T11:07:14.093Z',
+      production: 'LABDEMO.Production',
+      productionQueued: 0,
+      absentFamilies: [],
+      hostCount: 15,
+      applicationHostCount: 4,
+      hostStatus: { shape: null, merged: 0, available: false },
+    },
+  },
+  {
+    name: 'hostStatus reporting a join-key divergence (answered, matched nothing)',
+    definition: 'HostStatusMeta',
+    data: {
+      shape: 'hosts',
+      hostCount: 13,
+      merged: 0,
+      unmatchedHosts: ['CloudAPI', 'LabRouter'],
+      productionState: 'Running',
+      erroredAvailable: true,
+    },
   },
   {
     name: 'warming metrics response (200, not 503)',
@@ -355,6 +446,32 @@ const PROXY_MUST_REJECT = [
       const { errored, ...rest } = REAL_LAB_ROUTER;
       return { ...rest, messagesErrored: 0 };
     })(),
+  },
+  {
+    name: 'negative queue depth',
+    definition: 'ProxyHost',
+    // A queue cannot be -1. NullableCount has minimum 0, and this asserts the merge
+    // cannot introduce a value the schema would have caught on the metrics path.
+    data: { ...REAL_LAB_ROUTER_MERGED, queued: -1 },
+  },
+  {
+    name: 'queued as a string, as EnumerateHostStatus hands it over',
+    definition: 'ProxyHost',
+    // The underlying query returns Queue as a STRING (and '' for idle). The proxy must
+    // coerce it to a number; publishing '70' would typecheck nowhere downstream.
+    data: { ...REAL_LAB_ROUTER_MERGED, queued: '70' },
+  },
+  {
+    name: 'hostStatus.shape outside the known set',
+    definition: 'HostStatusMeta',
+    // An unrecognised shape means a consumer cannot reason about why a merge produced
+    // nothing, which is the whole purpose of the field.
+    data: { shape: 'probably-fine', merged: 0 },
+  },
+  {
+    name: 'hostStatus.merged as a negative number',
+    definition: 'HostStatusMeta',
+    data: { shape: 'hosts', merged: -1 },
   },
 ];
 

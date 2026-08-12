@@ -19,6 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const { parsePrometheusText, buildSnapshot } = require('./src/parser');
 const { normalizeAlerts } = require('./src/alerts');
+const { parseHostStatus, mergeHostStatus } = require('./src/hoststatus');
 
 const PORT = parseInt(process.env.PROXY_PORT || '3001', 10);
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -29,12 +30,30 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 //   MOCK_FIXTURE=metrics.txt npm run mock
 const METRICS_FIXTURE = process.env.MOCK_FIXTURE || 'metrics-live-capture.txt';
 
+// The host-status fixture supplying per-host queued/errored, merged exactly as the live
+// poller merges it. Without this the mock would publish `queued: null` where the real
+// proxy now publishes a number — the mock certifying a shape the proxy does not serve,
+// which is the divergence ADR 0004 exists to prevent.
+//
+// Set MOCK_HOSTSTATUS= (empty) to mock an instance without the endpoint deployed.
+const HOSTSTATUS_FIXTURE = process.env.MOCK_HOSTSTATUS === undefined
+  ? 'hoststatus-live-capture.json'
+  : process.env.MOCK_HOSTSTATUS;
+
 const app = express();
 
-/** Re-read and re-parse the metrics fixture, so an edit lands without a restart. */
+/**
+ * Re-read and re-parse the fixtures, so an edit lands without a restart.
+ *
+ * Both go through the SAME parse-and-merge path as the live poller, so the mock cannot
+ * publish a per-host shape the real proxy would not.
+ */
 function readMetricsSnapshot() {
   const metricsText = fs.readFileSync(path.join(FIXTURES, METRICS_FIXTURE), 'utf8');
-  return buildSnapshot(parsePrometheusText(metricsText), new Date().toISOString());
+  const base = buildSnapshot(parsePrometheusText(metricsText), new Date().toISOString());
+  if (!HOSTSTATUS_FIXTURE) return mergeHostStatus(base, null);
+  const body = fs.readFileSync(path.join(FIXTURES, HOSTSTATUS_FIXTURE), 'utf8');
+  return mergeHostStatus(base, parseHostStatus(body, new Date().toISOString()));
 }
 
 app.get('/proxy/metrics', (req, res) => {
@@ -96,5 +115,8 @@ app.listen(PORT, () => {
   console.log(`[mock-server] listening on port ${PORT}`);
   console.log(`[mock-server] serving fixture data from ${FIXTURES}`);
   console.log(`[mock-server] metrics fixture: ${METRICS_FIXTURE} (override with MOCK_FIXTURE=)`);
+  console.log(`[mock-server] host-status fixture: ${HOSTSTATUS_FIXTURE
+    ? HOSTSTATUS_FIXTURE + ' (per-host queued/errored)'
+    : 'NONE — queued/errored will be null (MOCK_HOSTSTATUS=)'}`);
   console.log(`[mock-server] endpoints: GET /proxy/metrics  GET /proxy/alerts  GET /proxy/health`);
 });

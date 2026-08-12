@@ -108,7 +108,7 @@ authentication, so a wrong password may not be what is failing.
 Three layers, cheapest first. All three verified green on 2026-08-11.
 
 ```bash
-npm test            # 71 unit tests: parser, alerts, cache, poller. No network, no IRIS.
+npm test            # 96 unit tests: parser, alerts, cache, poller, hoststatus. No IRIS.
 npm run mock &      # then, in the same or another shell:
 npm run smoke       # 15 HTTP checks against whatever is on port 3001
 ```

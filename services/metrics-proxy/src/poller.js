@@ -1,17 +1,26 @@
 'use strict';
 
 /**
- * poller.js — HTTP polling loop for IRIS /api/monitor/ endpoints.
+ * poller.js — HTTP polling loop for IRIS monitoring endpoints.
  *
  * Polls /api/monitor/metrics every METRICS_POLL_INTERVAL_MS milliseconds
  * and /api/monitor/alerts every ALERTS_POLL_INTERVAL_MS milliseconds.
  * Writes results to the cache module.
+ *
+ * A THIRD SOURCE, on the metrics interval
+ *
+ * Per-host queue depth and per-host error counts are not in the Prometheus text —
+ * both families are per-production (#12, #31). They come from a small read-only REST
+ * endpoint in the LABDEMO namespace instead, polled alongside metrics and merged by
+ * host name before the snapshot is cached. See ./hoststatus.js for the why and the
+ * join-key argument, and IRIS_HOSTSTATUS_PATH below for the URL.
  */
 
 const http = require('http');
 const https = require('https');
 const { parsePrometheusText, buildSnapshot } = require('./parser');
 const { normalizeAlerts } = require('./alerts');
+const { parseHostStatus, mergeHostStatus } = require('./hoststatus');
 const { setMetricsSnapshot, setAlertsSnapshot } = require('./cache');
 
 const IRIS_HOST      = process.env.IRIS_HOST      || 'localhost';
@@ -42,6 +51,24 @@ function normalizeBasePath(raw) {
 const METRICS_INTERVAL = parseInt(process.env.METRICS_POLL_INTERVAL_MS || '10000', 10);
 const ALERTS_INTERVAL  = parseInt(process.env.ALERTS_POLL_INTERVAL_MS  || '30000', 10);
 
+/**
+ * Path to the per-host status endpoint (iris/labdemo/REST/HostStatusDispatcher.cls).
+ *
+ * NOT under IRIS_BASE_PATH: that prefix locates the instance's built-in /api/monitor/
+ * web app, while this is a separate CSP web application registered at its own path in
+ * the LABDEMO namespace. On the verified instance the two are
+ *   /api/monitor/metrics            (IRIS_BASE_PATH + /api/monitor/metrics)
+ *   /labdemo/monitor/hoststatus     (this, absolute)
+ * so it is configured as a whole path rather than a suffix.
+ *
+ * Set it empty to disable the third poll entirely — the proxy then behaves exactly as
+ * it did before, publishing `queued`/`errored` as null. That is the honest degradation
+ * for an instance where this endpoint is not deployed.
+ */
+const IRIS_HOSTSTATUS_PATH = (process.env.IRIS_HOSTSTATUS_PATH === undefined
+  ? '/labdemo/monitor/hoststatus'
+  : process.env.IRIS_HOSTSTATUS_PATH).trim();
+
 const AUTH_HEADER = 'Basic ' + Buffer.from(`${IRIS_USER}:${IRIS_PASS}`).toString('base64');
 
 /**
@@ -50,15 +77,19 @@ const AUTH_HEADER = 'Basic ' + Buffer.from(`${IRIS_USER}:${IRIS_PASS}`).toString
  *
  * @param {string} path — endpoint path, e.g. '/api/monitor/metrics'.
  *   IRIS_BASE_PATH is prepended.
+ * @param {Object} [opts]
+ * @param {boolean} [opts.absolute] — skip IRIS_BASE_PATH and request `path` as given.
+ *   Used for the host-status endpoint, which is its own web application rather than
+ *   something under the instance's /api/monitor/ prefix.
  * @returns {Promise<string>}
  */
-function irisGet(path) {
+function irisGet(path, opts = {}) {
   return new Promise((resolve, reject) => {
     const client = USE_HTTPS ? https : http;
     const options = {
       hostname: IRIS_HOST,
       port: IRIS_PORT,
-      path: IRIS_BASE_PATH + path,
+      path: opts.absolute ? path : IRIS_BASE_PATH + path,
       method: 'GET',
       headers: {
         'Authorization': AUTH_HEADER,
@@ -90,16 +121,70 @@ function irisGet(path) {
 }
 
 /**
- * Poll /api/monitor/metrics, parse the Prometheus text, and store the snapshot.
+ * Poll the host-status endpoint. Returns parsed per-host state, or null when the
+ * endpoint is disabled or unreachable.
+ *
+ * Failure is logged and swallowed on purpose: this is a supplementary source, and a
+ * metrics snapshot without it is exactly what the proxy published before — degraded,
+ * not wrong. Throwing here would lose the metrics poll too.
+ */
+async function pollHostStatus() {
+  if (!IRIS_HOSTSTATUS_PATH) return null;
+  const polledAt = new Date().toISOString();
+  try {
+    const body = await irisGet(IRIS_HOSTSTATUS_PATH, { absolute: true });
+    return parseHostStatus(body, polledAt);
+  } catch (err) {
+    console.error(`[poller] host-status poll failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Poll /api/monitor/metrics, parse the Prometheus text, merge per-host state from the
+ * host-status endpoint, and store the snapshot.
+ *
+ * The two requests run concurrently — they are independent reads and the host-status
+ * one must not add its latency to the metrics interval.
  */
 async function pollMetrics() {
   const polledAt = new Date().toISOString();
   try {
-    const body = await irisGet('/api/monitor/metrics');
-    const raw = parsePrometheusText(body);
-    const snapshot = buildSnapshot(raw, polledAt);
+    // Only the metrics body is awaited for correctness; host status settles alongside
+    // and contributes whatever it has. allSettled, not all: a rejected host-status
+    // promise must not reject the metrics poll.
+    const [metricsResult, hostStatusResult] = await Promise.allSettled([
+      irisGet('/api/monitor/metrics'),
+      pollHostStatus(),
+    ]);
+
+    if (metricsResult.status === 'rejected') throw metricsResult.reason;
+
+    const raw = parsePrometheusText(metricsResult.value);
+    const base = buildSnapshot(raw, polledAt);
+    const hostStatus = hostStatusResult.status === 'fulfilled' ? hostStatusResult.value : null;
+    const snapshot = mergeHostStatus(base, hostStatus);
+
     setMetricsSnapshot(snapshot);
-    console.log(`[poller] metrics: ${snapshot.hosts.length} hosts polled at ${polledAt}`);
+
+    const hs = snapshot._meta.hostStatus;
+    let suffix = '';
+    if (!IRIS_HOSTSTATUS_PATH) {
+      suffix = ' (host-status disabled: queued/errored stay null)';
+    } else if (hs && hs.shape === 'hosts') {
+      suffix = `, ${hs.merged} merged from host-status`;
+      // A shape the parser understood but that matched nothing is the interesting
+      // failure: it looks healthy and leaves every queued/errored null.
+      if (hs.merged === 0) suffix += ' — NO HOST NAMES MATCHED';
+      if (hs.unmatchedHosts.length) {
+        suffix += `; not in metrics: ${hs.unmatchedHosts.join(', ')}`;
+      }
+    } else if (hs && hs.shape) {
+      suffix = ` — host-status shape "${hs.shape}", queued/errored stay null`;
+    } else {
+      suffix = ' — host-status unavailable, queued/errored stay null';
+    }
+    console.log(`[poller] metrics: ${snapshot.hosts.length} hosts polled at ${polledAt}${suffix}`);
   } catch (err) {
     console.error(`[poller] metrics poll failed: ${err.message}`);
   }
@@ -145,6 +230,11 @@ function startPoller() {
   // from the banner made a wrong prefix invisible at the one moment you would look.
   console.log(`[poller] IRIS: ${USE_HTTPS ? 'https' : 'http'}://${IRIS_HOST}:${IRIS_PORT}`
     + `${IRIS_BASE_PATH} (namespace: ${IRIS_NAMESPACE})`);
+  // Echoed for the same reason as IRIS_BASE_PATH: it is a URL that can be silently
+  // wrong, and its failure mode is queued/errored staying null rather than an error.
+  console.log(`[poller] host-status: ${IRIS_HOSTSTATUS_PATH
+    ? IRIS_HOSTSTATUS_PATH + ' (per-host queued/errored)'
+    : 'DISABLED — queued/errored will be null on every host'}`);
 
   // Run immediately on startup, then on interval.
   pollMetrics();
@@ -154,4 +244,4 @@ function startPoller() {
   setInterval(pollAlerts, ALERTS_INTERVAL);
 }
 
-module.exports = { startPoller, irisGet, pollMetrics, pollAlerts };
+module.exports = { startPoller, irisGet, pollMetrics, pollAlerts, pollHostStatus };
