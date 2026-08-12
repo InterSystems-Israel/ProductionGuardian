@@ -48,7 +48,11 @@ function normalizeBasePath(raw) {
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }
 
-const METRICS_INTERVAL = parseInt(process.env.METRICS_POLL_INTERVAL_MS || '10000', 10);
+// 5s, halved from 10s for #44's latency budget: the engine cannot see a change sooner
+// than we do, so this was one of the two 10s stages that put the chain over the 10s
+// acceptance bar. /api/monitor/metrics is a cheap read, so 2x the scrape rate is fine.
+// Alerts stay at 30s -- they are events with their own timestamps, not a sampled value.
+const METRICS_INTERVAL = parseInt(process.env.METRICS_POLL_INTERVAL_MS || '5000', 10);
 const ALERTS_INTERVAL  = parseInt(process.env.ALERTS_POLL_INTERVAL_MS  || '30000', 10);
 
 /**

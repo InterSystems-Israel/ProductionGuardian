@@ -82,6 +82,17 @@ export interface RuleConfigs {
 export interface ThresholdConfig {
   /** MVP §6: consecutive breaching samples required before emitting. */
   sustainedSamples: number;
+  /**
+   * Minimum wall-clock duration a breach must persist before emitting, in seconds.
+   *
+   * A condition confirms only when BOTH gates are met. Why two: `sustainedSamples`
+   * alone couples false-positive protection to the poll rate, so halving the poll
+   * interval silently halves the debounce *duration* (#44). Adding a time gate means
+   * we can poll faster for latency without weakening what MVP §6 actually asks for.
+   *
+   * Set to 0 to disable the time gate and get the old sample-only behaviour.
+   */
+  sustainedSeconds: number;
   /** ADR 0002: samples needed before a baseline is usable. */
   minBaselineSamples: number;
   baselineWindowSeconds: number;
@@ -92,6 +103,12 @@ export interface ThresholdConfig {
 
 export const DEFAULT_CONFIG: ThresholdConfig = {
   sustainedSamples: 2,
+  // Must be REACHABLE within sustainedSamples polls, or it silently costs an extra one.
+  // At the shipping 5s poll a gate of 8 confirms on the 3rd sample rather than the 2nd —
+  // measured as a 12.8s debounce, which put the chain over the bar. 5 is satisfied by the
+  // 2nd sample, so the gate is inert at 5s polling and only starts binding if the interval
+  // is shortened further. That is precisely the coupling it exists to break (#44).
+  sustainedSeconds: 5,
   minBaselineSamples: 12,
   baselineWindowSeconds: 1800,
   rules: {
@@ -173,6 +190,17 @@ export function validateConfig(raw: unknown): ThresholdConfig {
       } else {
         merged[key] = value;
       }
+    }
+  }
+
+  // Separate from the loop above because 0 is legal here and means "no time gate",
+  // whereas a zero window or sample count would disable detection entirely.
+  if ('sustainedSeconds' in input) {
+    const value = input['sustainedSeconds'];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      problems.push(`sustainedSeconds must be zero or a positive number, got ${JSON.stringify(value)}`);
+    } else {
+      merged.sustainedSeconds = value;
     }
   }
 
@@ -324,7 +352,10 @@ export class ThresholdStore {
         const next = this.#read();
         if (next !== undefined) {
           this.#current = next;
-          this.#log(`thresholds reloaded: sustainedSamples=${next.sustainedSamples}`);
+          this.#log(
+            `thresholds reloaded: sustainedSamples=${next.sustainedSamples} ` +
+              `sustainedSeconds=${next.sustainedSeconds}`,
+          );
         }
       });
     } catch (err) {
