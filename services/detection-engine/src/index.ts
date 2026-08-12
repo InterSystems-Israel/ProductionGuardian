@@ -7,13 +7,13 @@
  *   PROXY_MODE=mock|live   default mock
  *   PROXY_BASE_URL         default http://localhost:3001
  *   PORT                   default 3002
- *   POLL_INTERVAL_MS       default 10000 (matches the proxy's IRIS poll)
+ *   POLL_INTERVAL_MS       default 5000 (matches the proxy's IRIS poll)
  */
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFindingsServer } from './api/server.ts';
-import { ThresholdStore } from './config/thresholds.ts';
+import { DEFAULT_POLL_INTERVAL_MS, ThresholdStore } from './config/thresholds.ts';
 import { DetectionEngine } from './detect/engine.ts';
 import { HttpProxyClient } from './proxy/client.ts';
 import { MockProxyClient } from './proxy/mockClient.ts';
@@ -22,7 +22,15 @@ import type { ProxyClient } from './types/proxy.ts';
 const serviceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const PORT = Number(process.env['PORT'] ?? 3002);
-const POLL_INTERVAL_MS = Number(process.env['POLL_INTERVAL_MS'] ?? 10_000);
+// 5s, halved from 10s for #44's latency budget. Safe to shorten only because the sustained
+// bar is now time-gated as well as sample-gated — otherwise this would quietly halve the
+// debounce duration along with the latency.
+//
+// The DEFAULT lives in config/thresholds.ts, not here: `sustainedSeconds` has to be
+// reachable within `sustainedSamples` polls of it, so the two numbers are one constraint
+// and a test must be able to read both. Importing this module to get it would start a
+// server and a poll loop as a side effect.
+const POLL_INTERVAL_MS = Number(process.env['POLL_INTERVAL_MS'] ?? DEFAULT_POLL_INTERVAL_MS);
 const PROXY_MODE = process.env['PROXY_MODE'] ?? 'mock';
 const PROXY_BASE_URL = process.env['PROXY_BASE_URL'] ?? 'http://localhost:3001';
 

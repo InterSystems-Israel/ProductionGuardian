@@ -79,9 +79,33 @@ export interface RuleConfigs {
   system_alert: SystemAlertConfig;
 }
 
+/**
+ * Default engine poll interval, in ms — the one `src/index.ts` uses absent
+ * POLL_INTERVAL_MS.
+ *
+ * Lives here rather than in index.ts because `sustainedSeconds` must be reachable within
+ * `sustainedSamples` polls of it (see DEFAULT_CONFIG below): the three numbers are ONE
+ * constraint, and a test has to be able to read all of them. Importing index.ts to get
+ * this would start a server and a poll loop as a side effect, so the test previously held
+ * a hardcoded copy — which left it passing while the relationship it asserts became false
+ * (#19's "copies of a fact", inside the test written to protect that fact).
+ */
+export const DEFAULT_POLL_INTERVAL_MS = 5_000;
+
 export interface ThresholdConfig {
   /** MVP §6: consecutive breaching samples required before emitting. */
   sustainedSamples: number;
+  /**
+   * Minimum wall-clock duration a breach must persist before emitting, in seconds.
+   *
+   * A condition confirms only when BOTH gates are met. Why two: `sustainedSamples`
+   * alone couples false-positive protection to the poll rate, so halving the poll
+   * interval silently halves the debounce *duration* (#44). Adding a time gate means
+   * we can poll faster for latency without weakening what MVP §6 actually asks for.
+   *
+   * Set to 0 to disable the time gate and get the old sample-only behaviour.
+   */
+  sustainedSeconds: number;
   /** ADR 0002: samples needed before a baseline is usable. */
   minBaselineSamples: number;
   baselineWindowSeconds: number;
@@ -92,6 +116,24 @@ export interface ThresholdConfig {
 
 export const DEFAULT_CONFIG: ThresholdConfig = {
   sustainedSamples: 2,
+  // Must be REACHABLE within sustainedSamples polls WITH MARGIN, or it silently costs an
+  // extra one. Two ways that has already gone wrong here:
+  //
+  //   8 at a 5s poll  — unreachable in 2 samples, confirms on the 3rd. Measured 12.8s.
+  //   5 at a 5s poll  — reachable only by EXACT equality (5000 >= 5000). The stamp is
+  //                     taken after a variable-duration fetch (index.ts), so the observed
+  //                     gap is POLL_INTERVAL + (fetch_n − fetch_{n−1}). Any poll quicker
+  //                     than its predecessor makes the gap < 5000 and slips confirmation
+  //                     to the third sample — intermittently 10.2s instead of 5.3s, on
+  //                     roughly half of all detections. 100ms of jitter is enough.
+  //
+  // 4 leaves 1000ms of slack at the shipping rate and still decouples the debounce from
+  // the poll rate at every shorter interval (4s of protection at a 1s poll, where the old
+  // sample-only behaviour gave 1s). That decoupling is the whole point of the gate (#44).
+  //
+  // The general form, learned twice: a timing number needs the rate it runs at AND the
+  // jitter on that rate. `>=` on exact equality is the least robust point on the curve.
+  sustainedSeconds: 4,
   minBaselineSamples: 12,
   baselineWindowSeconds: 1800,
   rules: {
@@ -173,6 +215,17 @@ export function validateConfig(raw: unknown): ThresholdConfig {
       } else {
         merged[key] = value;
       }
+    }
+  }
+
+  // Separate from the loop above because 0 is legal here and means "no time gate",
+  // whereas a zero window or sample count would disable detection entirely.
+  if ('sustainedSeconds' in input) {
+    const value = input['sustainedSeconds'];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      problems.push(`sustainedSeconds must be zero or a positive number, got ${JSON.stringify(value)}`);
+    } else {
+      merged.sustainedSeconds = value;
     }
   }
 
@@ -324,7 +377,10 @@ export class ThresholdStore {
         const next = this.#read();
         if (next !== undefined) {
           this.#current = next;
-          this.#log(`thresholds reloaded: sustainedSamples=${next.sustainedSamples}`);
+          this.#log(
+            `thresholds reloaded: sustainedSamples=${next.sustainedSamples} ` +
+              `sustainedSeconds=${next.sustainedSeconds}`,
+          );
         }
       });
     } catch (err) {
