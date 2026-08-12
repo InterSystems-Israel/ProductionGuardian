@@ -3,7 +3,8 @@
 /// Extracts the PID segment from any inbound HL7 v2.x message and populates
 /// a ProductionGuardian.LabDemo.Message.PatientDemographics instance.
 ///
-/// Handles both ADT^A01 and ORU^R01 — both carry a PID segment.
+/// sourceDocType is 2.5:ADT_A01, which is the only type the routing rule sends here
+/// and the only type HL7Generator emits.
 /// If the PID segment is absent the transform still succeeds with empty fields
 /// (the operation will reject an empty PatientID).
 Class ProductionGuardian.LabDemo.Transform.HL7ToPID Extends Ens.DataTransformDTL [ DependsOn = (EnsLib.HL7.Message, ProductionGuardian.LabDemo.Message.PatientDemographics) ]
@@ -30,7 +31,7 @@ XData DTL [ XMLNamespace = "http://www.intersystems.com/dtl" ]
   <assign value='source.{PID:5(1).3}' property='target.MiddleName' action='set'/>
 
   <!-- Date of birth: PID-7 (TS, take first 8 chars for YYYYMMDD) -->
-  <assign value='$extract(source.{PID:7"),1,8)' property='target.DateOfBirth' action='set'/>
+  <assign value='$extract(source.{PID:7},1,8)' property='target.DateOfBirth' action='set'/>
 
   <!-- Sex: PID-8 -->
   <assign value='source.{PID:8}' property='target.Sex' action='set'/>

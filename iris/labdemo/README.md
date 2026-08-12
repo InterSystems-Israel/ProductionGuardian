@@ -3,11 +3,17 @@
 The LABDEMO production models a realistic HL7 lab message pipeline that Health Scan monitors.
 
 ```
-EMRSource  →  LabRouter  →  PIDExtractProcess  →  PatientDemographicsOperation
-(HL7 file)    (routing)      (DTL: PID extract)    (HTTP POST → PatientDispatcher)
-                                                             ↓
-                                                  PatientRecord table (upsert by PatientID)
+EMR Source  →  Lab Router  →  Cloud API
+(HL7 file)     (routing +      (HTTP POST → PatientDispatcher)
+                HL7ToPID DTL             ↓
+                applied inline)  PatientRecord table (upsert by PatientID)
 ```
+
+There are three application hosts. `EMR Source`, `Lab Router` and `Cloud API` are the
+config item names — those are the strings that appear in `/api/monitor/metrics`, in the
+proxy JSON, and in the dashboard, so use them verbatim when reasoning about findings.
+Class names (`PatientDemographicsOperation`) differ from config item names (`Cloud API`);
+the `<Item Name="...">` set in `Production.cls` is authoritative.
 
 ---
 
@@ -15,9 +21,8 @@ EMRSource  →  LabRouter  →  PIDExtractProcess  →  PatientDemographicsOpera
 
 | File | Purpose |
 |---|---|
-| `Production.cls` | Production definition — 4 items + ActivityReporter |
-| `RoutingRule.cls` | Routes ADT^A01 and ORU^R01 to PIDExtractProcess |
-| `Process/PIDExtractProcess.cls` | BP: applies DTL, forwards PatientDemographics |
+| `Production.cls` | Production definition — 3 application items + ActivityReporter |
+| `RoutingRule.cls` | Routes ADT^A01 to Cloud API, applying HL7ToPID inline |
 | `Transform/HL7ToPID.cls` | DTL: HL7 PID segment → PatientDemographics message |
 | `Message/PatientDemographics.cls` | Ens.Request carrying extracted PID fields |
 | `Operation/PatientDemographicsOperation.cls` | BO: HTTP POST to REST dispatcher |
@@ -82,11 +87,11 @@ do ##class(ProductionGuardian.LabDemo.HL7Generator).RunContinuous(2)
 
 Each message flows:
 1. Written to `/tmp/labdemo/hl7-in/` as a `.hl7` file
-2. EMRSource picks it up and sends to LabRouter
-3. LabRouter routes it to PIDExtractProcess
-4. PIDExtractProcess runs the HL7ToPID DTL — extracts PatientID, name, DOB, sex, address, phone
-5. PatientDemographicsOperation HTTP-POSTs the JSON to `/labdemo/patients`
-6. PatientDispatcher upserts the record in `PatientRecord` (insert first time, update thereafter)
+2. `EMR Source` picks it up and sends to `Lab Router`
+3. `Lab Router` matches ADT^A01 and sends to `Cloud API`, applying the HL7ToPID DTL on the
+   way — the transform extracts PatientID, name, DOB, sex, address and phone
+4. `Cloud API` HTTP-POSTs the JSON to `/labdemo/patients`
+5. PatientDispatcher upserts the record in `PatientRecord` (insert first time, update thereafter)
 
 ---
 
@@ -131,14 +136,47 @@ write rec.LastName, " ", rec.FirstName, " (", rec.UpdateCount, " updates)"
 
 ## Inducing findings (for Health Scan testing)
 
-| Finding type | How to induce |
-|---|---|
-| Dead / inactive host | Disable EMRSource from Management Portal |
-| Elevated error rate | Misconfigure PatientDemographicsOperation HTTPPort to a closed port |
-| Queue buildup | Suspend PIDExtractProcess; run generator at fast rate |
-| Stalled host | Pause LabRouter from Management Portal |
-| Slow processing | Add a `hang 5` to PIDExtractProcess.OnRequest temporarily |
-| Throughput drop | Stop the HL7Generator |
+Only `EMR Source`, `Lab Router` and `Cloud API` exist, so every trigger targets one of
+those three. Use the config item names exactly.
+
+**Two things to know before you start, or nothing will fire and it will look broken.**
+
+*Warm-up.* Six of the eight rules are comparative — they need a baseline first.
+`minBaselineSamples` is 12 at a 10 s poll, so let the generator run for **~2 minutes of
+healthy traffic** before inducing anything. `dead_host` and `system_alert` are absolute and
+fire immediately.
+
+*The numbers have floors.* A breach must clear both the baseline multiplier **and** an
+absolute floor, so a small nudge produces nothing. The current floors are in
+`services/detection-engine/thresholds.json` — that file is authoritative, and the
+arithmetic below is quoted from it rather than restated as fact. Check it if a trigger
+stops working.
+
+| Finding type | How to induce | Why it clears the threshold |
+|---|---|---|
+| `dead_host` | Disable `EMR Source` in the Management Portal | Absolute rule: fires on status `Disabled`. No baseline needed |
+| `throughput_drop` | Stop the HL7Generator and let traffic drain | Rate falls to 0, under the 0.4 baseline fraction. Needs baseline ≥ 0.1 msg/s — generating every 2 s gives 0.5 msg/s |
+| `slow_processing` | Add `hang 1` to the top of `PatientDemographicsOperation.OnMessage` (that class is `Cloud API`), recompile | Gate is the greater of the 0.3 s `Cloud API` floor and 3× its ~0.05 s baseline, so 0.3 s. A 1 s hang clears it. `hang 5` also works but backs the queue up behind it |
+| `growing_queue_wait` | Same `hang 1` — watch `Cloud API` while the generator keeps running | Messages wait behind the hung one. Floor is 0.15 s and 3× the ~0.03 s baseline, so a 1 s hang clears it once traffic overlaps |
+| `elevated_error_rate` | Set `Cloud API`'s `HTTPPort` to a closed port (e.g. 59999) | Every message errors. Floor is 1.0 errors/min and 3× baseline; at one message per 2 s that is ~30/min |
+| `stalled_host` | Disable `Cloud API` so its queue holds messages, then wait | Needs no activity for `inactiveSeconds` (300) **while messages are queued** — so it takes **5 minutes**, and `requiresQueued` means an idle-but-empty host will not do |
+| `queue_buildup` | Disable `Cloud API`, then `do ##class(ProductionGuardian.LabDemo.HL7Generator).Run(80, 0.2)` | Depth must exceed the absolute floor of **50** as well as 5× baseline, so it needs well over 50 queued — 80 messages at 0.2 s does it. Fewer than 50 produces no finding at all. **See the caveat below** |
+| `system_alert` | Enable `Alert on Error` on `Cloud API`, then induce the error-rate trigger above | An errored message with alerting on writes an alert that `/api/monitor/alerts` serves. This is the only rule that can produce an `info` finding |
+
+Disabling a host induces `dead_host` too, so the `stalled_host` and `queue_buildup`
+triggers each surface two findings. That is correct behaviour, not a duplicate.
+
+> **`queue_buildup` caveat — the trigger is right, the plumbing may not be.** Per-host
+> queue depth is **not** in the Prometheus text. `/api/monitor/metrics` carries only
+> `iris_interop_queued{id="LABDEMO",production="LABDEMO.Production"}` — one
+> production-wide number, no `host` label (verified on the live instance). Until the proxy
+> reads per-host depth from `Ens.Util.Statistics:EnumerateHostStatus` (issue #12,
+> `PROXY-Q2`), this trigger will build a real queue that the engine cannot see. Build the
+> queue anyway when testing that work; the instruction above is what it should be measured
+> against.
+
+After the `slow_processing` / `growing_queue_wait` test, **remove the `hang`** and
+recompile — a hang left in place poisons every later baseline.
 
 ---
 
@@ -149,3 +187,19 @@ do ##class(ProductionGuardian.Setup.EnableMetrics).Verify()
 ```
 
 All 7 metric families should show FOUND after the production is running with messages flowing.
+
+`Verify()` prints the URL it requests. If it reports a 404, or a 200 with no
+`iris_interop_*` families, the URL is wrong rather than the metrics being off — point it at
+whatever works in your browser:
+
+```
+set ^ProductionGuardian.Setup("WebAppPrefix") = "/iris4health_2024_1"   // default ""
+set ^ProductionGuardian.Setup("WebPort")      = 80                      // default 52773
+set ^ProductionGuardian.Setup("WebHost")      = "127.0.0.1"
+```
+
+These mirror the metrics proxy's `IRIS_BASE_PATH` / `IRIS_PORT` / `IRIS_HOST`.
+
+Run `Verify()` **before** starting the metrics proxy, not alongside it:
+`/api/monitor/alerts` is consume-on-read, so this call takes any pending alerts that the
+proxy would otherwise publish.

@@ -1,8 +1,10 @@
 /// LABDEMO production for Production Guardian Health Scan.
 ///
-/// Pipeline:
-///   EMRSource  →  LabRouter  →  PIDExtractProcess  →  PatientDemographicsOperation
-///   (HL7 file)    (routing)      (DTL: HL7→PID msg)    (REST POST → PatientDispatcher)
+/// Pipeline (config item names, as they appear in metrics and the proxy JSON):
+///   EMR Source  →  Lab Router  →  Cloud API
+///   (HL7 file)     (routing +      (REST POST → PatientDispatcher)
+///                   HL7ToPID DTL
+///                   applied inline)
 ///
 /// PatientDispatcher upserts patient demographics into:
 ///   ProductionGuardian.LabDemo.Data.PatientRecord (persistent table)
@@ -26,7 +28,7 @@ XData ProductionDefinition
   </Description>
 
   <!-- ============================================================
-       Business Service — EMRSource
+       Business Service — EMR Source
        Reads HL7 v2 files dropped by the HL7Generator.
        ============================================================ -->
   <Item Name="EMR Source"
@@ -47,7 +49,7 @@ XData ProductionDefinition
   </Item>
 
   <!-- ============================================================
-       Business Process — LabRouter
+       Business Process — Lab Router
        Routes ADT^A01 to Cloud API.
        Rule: ProductionGuardian.LabDemo.RoutingRule
        ============================================================ -->

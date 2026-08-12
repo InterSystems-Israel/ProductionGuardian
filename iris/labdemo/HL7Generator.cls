@@ -1,7 +1,8 @@
 /// Synthetic HL7 v2 message generator for the LABDEMO production.
 ///
-/// Writes ADT^A01 and ORU^R01 messages to /tmp/labdemo/hl7-in/ on a
-/// configurable interval so the production has continuous message flow.
+/// Writes ADT^A01 messages to /tmp/labdemo/hl7-in/ on a configurable interval
+/// so the production has continuous message flow. ADT^A01 is the only type
+/// emitted, and the only type the routing rule routes.
 ///
 /// Usage:
 ///   // Generate 20 messages with 2-second gaps (default):
@@ -17,7 +18,7 @@
 Class ProductionGuardian.LabDemo.HL7Generator
 {
 
-/// Default output directory — must match EMRSource FilePath setting.
+/// Default output directory — must match the EMR Source FilePath setting.
 Parameter DropDir = "/tmp/labdemo/hl7-in/";
 
 /// Generate `count` messages with `delaySecs` between each.
@@ -28,7 +29,6 @@ ClassMethod Run(count As %Integer = 20, delaySecs As %Double = 2) As %Status
 
     write "Generating ", count, " HL7 messages to ", ..#DropDir, " ...", !
     for i = 1:1:count {
-        // Alternate between ADT^A01 (admit) and ORU^R01 (lab result).
         set msg = ..BuildADTA01(i)
         set msgType = "ADT_A01"
         set filename = ..#DropDir _ msgType _ "_" _ $translate($horolog, ",", "_") _ "_" _ i _ ".hl7"
@@ -59,7 +59,7 @@ ClassMethod RunContinuous(delaySecs As %Double = 2)
         set msg = ..BuildADTA01(i)
         set msgType = "ADT_A01"
         set filename = ..#DropDir _ msgType _ "_" _ $translate($horolog, ",", "_") _ "_" _ i _ ".hl7"
-        do ..WriteFile(filename, filename)  // errors are silent in continuous mode
+        do ..WriteFile(filename, msg)  // errors are silent in continuous mode
         write $zdatetime($ztimestamp, 3, 1), "  ", msgType, !
         hang delaySecs
         set i = i + 1
