@@ -1,6 +1,6 @@
 # ADR 0005 — The "updates within 10 s" acceptance criterion is not met, and what we state instead
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-08-13
 - **Deciders:** Dev B, Dev C
 - **Drafted by:** Dev C
@@ -214,17 +214,27 @@ for it here.**
 
 ## Status
 
-`proposed`, pending Dev C's review of the n=12 section.
+**`accepted`** — 2026-08-13, drafted by Dev C, measurements by Dev B, reviewed and approved by
+Dev C at `c584a8f` (#83).
 
-Drafted by Dev C from the #44 thread. The measurements were Dev B's to confirm or correct, and
-they are now **confirmed** — re-measured against the containerised reference stack with the
-phase-lock removed, which is what the "any figure that is a mean is situational" caveat was
-waiting for. The direction of the correction is worth naming: the new numbers are **worse** than
-the ones drafted here, and they move the deviation from "misses the bar occasionally" to "misses
-it more often than not". That does not change the decision — 20 s still covers the 14.5 s bound
-with margin — but it does change what an honest sentence about it says, so it should not flip to
-`accepted` on the author of the measurement's word alone.
+How it got here, because the field is recording the process as much as the conclusion:
 
-It should be `accepted` before anyone describes MVP 1 as complete, because this is the single
-place where MVP 1 does not meet the spec as written and it needs to be findable by someone who
-has only read the spec.
+- Dev C drafted this from the #44 thread and deliberately left Status at `proposed`, because the
+  measurements were Dev B's and *"flipping the field myself would defeat the point of having it"*
+- the measurements were **confirmed by re-measuring, not by re-reading** — n=12 against the
+  containerised reference stack with the phase-lock removed, which is exactly what the "any figure
+  that is a mean is situational" caveat was waiting for
+- the correction went in the direction that makes the product look **worse**: from "misses the bar
+  occasionally" (2 of 7) to "misses it more often than not" (9 of 12). The decision did not move —
+  20 s still covers the 14.5 s bound with margin — but the sentence describing it did
+- Dev B declined to flip this on the strength of their own measurement, and Dev C's approval
+  reviewed the n=12 section rather than rubber-stamping it, catching that the appended section had
+  left the Decision contradicting its own evidence
+
+The prerequisite is also satisfied: #82 merged, so the Consequences bullet claiming
+`apps/dashboard/CLAUDE.md` §8 and `apps/dashboard/README.md` point here rather than restating a
+duration is now true on `main`. It was not when this ADR was drafted, and an ADR cannot be
+`accepted` while its Consequences describe a state of the world that is not real.
+
+This is the single place where MVP 1 knowingly does not meet the spec as written, and it is
+findable by someone who has only read the spec.

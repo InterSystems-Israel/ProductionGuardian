@@ -14,7 +14,14 @@ rather than in the spec itself.
 | [0002](0002-baseline-strategy.md) | Rolling 30-minute in-memory window; nothing persisted | proposed |
 | [0003](0003-threshold-configuration.md) | JSON config file, hot-reloaded, conservative defaults | proposed |
 | [0004](0004-mock-first-contracts.md) | All three build against mocked contracts from Day 1 | accepted 2026-08-12 |
-| [0005](0005-latency-bar.md) | The "updates within 10 s" criterion is not met; we state 20 s, typically ~10 s | proposed |
+| [0005](0005-latency-bar.md) | The "updates within 10 s" criterion is not met; we state 20 s, and cite the measured range | accepted 2026-08-13 |
+
+**The Decision column does not restate the latency figures**, on purpose. It said "typically
+~10 s" until 2026-08-13, which was true of the drafted n=7 measurement and false of the n=12 one
+that replaced it (median 10.75 s, 9 of 12 over the bar) — so this table was carrying a retired
+number while 0005 itself had corrected it. Same pattern as #63, #68, #82 and #84: a figure copied
+out of its one home goes stale when the home moves. Summarise the *shape* of a decision here and
+leave the numbers to the ADR.
 
 0001–0003 were drafted by Dev B, who implements them, and follow the MVP doc's recommendations.
 
