@@ -28,7 +28,15 @@ const args = process.argv.slice(2);
 const runs = Number(args.find((a) => /^\d+$/.test(a)) ?? 7);
 const flag = (name, fallback) => {
   const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : fallback;
+  if (i < 0) return fallback;
+  // A trailing `--engine` with no value used to yield undefined and fail later inside fetch(),
+  // with an error naming neither the flag nor the omission (@tanifgit, #83).
+  const value = args[i + 1];
+  if (value === undefined || value.startsWith('--')) {
+    console.error(`${name} needs a value, e.g. ${name} http://localhost:3002`);
+    process.exit(2);
+  }
+  return value;
 };
 
 const ENGINE = flag('--engine', 'http://localhost:3002');
@@ -37,7 +45,15 @@ const ENGINE = flag('--engine', 'http://localhost:3002');
 const PROXY_INTERVAL_MS = Number(process.env.METRICS_POLL_INTERVAL_MS ?? 2500);
 const DASHBOARD_INTERVAL_MS = Number(process.env.VITE_POLL_INTERVAL_MS ?? 2000);
 
-const HOST = 'Cloud API';
+// NO HOST NAME HERE. Root CLAUDE.md §6: the `<Item>` set in Production.cls is authoritative and
+// must not be restated -- a copied host list is what went stale when FHIR Transform was removed.
+// A literal 'Cloud API' here would be a third copy in a third area, and `devA/labdemo-pipeline-simplify`
+// is an open branch that RENAMES production items. The day it lands, every run would time out with
+// "no dead_host within 60s", which reads as the product failing to detect rather than as a stale
+// constant in the measuring tool (@tanifgit, #83).
+//
+// Matching on type alone is sufficient: reset() + waitForClear() guarantee an empty findings list
+// before arming, so any dead_host inside the window is the one this run armed.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Triggers are ObjectScript, so arming one means a session inside the container. `docker exec`
@@ -97,7 +113,7 @@ async function timeToDetect(t0, timeoutMs = 60_000) {
   const until = t0 + timeoutMs;
   while (Date.now() < until) {
     const f = await findings();
-    if (f.some((x) => x.type === 'dead_host' && x.host === HOST)) {
+    if (f.some((x) => x.type === 'dead_host')) {
       return Date.now() - t0;
     }
     // 100ms so the sampling granularity is far below the thing measured. The findings API is
@@ -137,7 +153,14 @@ for (let i = 0; i < runs; i++) {
   // and does not need it, but a warm baseline keeps the run representative of the demo.
   await sleep(8_000);
 
-  // Phase stagger: spread injection across the proxy's poll cycle.
+  // Phase stagger: DECORRELATE consecutive runs from the proxy's poll cycle.
+  //
+  // Not "sweep the cycle evenly", which an earlier version of this comment claimed and the
+  // harness cannot deliver (@tanifgit, #83): the value below is an ADDED SLEEP, and the true
+  // offset is that sleep plus uncontrolled variable time -- waitForClear polls at 500ms
+  // granularity, then an 8s settle, then a variable-duration session spawn. So the offsets are
+  // decorrelated, not controlled, which is all this needs to be. Also note runs is rounded up to
+  // a power of two below, so for n=12 the four offsets at ==3 mod 4 are never drawn.
   //
   // A LINEAR RAMP IS NOT A STAGGER. Sweeping 0 -> interval in equal increments produced samples
   // that fell monotonically (10.67 -> 9.25 across 2143ms), which reads as a trend in the system
@@ -154,11 +177,21 @@ for (let i = 0; i < runs; i++) {
   await sleep(phase);
 
   await arm();
-  const t0 = Date.now(); // AFTER the spawn returns -- no process-start cost in the sample
+  // t0 AFTER arm() resolves, which is when `docker exec` CLOSES -- not when the trigger ran.
+  //
+  // BIAS, STATED RATHER THAN IMPLIED (@tanifgit, #83): the fault exists in IRIS from the moment
+  // DeadHost() executes, which is before `halt`, process exit and the exec round trip. All of
+  // that teardown sits outside the interval, so these samples are biased LOW and true latency is
+  // >= reported. The direction is favourable to us, which is exactly why it needs saying: "9 of
+  // 12 over the bar" is a FLOOR, not an estimate, and nobody should later argue these numbers
+  // are pessimistic. Removing the bias means stamping t0 inside the session ($ZTIMESTAMP written
+  // by the trigger) -- deliberately not done, because it would put a clock read in Triggers.cls
+  // for the benefit of a measuring tool.
+  const t0 = Date.now();
   const ms = await timeToDetect(t0);
 
   if (ms === null) {
-    console.log(`run ${i + 1}: no dead_host within 60s (phase +${phase}ms)`);
+    console.log(`run ${i + 1}: no dead_host within 60s (+${phase}ms sleep)`);
     continue;
   }
   samples.push(ms);
@@ -166,7 +199,7 @@ for (let i = 0; i < runs; i++) {
   console.log(
     `run ${i + 1}: ${(ms / 1000).toFixed(2)}s to API` +
       `  (+dashboard worst case = ${(worst / 1000).toFixed(2)}s)` +
-      `  phase +${phase}ms`,
+      `  +${phase}ms sleep`,
   );
 }
 

@@ -62,9 +62,11 @@ So the sweep was demonstrated in one restart rather than over hours, and the two
 that change came out at **10.18 s and 11.32 s** — worse than the mean above, because the proxy
 improvement (−0.66 s) was smaller than the debounce re-phasing (+1.5 to +3.2 s). The 5.64–5.71 s
 cluster was an artifact, as this section already argued; #75 is the evidence rather than the
-argument. It also means **8.86 s is the first sample from the upper half of `[5, 10)`**, so the
+argument. It also means **8.86 s was the first sample from the upper half of `[5, 10)`**, so the
 arithmetic bound below is not a hypothetical worst case being defended against measurements —
-the measurements have started walking into it.
+the measurements have started walking into it. ("The highest recorded on this project", as the
+table above said when written; the n=12 run below has since exceeded it, which is the point that
+section makes.)
 
 ### Confirmed against the containerised stack, n=12 — the prediction above held
 
@@ -82,10 +84,16 @@ mistake that invalidated the first figure on #44):
 **This is worse than the 2 of 7 above, and it is the section above being proved right rather
 than a regression.** That earlier figure came from very nearly phase-locked timers; this section
 predicted that drift would sweep the debounce across `[5, 10)` and make the unfavourable case
-"not merely possible but eventually certain". With the phase-lock removed — each run injects at a
-different offset in the proxy's cycle — the samples do exactly that, and the majority land above
-the bar. Fewer than half of runs meeting a bar is the honest picture of a system whose *typical*
-case sits just under it and whose *bound* is far above.
+"not merely possible but eventually certain". With the phase-lock removed — consecutive runs
+inject at decorrelated offsets in the proxy's cycle — the samples do exactly that, and the
+majority land above the bar.
+
+**So the measured typical is now above 10 s, not below it.** The median is 10.75 s. The 9.8 s
+"typical" quoted elsewhere in this ADR is the *arithmetic* figure derived from the intervals, and
+it is no longer what the samples show — which is why the Decision below no longer states a
+typical at all. Naming that explicitly because the first version of this section said the typical
+case "sits just under" the bar, directly beneath a table showing the opposite; the arithmetic and
+the measurement had diverged and only one of them was in front of me.
 
 Two notes on the method, because both were mistakes I made first:
 
@@ -117,9 +125,15 @@ arithmetic gave `5.0 + 10.0 + 2.0 ≈ 17 s` worst and `~11 s` typical. **The dec
 move**: 20 s covered 17 s and covers 14.5 s with more margin. What changes is that a reader
 comparing the bound against the shipped configuration now gets the same answer the ADR gives.
 
-Note the typical figure has dropped below 10 s while the **bound has not**, and the bound is what
-a criterion is. That gap — a system that usually meets a bar it cannot guarantee — is the whole
-reason this ADR exists rather than a one-line change to a number.
+Note the **arithmetic** typical has dropped below 10 s while the **bound has not**, and the bound
+is what a criterion is. That gap is the whole reason this ADR exists rather than a one-line change
+to a number.
+
+This paragraph used to add "a system that usually meets a bar it cannot guarantee". The n=12
+measurement below retires that phrasing: the *arithmetic* typical is 9.8 s, but the *measured*
+median is 10.75 s with 9 of 12 runs over, so "usually meets" describes the arithmetic and not the
+system. The gap is real either way — it is now between the bound and the measurement rather than
+between the bound and a comfortable typical.
 
 ## Why 10 s is not reachable
 
@@ -146,23 +160,34 @@ The two other terms were examined and are not where the budget is:
 
 ## Decision
 
-**State the criterion as: findings appear on screen within 20 s of a change, typically ~10 s,
-measured 8.8–11.6 s — for the seven metric-derived finding types.**
+**State the criterion as: findings appear on screen within 20 s of a change, measured
+7.1–11.7 s with a median of 10.8 s — for the seven metric-derived finding types.**
 
-Three numbers, each true, rather than one that needs a footnote:
+Two numbers, each true, rather than one that needs a footnote:
 
 - **20 s** is the bound we can defend without qualification, because it covers the swept worst
   case (14.5 s on the shipped intervals) rather than the phase alignment we happened to measure
-- **~10 s** is the typical figure on the shipped intervals with the phase-lock artifact removed
-  (9.8 s arithmetic). It was ~11 s before the proxy poll was halved
-- **8.8–11.6 s** is what was actually observed, with `n` and whose machine, per #70 — n=7 at the
-  5000 ms proxy poll, plus n=2 at 2500 ms which came out at 10.2 s and 11.3 s
+- **7.1–11.7 s, median 10.8 s** is what was actually observed, with `n` and whose machine per
+  #70 — n=12 on the containerised reference stack with injection staggered across the proxy's
+  poll cycle. **9 of those 12 were over 10 s.** Earlier samples, superseded because their timers
+  were near phase-locked: n=7 at a 5000 ms proxy poll gave 8.8–11.6 s with 2 over, and n=2 after
+  #75 gave 10.2 s and 11.3 s
 
-**Do not collapse these into one number.** The typical figure sits below 10 s and the bound does
-not, which is exactly the situation the criterion has to describe: a system that usually meets a
-bar it cannot guarantee. Quoting only the typical would re-create the claim this ADR exists to
-retract, and quoting only the bound would understate a product that is normally twice as good as
-its guarantee.
+**A "typically ~10 s" figure used to be the third number here and it has been removed.** It read
+as a claim about observed behaviour, and the n=12 measurement contradicts it: the measured median
+is 10.75 s, i.e. *above* the bar, and three quarters of runs miss it. The 9.8 s arithmetic
+*typical* is still computable from the intervals and still appears above in the bound derivation,
+but it is not what a reader gets when they see "typically" next to a measured range, so quoting
+it in the criterion overstated the product. Caught by Dev C on the review of the n=12 change,
+which is the review catching exactly what it is for: the confirming measurement falsified the
+sentence it was appended beneath, and appending without re-reading the Decision left the ADR
+contradicting itself.
+
+**Do not collapse the two remaining numbers into one.** The bound is what a criterion *is*, and
+the measured range is what someone will see; a system that misses a self-imposed bar in most runs
+while never approaching its stated bound is precisely the situation this ADR exists to describe.
+Quoting only the measurement would suggest a guarantee we do not have, and quoting only the bound
+would understate a product that is normally well inside it.
 
 `system_alert` is stated **separately** and is not covered by the above. Until #69 it came down a
 different path — a blind 30 s poll of the consume-on-read alerts endpoint — so its worst case was
