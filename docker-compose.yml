@@ -92,15 +92,22 @@ services:
     depends_on:
       iris-init:
         condition: service_completed_successfully
-    # FirstBoot runs AFTER IRIS is up, so it cannot be the entrypoint -- the image's own
-    # /iris-main must stay in charge of starting and stopping IRIS cleanly. Run it once the
-    # container is healthy:
+    # FIRST BOOT IS AUTOMATIC. `/iris-main -a <cmd>` runs a command AFTER `iris start`, which
+    # is exactly FirstBoot's slot -- and it keeps /iris-main in charge of starting and stopping
+    # IRIS, which was the stated reason for not automating this before.
     #
-    #   docker compose exec iris /pg-firstboot.sh
+    # I previously wrote that automating it "needs either a sidecar or an image with a
+    # first-boot hook", not having checked whether the image had one. It does; `/iris-main
+    # --help` documents -a/-b/-c/-e. Verified empirically rather than from the flag name,
+    # because whether it BLOCKS is the whole question: a 12s hook delays the log line
+    # `...executed command` by 12s and TASKMGR starts within it, so it is synchronous and
+    # ordered after `...started InterSystems IRIS instance`.
     #
-    # Automating that needs either a sidecar or an image with a first-boot hook; both are
-    # more moving parts than a documented one-liner is worth, and getting it wrong risks
-    # IRIS not shutting down cleanly. Stated rather than silently manual.
+    # `sh /pg-firstboot.sh`, not the bare path: the script is mounted :ro so its exec bit
+    # cannot be used inside the container. It is idempotent, so this is also correct on every
+    # later start -- and on a restart it is what clears a production left un-shut-down by
+    # `docker stop`, which used to leave the stack dead every second run.
+    command: ["-a", "sh /pg-firstboot.sh"]
     healthcheck:
       # "READY" MEANS THE LABDEMO PRODUCTION IS SERVING, not merely that IRIS started.
       #

@@ -8,12 +8,16 @@ system alerts. It detects and reports; it does not act (root `CLAUDE.md` §2).
 ## Running the whole chain
 
 ```bash
-./docker/up.sh
+docker compose up -d
 ```
 
-That runs the preflight check, starts IRIS, waits for it to be genuinely ready, runs first
-boot, and then brings up the rest. Plain `docker compose up` also works, but you have to do
-the two-step first boot below yourself.
+That is the whole thing, from an empty volume: namespace, interop, classes, web
+applications, credential, production and HL7 traffic. **No second step.** First boot is
+automatic — see below. Measured at **64 seconds** to all four services healthy on a cold
+volume (Windows host, Docker Desktop, IRIS 2026.3.0AI Build 126U).
+
+`./docker/up.sh` does the same thing and additionally runs the preflight image check, which
+`compose up` cannot do for itself.
 
 Then open **http://localhost:5173/?mode=live**
 
@@ -48,20 +52,39 @@ measurement in `docs/decisions/0005` and issue #70 was taken against. Pointing a
 community image instead would reproduce *a* system and put all of those numbers back in
 question (#72).
 
-### First boot
+### First boot — automatic
 
-IRIS needs its namespace, classes, web applications, credential and production once:
+IRIS needs its namespace, classes, web applications, credential and production once. Compose
+does it for you:
+
+```yaml
+command: ["-a", "sh /pg-firstboot.sh"]
+```
+
+`/iris-main -a <cmd>` runs a command **after** `iris start`, which is exactly the slot first
+boot needs — and it leaves the image's own entrypoint in charge of starting and stopping IRIS
+cleanly, which is the reason this used to be a documented manual step. Verified synchronous
+rather than assumed from the flag name: a 12-second hook delays `...executed command` by 12
+seconds.
+
+It calls `ProductionGuardian.Setup.FirstBoot`, which is **idempotent** — every step reports
+what it found rather than what it assumed, so it runs on every start and is a no-op after the
+first. That is also what makes restarts work: `docker stop` kills IRIS with the production
+running, and the next start would otherwise refuse with
+`ErrProductionNotShutdownCleanly` — leaving the stack dead every second run. FirstBoot detects
+that specific error, cleans and retries.
+
+Watch it happen:
+
+```bash
+docker compose logs -f iris
+```
+
+To run it by hand (it is safe at any time):
 
 ```bash
 docker compose exec iris sh /pg-firstboot.sh
 ```
-
-`up.sh` does this for you. Run it directly if you started with plain `docker compose up`.
-
-This calls `ProductionGuardian.Setup.FirstBoot`, which is idempotent — safe to re-run, and
-it reports what it found rather than what it assumed. It is not the container entrypoint on
-purpose: the image's own `/iris-main` must stay in charge of starting and stopping IRIS
-cleanly, and first boot has to happen *after* IRIS is accepting sessions.
 
 ## The four services
 
