@@ -5,6 +5,30 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-13 — `system_alert` scope stated in `healthscan-api.md` (Dev B)
+
+**Documentation only.** No field added, removed or retyped; no schema change; no sample
+touched. `validate.mjs` unchanged at 15 accept / 19 reject / 7 capture claims. Recorded here
+because `contracts/` is edited by PR regardless of size (root `CLAUDE.md` §4) — and because I
+applied that rule to myself two PRs ago and then didn't, which @tanifgit caught on #62.
+
+The `system_alert` row said *"New alert posted to alerts.log"*. That describes a rule which
+surfaces the alert log; it surfaces the **host-attributable subset** of it. An alert naming no
+reported host produces no finding at all — not an unattributed one — and a consumer could
+learn the difference only by reading `detect/engine.ts`.
+
+The row now says so, with the measured table (#61). Note "reported", not "configured": a
+framework item like `Ens.MonitorService` **is** configured, but is filtered before the
+attribution set is built, so it is not a candidate either. That distinction was wrong in my
+first draft and is the case a reader is most likely to hit, since `/api/monitor/alerts` is
+largely about IRIS's own subsystems.
+
+No consumer behaviour changes. `Finding` and `FindingsResponse` are untouched — in particular
+`FindingsResponse` stays a bare array rather than gaining a `_meta` for this diagnostic, which
+would be a breaking change to both endpoints for a diagnostic. Dev C asked for it to stay as
+is; the engine logs unattributed alerts instead, at no contract cost.
+
+
 ## 2026-08-13 — sample-provenance caveat on `metrics-dump.txt` (Dev B)
 
 **Documentation only. No field added, removed or retyped; no schema change; every existing

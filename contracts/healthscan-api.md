@@ -95,7 +95,31 @@ Sorted `detectedAt` descending, severity as tiebreak (critical → warning → i
 | `slow_processing` | `iris_interop_avg_processing_time` | Avg processing time exceeds baseline by > X% |
 | `growing_queue_wait` | `iris_interop_avg_queueing_time` | Queue wait trending upward |
 | `throughput_drop` | `iris_interop_messages_per_sec` | Messages/sec falls below baseline |
-| `system_alert` | `/api/monitor/alerts` | New alert posted to alerts.log |
+| `system_alert` | `/api/monitor/alerts` | New alert posted to alerts.log **that names a reported host** — see below |
+
+> **`system_alert` surfaces the host-attributable SUBSET of the alert log, not the log (#61).**
+>
+> An alert is matched to a host by the **host name appearing in its message text**. An alert
+> that names no **reported** host produces **no finding at all** — it is not surfaced
+> unattributed, and nothing in either endpoint records that it was seen. Verified against five
+> realistic texts:
+>
+> | alert message | result |
+> |---|---|
+> | `Cloud API failed to send message` | **fires** |
+> | `Disk space for database IRIS/mgr/ is critically low` | silent |
+> | `License limit exceeded: 100 of 100 connections` | silent |
+> | `Journal file system is full` | silent |
+> | `WARNING: write daemon is falling behind` | silent |
+> | `Ens.MonitorService failed to start` | silent — **a framework host is configured but not reported** |
+>
+> So instance-level alerts — disk, license, journal, write daemon — are **out of scope for
+> Health Scan MVP 1**, which reports per-host conditions. That is a deliberate limitation, not
+> an oversight: attributing them would require either a pseudo-host that corresponds to no
+> config item (breaking §2's "only application config items appear") or a production-level
+> findings channel, which is a new output shape and belongs to a later module. Recorded here
+> because a consumer cannot tell "no such alert" from "alert discarded" by reading the
+> endpoints, and would otherwise learn the difference only from `detect/engine.ts`.
 
 **Sustained breach.** Per MVP §6, a rule must breach on **2+ consecutive samples** before a
 finding is emitted. A single-sample spike produces nothing. This is why findings are stateful

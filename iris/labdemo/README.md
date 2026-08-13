@@ -307,7 +307,7 @@ live", the quoted numbers are from that run rather than from a fixture.
 > | host behaviour | stops consuming at once | stays up and keeps retrying |
 > | queue while the baseline warms | 0, then ramps | small but real |
 > | baseline when depth runs away | rises *with* the ramp | already learned (7.97 measured) |
-> | ratio | ceiling **2.18×**, under the 5× gate | **13.8×** — fires |
+> | ratio | ceiling ~**2.18×** at the shipped `minBaselineSamples: 12`, under the 5× gate | **13.8×** — fires |
 >
 > So disabling `Cloud API` grew the queue 6 → 122 in silence, and the old `Run(80, 0.2)`
 > instruction never worked. The closed-port trigger produced `Queue depth 110 is 14x
@@ -316,6 +316,10 @@ live", the quoted numbers are from that run rather than from a fixture.
 > problem. The ramp arithmetic is pinned in
 > `services/detection-engine/test/baseline.test.ts`; the closed form is on #45 and the fix
 > belongs with #25's thresholds ADR.
+>
+> **The 2.18× is not a constant** — it is `2N/(N−1)` for `N = minBaselineSamples`, so `24/11`
+> at the shipped 12 and `2.087` at 24. Change that setting and this number moves; re-derive it
+> rather than trusting the figure written here (#34, #45).
 >
 > The lesson worth keeping: the fixture at
 > `services/detection-engine/fixtures/proxy/queue-buildup.json` jumps 0 → 486 in a single
