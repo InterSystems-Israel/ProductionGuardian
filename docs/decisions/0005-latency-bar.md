@@ -66,6 +66,44 @@ argument. It also means **8.86 s is the first sample from the upper half of `[5,
 arithmetic bound below is not a hypothetical worst case being defended against measurements —
 the measurements have started walking into it.
 
+### Confirmed against the containerised stack, n=12 — the prediction above held
+
+The measurements above were taken on the demo instance: IRIS behind an external web gateway,
+with the proxy and engine as host processes. The compose stack (#72, #78) is the reference
+environment now — four containers, no gateway hop, `Cloud API` posting to `127.0.0.1:52773`
+in-container. Re-measured there with `tools/measure-latency.mjs`, which arms the trigger and
+reads the findings API **inside one process**, so no agent round trip enters the sample (the
+mistake that invalidated the first figure on #44):
+
+| | to findings API | on screen, +1.0 s expected | over the 10 s bar |
+|---|---|---|---|
+| n=12, proxy 2500 ms, engine 5000 ms | min 6.09, median 9.75, mean 9.04, max 10.73 | min 7.09, median 10.75, mean 10.04, max 11.73 | **9 of 12** |
+
+**This is worse than the 2 of 7 above, and it is the section above being proved right rather
+than a regression.** That earlier figure came from very nearly phase-locked timers; this section
+predicted that drift would sweep the debounce across `[5, 10)` and make the unfavourable case
+"not merely possible but eventually certain". With the phase-lock removed — each run injects at a
+different offset in the proxy's cycle — the samples do exactly that, and the majority land above
+the bar. Fewer than half of runs meeting a bar is the honest picture of a system whose *typical*
+case sits just under it and whose *bound* is far above.
+
+Two notes on the method, because both were mistakes I made first:
+
+- **A linear phase ramp is not a stagger.** Sweeping the offset 0 → interval in equal increments
+  produced a monotonic sequence (10.67 → 9.25 s) that reads as a trend in the product and is
+  really the ramp walking toward the next poll boundary in step with the run counter. The offsets
+  are bit-reversed now, and the correlation disappears.
+- **Worst case and expected case are not comparable.** Adding a full dashboard interval to every
+  sample and comparing against figures that used a measured mean would manufacture a regression
+  out of a change of convention. The harness reports both; the table above uses the expected
+  case, matching how the n=7 row was built.
+
+The containerised topology did **not** make this faster, which is worth stating because the
+opposite was the reasonable expectation from removing a network hop. The gateway hop was never a
+significant term — it was inside the proxy staleness window either way — and the budget is
+dominated by the debounce, which is unchanged. Removing a service simplified the deployment; it
+did not buy latency.
+
 So the honest bound is the arithmetic one, stated for the **shipped** intervals — proxy 2500 ms
 (#75), engine 5000 ms, dashboard 2000 ms (#68):
 
@@ -139,14 +177,29 @@ for it here.**
 - `sustainedSeconds` must not be lowered to chase this number without revisiting this ADR; #46's
   own comment and #64's floor are the reasons
 - any figure in this ADR that is a mean is situational until the services are launched in a
-  randomised phase relationship. The bound is not
+  randomised phase relationship. The bound is not. The n=12 run is the closest thing here to a
+  non-situational sample, because it staggers injection across the proxy's poll cycle rather
+  than launching the services and hoping — and it is the worse number of the two
+- **re-measuring is now one command**: `node tools/measure-latency.mjs [runs]` against a running
+  stack. Anyone disputing a figure here can produce their own rather than arguing from the
+  arithmetic, and the harness owns both ends of the clock so an agent round trip cannot leak in
 - the criterion in the source document is unchanged and still says 10 s. This ADR is the
   deviation record, and the numbers quoted in `apps/dashboard/CLAUDE.md` §8 and
   `apps/dashboard/README.md` point here rather than restating a duration
 
 ## Status
 
-`proposed`. Drafted by Dev C from the #44 thread; the measurements are Dev B's and are theirs to
-confirm or correct. It should be `accepted` before anyone describes MVP 1 as complete, because
-this is the single place where MVP 1 does not meet the spec as written and it needs to be
-findable by someone who has only read the spec.
+`proposed`, pending Dev C's review of the n=12 section.
+
+Drafted by Dev C from the #44 thread. The measurements were Dev B's to confirm or correct, and
+they are now **confirmed** — re-measured against the containerised reference stack with the
+phase-lock removed, which is what the "any figure that is a mean is situational" caveat was
+waiting for. The direction of the correction is worth naming: the new numbers are **worse** than
+the ones drafted here, and they move the deviation from "misses the bar occasionally" to "misses
+it more often than not". That does not change the decision — 20 s still covers the 14.5 s bound
+with margin — but it does change what an honest sentence about it says, so it should not flip to
+`accepted` on the author of the measurement's word alone.
+
+It should be `accepted` before anyone describes MVP 1 as complete, because this is the single
+place where MVP 1 does not meet the spec as written and it needs to be findable by someone who
+has only read the spec.
