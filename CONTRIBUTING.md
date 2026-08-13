@@ -64,6 +64,7 @@ production-guardian/
 │  ├─ production-guardian-healthscan-mvp1.docx
 │  ├─ decisions/                 # ADRs: the 4 open decisions from §7.4 of the MVP doc
 │  └─ demo/                      # ── DEV C ──  screencast, cue-sheet.md
+│                                #   DESCOPED from MVP 1 (2026-08-13); dir not created yet
 │
 └─ .github/
    ├─ CODEOWNERS                 # ★ mechanically enforces ownership, see §4
