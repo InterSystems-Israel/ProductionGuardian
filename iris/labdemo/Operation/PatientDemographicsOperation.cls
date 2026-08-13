@@ -35,6 +35,18 @@ Method OnMessage(
     // on the #34 deploy; same runtime-only class as #37, which is exactly what the
     // iris-compile CI job is documented as NOT catching.
     set pResponse = ##class(Ens.StringResponse).%New()
+
+    // Injected processing delay, for the slow_processing / growing_queue_wait triggers.
+    // Read from a global at RUNTIME so Triggers.cls can set it without editing or
+    // recompiling this class -- README.md used to say "add `hang 1` to the top of
+    // OnMessage, recompile", which is a live source edit mid-demo and, worse, a `hang`
+    // left behind poisons every later baseline. A global cannot be forgotten in source
+    // control and Triggers.Reset() clears it.
+    //
+    // Zero by default, so this costs nothing when no trigger is armed.
+    set delay = +$get(^ProductionGuardian.Trigger("SlowMs"), 0)
+    if delay > 0 { hang (delay / 1000) }
+
     try {
         // Build the JSON payload from the request message.
         set payload = {
