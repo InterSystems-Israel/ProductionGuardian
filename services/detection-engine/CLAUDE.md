@@ -173,9 +173,9 @@ top risk. A quiet findings list is the point. `thresholds.json` carries the same
 ### 5.2b `system_alert` only sees alerts that name a host
 
 An alert is matched to a host by **substring**: the host name must appear in the alert's
-message text (`detect/engine.ts`, `#evaluateAlerts`). An alert naming no configured host
-produces **no finding at all** — not an unattributed one, and nothing records that it was
-seen. Measured (#61):
+message text (`detect/engine.ts`, `#evaluateAlerts`). An alert naming no **reported** host
+produces **no finding at all** — not an unattributed one, and nothing records that it was seen.
+Measured (#61):
 
 ```
 Cloud API failed to send message                      -> FIRES
@@ -183,7 +183,17 @@ Disk space for database IRIS/mgr/ is critically low   -> SILENT
 License limit exceeded: 100 of 100 connections        -> SILENT
 Journal file system is full                           -> SILENT
 WARNING: write daemon is falling behind               -> SILENT
+Ens.MonitorService failed to start                    -> SILENT   <- see below
 ```
+
+**"Reported", not "configured".** A framework host IS a config item in the production — what
+it is not is *reported*: `applyPoll` skips `isFrameworkHost(...)` before adding to `seenHosts`,
+so framework items are absent from the roster and from the attribution set. So an alert naming
+`Ens.MonitorService` or `Ens.Alarm` produces no finding either, and that is the near-miss a
+reader is most likely to hit, since `/api/monitor/alerts` is largely about IRIS's own
+subsystems. The wording matters because "no configured host" sends someone to check the
+production, where they find the item present and conclude the log means something else
+(@tanifgit, #62).
 
 **This is deliberate for MVP 1 and it is a real coverage limitation.** Instance-level alerts
 are the class an operator most wants surfaced, and Health Scan does not surface them. The two

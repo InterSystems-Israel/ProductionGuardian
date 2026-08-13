@@ -95,12 +95,12 @@ Sorted `detectedAt` descending, severity as tiebreak (critical → warning → i
 | `slow_processing` | `iris_interop_avg_processing_time` | Avg processing time exceeds baseline by > X% |
 | `growing_queue_wait` | `iris_interop_avg_queueing_time` | Queue wait trending upward |
 | `throughput_drop` | `iris_interop_messages_per_sec` | Messages/sec falls below baseline |
-| `system_alert` | `/api/monitor/alerts` | New alert posted to alerts.log **that names a configured host** — see below |
+| `system_alert` | `/api/monitor/alerts` | New alert posted to alerts.log **that names a reported host** — see below |
 
 > **`system_alert` surfaces the host-attributable SUBSET of the alert log, not the log (#61).**
 >
 > An alert is matched to a host by the **host name appearing in its message text**. An alert
-> that names no configured host produces **no finding at all** — it is not surfaced
+> that names no **reported** host produces **no finding at all** — it is not surfaced
 > unattributed, and nothing in either endpoint records that it was seen. Verified against five
 > realistic texts:
 >
@@ -111,6 +111,7 @@ Sorted `detectedAt` descending, severity as tiebreak (critical → warning → i
 > | `License limit exceeded: 100 of 100 connections` | silent |
 > | `Journal file system is full` | silent |
 > | `WARNING: write daemon is falling behind` | silent |
+> | `Ens.MonitorService failed to start` | silent — **a framework host is configured but not reported** |
 >
 > So instance-level alerts — disk, license, journal, write daemon — are **out of scope for
 > Health Scan MVP 1**, which reports per-host conditions. That is a deliberate limitation, not

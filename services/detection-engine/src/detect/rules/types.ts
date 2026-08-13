@@ -47,6 +47,16 @@ export interface RawHostMetrics {
   errored: number | null;
   avgProcessingTime: number | null;
   avgQueueingTime: number | null;
+  /**
+   * Seconds since this host last did work, as IRIS reports it. `null` when no
+   * `iris_interop_last_activity` line was emitted for the host — i.e. it has not run
+   * since production start, which is NOT the same as "active now" (#58).
+   *
+   * `Host.lastActivity` on the wire cannot carry that distinction: the published field is
+   * a required non-nullable date-time, so normalizeHost() has to put something there. A
+   * rule that reasons about idleness must read THIS instead.
+   */
+  lastActivityElapsedSeconds: number | null;
 }
 
 /**

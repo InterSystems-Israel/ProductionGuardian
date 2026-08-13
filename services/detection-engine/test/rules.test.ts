@@ -72,6 +72,10 @@ function evaluate(
       errored: h.errored,
       avgProcessingTime: h.avgProcessingTime,
       avgQueueingTime: h.avgQueueingTime,
+      // Derived back from the published timestamp so existing cases keep the idle time they
+      // set via `lastActivity`. A test opts into the unmeasured path with
+      // `raw: { lastActivityElapsedSeconds: null }`.
+      lastActivityElapsedSeconds: (extra.now ?? NOW) / 1000 - Date.parse(h.lastActivity) / 1000,
       ...extra.raw,
     },
     baselines,
@@ -439,6 +443,25 @@ describe('unmeasurable metrics are not symptoms (#33)', () => {
       { raw: { queued: null } },
     );
     assert.equal(verdict, null);
+  });
+
+  it('declines when the idle time is unknown, even if the published stamp is stale', () => {
+    // @tanifgit's test from the #60 review, and it catches what I wrongly concluded no test
+    // could. I checked only through `applyPoll`, where `normalizeHost()` sets
+    // `lastActivity = now - elapsed` so the two readings CANNOT disagree -- an identity, not a
+    // behaviour. At the rule boundary they can, because the input can be a combination
+    // normalizeHost never emits: a stale published stamp beside a null elapsed.
+    //
+    // Same licence the queue-depth test above already takes (`raw: { queued: null }` against
+    // `host({ queued: 0 })`), so the artificiality is the established pattern here, not a
+    // weakness. Verified failing with the fix reverted.
+    const verdict = evaluate(
+      'stalled_host',
+      host({ queued: 12, lastActivity: new Date(NOW - 400_000).toISOString() }),
+      new BaselineStore(1800, 12),
+      { raw: { lastActivityElapsedSeconds: null } },
+    );
+    assert.equal(verdict, null, 'an unknown idle time must not be read from the published stamp');
   });
 
   it('stalled_host fires when the depth is measurable and non-zero', () => {

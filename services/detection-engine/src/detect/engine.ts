@@ -156,6 +156,7 @@ export class DetectionEngine {
             errored: proxyHost.errored,
             avgProcessingTime: proxyHost.avgProcessingTime,
             avgQueueingTime: proxyHost.avgQueueingTime,
+            lastActivityElapsedSeconds: proxyHost.lastActivityElapsedSeconds,
           },
           baselines: this.#baselines,
           config: this.#config,
@@ -190,8 +191,9 @@ export class DetectionEngine {
    * Log each alert that matches no configured host, once (#61).
    *
    * `system_alert` matches an alert to a host by the host name appearing in the message
-   * text, so an instance-level alert -- disk space, license limit, journal full -- produces
-   * NO finding at all. That is deliberate for MVP 1 (see CLAUDE.md §5.2b: the alternatives
+   * text, and only REPORTED hosts are candidates -- framework items are skipped before
+   * `seenHosts` is built, so they are configured but not reported. So an instance-level alert
+   * (disk, license, journal) AND an alert naming a framework host both produce NO finding. That is deliberate for MVP 1 (see CLAUDE.md §5.2b: the alternatives
    * are a pseudo-host that breaks the "only config items appear" guarantee, or a
    * production-level channel that belongs to Health Summary).
    *
@@ -212,7 +214,7 @@ export class DetectionEngine {
       if (this.#loggedUnattributedAlerts.has(key)) continue;
       this.#loggedUnattributedAlerts.add(key);
       this.#log(
-        `alert matches no configured host, so no finding is emitted for it ` +
+        `alert matches no reported host, so no finding is emitted for it ` +
           `(severity ${alert.severity}): ${alert.message}`,
       );
     }

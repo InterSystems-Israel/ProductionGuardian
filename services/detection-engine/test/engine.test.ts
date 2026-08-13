@@ -1059,6 +1059,100 @@ describe('the published wire preserves null where the schema allows it (#52)', (
 });
 
 /**
+ * stalled_host must not read a fabricated activity timestamp (#58).
+ *
+ * Found by @tanifgit reviewing #54 — its argument that a permitted-but-unexercised path
+ * decays is what sent them to the field #54's scope excluded.
+ *
+ * `Host.lastActivity` is a REQUIRED non-nullable date-time in the published schema, so
+ * `normalizeHost()` has to publish something when IRIS emits no `iris_interop_last_activity`
+ * line — and it publishes the poll's own clock. Reading that back gave `idleSeconds = 0` on
+ * every poll, so the rule was silently unable to fire for such a host: measured 30 minutes of
+ * idle-with-queue producing nothing, ever, because the fabricated timestamp advances with the
+ * poll.
+ *
+ * WHAT THESE THREE TESTS DO AND DO NOT PIN: they do **not** catch the old code. Reverting the
+ * fix leaves all three passing, because `normalizeHost()` sets `lastActivity = now - elapsed`,
+ * so any test entering through `applyPoll` is measuring an identity — the two readings cannot
+ * disagree there. Verified the old path could not fire even at `inactiveSeconds: 1`.
+ *
+ * The regression IS pinnable, at the rule boundary, where the input can be a combination
+ * normalizeHost never emits: see "declines when the idle time is unknown, even if the
+ * published stamp is stale" in `rules.test.ts` (@tanifgit, #60 review). I had concluded no
+ * test could distinguish the two paths; that was wrong, and it was wrong because I only
+ * checked the entry point I had already been using.
+ *
+ * These three still earn their place: they pin the behaviour end to end, which the
+ * rule-boundary test does not.
+ *
+ * The part of #58 that IS a live defect is the published `Host.lastActivity`, which still
+ * carries the poll clock for a host that has never run. That needs a nullable field, i.e. a
+ * `contracts/` change, and is deliberately not in this PR.
+ *
+ * Both real captures on `main` before #53 had ZERO activity lines, so this was the live state,
+ * not a hypothetical.
+ */
+describe('stalled_host declines on an unmeasured activity time (#58)', () => {
+  /** Idle with a queue — everything stalled_host needs except a real activity reading. */
+  function idleWithQueue(overrides: Partial<ProxyHost> = {}): ProxyHost {
+    return proxyHost({ status: 'OK', queued: 6, lastActivityElapsedSeconds: null, ...overrides });
+  }
+
+  it('stays silent through 30 minutes of idle-with-queue when the line is absent', () => {
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    let at = T0;
+    for (let i = 0; i < 400; i += 1) {
+      engine.applyPoll(response([idleWithQueue()]), at);
+      at += POLL_MS;
+    }
+    assert.deepEqual(
+      engine.snapshot().findings.map((f) => f.type),
+      [],
+      'an absent activity reading is not evidence of a stall',
+    );
+  });
+
+  it('fires as soon as a REAL elapsed value arrives, so the path is not dead', () => {
+    // Without this, the test above would pass on a rule that could never fire at all.
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    let at = T0;
+    for (let i = 0; i < 390; i += 1) {
+      engine.applyPoll(response([idleWithQueue()]), at);
+      at += POLL_MS;
+    }
+    for (let i = 0; i < 10; i += 1) {
+      engine.applyPoll(response([idleWithQueue({ lastActivityElapsedSeconds: 1800 })]), at);
+      at += POLL_MS;
+    }
+    assert.ok(
+      engine.snapshot().findings.some((f) => f.type === 'stalled_host'),
+      'a measured 1800s idle with a queue must fire',
+    );
+  });
+
+  it('does not let the published lastActivity drive the verdict', () => {
+    // The mechanism, asserted directly: lastActivity tracks the poll clock when the reading
+    // is absent, and the rule must not be reading it. If it were, idleSeconds would be ~0.
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    const at = T0 + 60 * POLL_MS;
+    engine.applyPoll(response([idleWithQueue()]), at);
+
+    const [host] = engine.snapshot().hosts;
+    assert.ok(host !== undefined);
+    assert.equal(
+      host.lastActivity,
+      new Date(at).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      'the published field still carries the poll clock — that is the contract constraint',
+    );
+    assert.deepEqual(
+      engine.snapshot().findings.map((f) => f.type),
+      [],
+      'but no rule may treat that as a measurement',
+    );
+  });
+});
+
+/**
  * An alert matching no host is logged, not silently dropped (#61).
  *
  * `system_alert` matches by host name appearing in the message text, so instance-level
@@ -1089,7 +1183,7 @@ describe('unattributed alerts are logged (#61)', () => {
       'an alert naming no host must not produce a finding',
     );
     assert.equal(lines.length, 1, `expected one log line, got ${JSON.stringify(lines)}`);
-    assert.match(lines[0] ?? '', /matches no configured host/);
+    assert.match(lines[0] ?? '', /matches no reported host/);
     assert.match(lines[0] ?? '', /Journal file system is full/, 'the text must be quoted');
   });
 
@@ -1103,6 +1197,39 @@ describe('unattributed alerts are logged (#61)', () => {
       at += POLL_MS;
     }
     assert.equal(lines.length, 1, `logged ${lines.length} times across 20 polls`);
+  });
+
+  it('logs an alert naming a FRAMEWORK host, which is configured but not reported', () => {
+    // @tanifgit's fourth case on #62, and the one most likely to be hit: /api/monitor/alerts
+    // is largely about IRIS's own subsystems. A framework item IS a config item, but
+    // applyPoll skips isFrameworkHost() before building seenHosts, so it is not a candidate
+    // for attribution and the alert produces no finding.
+    //
+    // Pins against a plausible tidy-up: build seenHosts BEFORE the framework guard and a
+    // framework-named alert stops being logged while still producing no finding — straight
+    // back to invisible, with the other three tests green.
+    const lines: string[] = [];
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), (m) => lines.push(m));
+    engine.applyPoll(
+      {
+        ...response([
+          proxyHost({ host: 'Cloud API' }),
+          proxyHost({ host: 'Ens.MonitorService', isFramework: true }),
+        ]),
+        alerts: [
+          { time: '2026-08-06T15:59:00Z', severity: '1', message: 'Ens.MonitorService failed to start' },
+        ],
+      },
+      T0,
+    );
+
+    assert.deepEqual(
+      engine.snapshot().findings.map((f) => f.type),
+      [],
+      'a framework host is not an attribution candidate',
+    );
+    assert.equal(lines.length, 1, `expected the gap to be logged, got ${JSON.stringify(lines)}`);
+    assert.match(lines[0] ?? '', /no reported host/, 'and "reported" is the accurate word');
   });
 
   it('does NOT log an alert that does name a host', () => {

@@ -84,7 +84,19 @@ const stalledHost: Rule = {
     if (raw.queued === null) return null;
     if (rule.requiresQueued && raw.queued <= 0) return null;
 
-    const idleSeconds = (now - Date.parse(host.lastActivity)) / 1000;
+    // raw, not host.lastActivity (#58). An absent activity line means the host has NOT RUN
+    // since production start, and normalizeHost() has to publish *something* for a required
+    // non-nullable date-time -- so it publishes the poll's own clock. Reading that back gives
+    // idleSeconds = 0 on every poll, which made this rule SILENTLY UNABLE TO FIRE for such a
+    // host: measured 30 minutes of idle-with-queue producing no finding, ever, because the
+    // fabricated timestamp advances with the poll.
+    //
+    // "Never run" and "active now" are opposites. Declining is the honest reading, and it
+    // matches the raw.queued guard four lines up -- the last field in this rule that still
+    // took the coerced path (#33, #49, #51 fixed the others).
+    if (raw.lastActivityElapsedSeconds === null) return null;
+
+    const idleSeconds = raw.lastActivityElapsedSeconds;
     if (!Number.isFinite(idleSeconds) || idleSeconds < rule.inactiveSeconds) return null;
 
     return {
