@@ -124,6 +124,19 @@ ClassMethod LoadClasses(pSourceDir As %String) As %Status
 
 /// The two HL7 directories. EMR Source is an EnsLib.HL7.Service.FileService and goes to
 /// Error without them -- the first thing that broke on the #53 deploy.
+///
+/// THESE ARE UNDER /tmp, WHICH IS CONTAINER-LOCAL, NOT on the durable volume. So they report
+/// "created" rather than "exists" on every new container even though the namespace, the
+/// production and the PatientRecord table all survive -- which is correct, and is one of the
+/// reasons this whole class must run on every start rather than only the first. A reader
+/// seeing "created" on a warm start has not lost their data; verified across a
+/// `compose down` + `up`: 324 patients before, 324 after, while the HL7 archive was empty
+/// again (#78).
+///
+/// Deliberately not moved onto the durable volume: the drop directory is a queue the
+/// generator fills and the service drains, and the archive is a record of files already
+/// processed into messages. Neither is state the demo needs to survive a restart, and putting
+/// a drop directory on a shared volume invites two containers draining the same queue.
 ClassMethod MakeDirectories()
 {
     for dir = ..#DROPDIR, ..#ARCHIVEDIR {
