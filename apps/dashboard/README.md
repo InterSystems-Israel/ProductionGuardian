@@ -202,6 +202,36 @@ Fixtures pass through the same guards as live data. **If a guard drops a fixture
 entry, the transcription is wrong** — that is why fixture validation is worth
 watching in the console.
 
+## Running it in a container
+
+`Dockerfile` builds the same single-file bundle the `file://` fallback uses and serves it
+with nginx, which also proxies the findings API so the browser only ever talks to one
+origin. This is the dashboard's service for the compose chain (#72).
+
+```bash
+docker build -t pg-dashboard:local apps/dashboard
+docker run -d -p 5173:80 -e HEALTHSCAN_UPSTREAM=detection-engine:3002 pg-dashboard:local
+```
+
+`HEALTHSCAN_UPSTREAM` is `host:port`, no scheme, and defaults to the compose service name.
+The app keeps its relative `/api/healthscan` base URL in every environment — nothing about
+the image is environment-specific, which is why the proxy exists rather than a build-time
+URL.
+
+Two properties worth knowing, both verified rather than intended:
+
+- **it does not need the engine to start.** nginx resolves the upstream per request, not at
+  config load, so the container comes up immediately, serves demo mode (which needs no
+  backend at all), returns 502 on the live path until the engine appears, and recovers on
+  its own. Measured: engine stopped → `/` still 200 and the container stays healthy with 0
+  restarts; engine restarted → live path back to 200 with no dashboard restart. **So it
+  needs no `depends_on`**, which matters because IRIS takes minutes to initialise
+- **on a plain `docker run` the upstream must be reachable by whatever DNS the container
+  has.** The resolver is derived from `/etc/resolv.conf`, so on a user-defined network it is
+  Docker's embedded DNS and service names resolve; on the default bridge it is public DNS
+  and `host.docker.internal` does **not** resolve. Compose always creates a user-defined
+  network, so this only bites ad-hoc runs
+
 ## Status by phase
 
 | Phase | Work | Status |
