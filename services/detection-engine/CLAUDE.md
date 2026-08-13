@@ -170,6 +170,38 @@ Do not "fix" this by lowering a warning band: reaching `info` would require lowe
 top risk. A quiet findings list is the point. `thresholds.json` carries the same note, and
 `test/scenario.test.ts` asserts `info` comes only from `system_alert`, so a drift fails loudly.
 
+### 5.2b `system_alert` only sees alerts that name a host
+
+An alert is matched to a host by **substring**: the host name must appear in the alert's
+message text (`detect/engine.ts`, `#evaluateAlerts`). An alert naming no configured host
+produces **no finding at all** — not an unattributed one, and nothing records that it was
+seen. Measured (#61):
+
+```
+Cloud API failed to send message                      -> FIRES
+Disk space for database IRIS/mgr/ is critically low   -> SILENT
+License limit exceeded: 100 of 100 connections        -> SILENT
+Journal file system is full                           -> SILENT
+WARNING: write daemon is falling behind               -> SILENT
+```
+
+**This is deliberate for MVP 1 and it is a real coverage limitation.** Instance-level alerts
+are the class an operator most wants surfaced, and Health Scan does not surface them. The two
+ways to change that both cost more than they are worth here: a synthetic `System` host would
+be an entry in the host array corresponding to no config item, which breaks the "only
+application config items appear" guarantee in `contracts/healthscan-api.md` §2 — the same
+invariant #34 was diagnosed against — and a production-level findings channel is a new output
+shape, i.e. Health Summary's job (root `CLAUDE.md` §2).
+
+**Do not "fix" this by loosening the match.** Matching more broadly means attributing an
+instance-wide condition to whichever host name happens to appear in the text, which is worse
+than silence: a confident wrong attribution rather than a known gap. If it is addressed later,
+the shape to reach for is a count of unattributed alerts in an existing `_meta` object, not a
+change to what a `Finding` is.
+
+The engine logs each unattributed alert once, so the gap is visible in operation rather than
+only in this file.
+
 ### 5.3 An alert is an event, not a sustained condition
 
 `system_alert` is exempt from the sustained-breach *suppression* that the other rules use, though

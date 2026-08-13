@@ -1057,3 +1057,65 @@ describe('the published wire preserves null where the schema allows it (#52)', (
     assert.equal(byHost.get('Unknown')?.queued, null, 'an absent count is not');
   });
 });
+
+/**
+ * An alert matching no host is logged, not silently dropped (#61).
+ *
+ * `system_alert` matches by host name appearing in the message text, so instance-level
+ * alerts — disk space, license limit, journal full, write daemon — produce no finding at all.
+ * That limitation is deliberate for MVP 1 (CLAUDE.md §5.2b), but it must be visible: a
+ * consumer cannot tell "no such alert" from "alert discarded" by reading either endpoint.
+ *
+ * Raised by @tanifgit on #61, who noted they would have guessed such alerts appeared
+ * unattributed rather than not at all — which is the reason the gap has to be stated rather
+ * than merely accepted.
+ */
+describe('unattributed alerts are logged (#61)', () => {
+  function withAlert(message: string): ProxyResponse {
+    return {
+      ...response([proxyHost({ host: 'Cloud API' })]),
+      alerts: [{ time: '2026-08-06T15:59:00Z', severity: '1', message }],
+    };
+  }
+
+  it('logs an instance-level alert and emits no finding for it', () => {
+    const lines: string[] = [];
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), (m) => lines.push(m));
+    engine.applyPoll(withAlert('Journal file system is full'), T0);
+
+    assert.deepEqual(
+      engine.snapshot().findings.map((f) => f.type),
+      [],
+      'an alert naming no host must not produce a finding',
+    );
+    assert.equal(lines.length, 1, `expected one log line, got ${JSON.stringify(lines)}`);
+    assert.match(lines[0] ?? '', /matches no configured host/);
+    assert.match(lines[0] ?? '', /Journal file system is full/, 'the text must be quoted');
+  });
+
+  it('logs it ONCE, not every poll', () => {
+    // Same reasoning as #warnedOverrides: a persistent alert would otherwise fill the log.
+    const lines: string[] = [];
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), (m) => lines.push(m));
+    let at = T0;
+    for (let i = 0; i < 20; i += 1) {
+      engine.applyPoll(withAlert('License limit exceeded'), at);
+      at += POLL_MS;
+    }
+    assert.equal(lines.length, 1, `logged ${lines.length} times across 20 polls`);
+  });
+
+  it('does NOT log an alert that does name a host', () => {
+    // Otherwise the log would fire on exactly the alerts that work correctly.
+    const lines: string[] = [];
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), (m) => lines.push(m));
+    engine.applyPoll(withAlert('Cloud API failed to send message'), T0);
+    engine.applyPoll(withAlert('Cloud API failed to send message'), T0 + POLL_MS);
+
+    assert.deepEqual(lines, [], 'a host-attributable alert is handled, not reported as a gap');
+    assert.ok(
+      engine.snapshot().findings.some((f) => f.type === 'system_alert'),
+      'and it must still fire',
+    );
+  });
+});
