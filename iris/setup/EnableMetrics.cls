@@ -97,7 +97,12 @@ ClassMethod CheckActivityOperation()
     while rs.Next() {
         if rs.Data("ClassName") = "Ens.Activity.Operation.Local" {
             set found = 1
-            write "  OK: Ens.Activity.Operation.Local is present as '", rs.Data("Name"), "'",!
+            // ConfigName, not Name. EnumerateConfigItems returns 13 columns and the item
+            // name is ConfigName -- rs.Data("Name") is undefined, so this line threw
+            // <UNDEFINED> for anyone who ran the documented verification against a
+            // production that DID have the activity reporter, i.e. the success path only.
+            // Found by FirstBoot.cls calling this method (#72).
+            write "  OK: Ens.Activity.Operation.Local is present as '", rs.Data("ConfigName"), "'",!
         }
     }
 
