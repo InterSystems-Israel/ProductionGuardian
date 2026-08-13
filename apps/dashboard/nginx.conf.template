@@ -1,0 +1,76 @@
+# Serves the built dashboard and proxies the findings API, so the browser only ever
+# talks to one origin.
+#
+# WHY PROXY AT ALL. The browser runs on the HOST, not inside the compose network, so it
+# cannot resolve `detection-engine`. Two ways out: point the app straight at a published
+# port and rely on CORS, or proxy here. Proxying wins for the same reason it does in
+# vite.config.ts -- "CORS is never the dashboard's problem" -- and it keeps
+# VITE_HEALTHSCAN_BASE_URL as the relative `/api/healthscan` in every environment. A
+# base URL baked at build time with a host-side hostname in it is the alternative, and
+# it would make the image environment-specific.
+#
+# HEALTHSCAN_UPSTREAM is substituted at container start by the nginx image's envsubst
+# entrypoint (host:port, no scheme). Defaults are in the Dockerfile.
+server {
+    listen 80;
+    server_name _;
+
+    # Single self-contained file: `base: './'` + viteSingleFile(), the same artefact the
+    # file:// fallback uses (CLAUDE.md §6). Nothing else to serve.
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # No caching of the entry document. Everything is inlined into it, so a cached
+    # index.html is a cached application -- and a presenter reloading after a rebuild
+    # getting the previous build is the worst possible five seconds.
+    location = /index.html {
+        add_header Cache-Control "no-store" always;
+    }
+
+    location / {
+        try_files $uri /index.html;
+    }
+
+    location /api/healthscan/ {
+        # RESOLVE AT REQUEST TIME, NOT AT CONFIG LOAD. A literal hostname in proxy_pass is
+        # resolved when nginx reads its config, so this container refused to start at all
+        # while the engine was absent -- `host not found in upstream`, exit before serving
+        # anything. That is the wrong failure: demo mode needs no backend, so the dashboard
+        # is useful the moment it is up, and IRIS takes minutes to initialise behind it.
+        #
+        # Assigning to a variable defers resolution to each request via the resolver below,
+        # so this starts immediately, serves demo mode, returns 502 on the live path until
+        # the engine appears, and recovers on its own without a restart. It also means the
+        # dashboard needs no `depends_on` in compose.
+        #
+        # NGINX_LOCAL_RESOLVERS is derived from the container's /etc/resolv.conf by the
+        # image's own 15-local-resolvers.envsh, which exists for exactly this case. Do NOT
+        # hardcode 127.0.0.11: Docker's embedded DNS is only present on a user-defined
+        # network, so a hardcoded one works under compose and fails on `docker run` with
+        # `Connection refused` and a 502 that looks like the engine is down. Measured.
+        #
+        # `valid=10s` so a restarted engine's new address is picked up rather than cached
+        # for nginx's lifetime.
+        resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+        set $healthscan_upstream "http://${HEALTHSCAN_UPSTREAM}";
+
+        # $request_uri, so the original path AND query string are passed through
+        # unchanged -- with a variable in proxy_pass, nginx does not append the matched
+        # location automatically.
+        proxy_pass $healthscan_upstream$request_uri;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # The dashboard polls every 2s and gives up on its own (usePolling aborts each
+        # tick before the next), so a hung upstream must not tie up a worker for the
+        # nginx default of 60s. Shorter than the poll interval would abort healthy
+        # requests; this is comfortably above it and well below the default.
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+
+        # Findings change every poll. A cached 200 here would freeze the dashboard while
+        # it looked live, which is the one failure mode worse than an error banner.
+        add_header Cache-Control "no-store" always;
+    }
+}
