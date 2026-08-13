@@ -171,6 +171,30 @@ async function pollMetrics() {
 
     setMetricsSnapshot(snapshot);
 
+    // iris_system_alerts_new is a gauge on THIS endpoint saying whether alerts are waiting
+    // to be collected -- spec §1.3 names it as a source for system_alert alongside
+    // /api/monitor/alerts, and it was parsed but never acted on (#67).
+    //
+    // Collect NOW rather than waiting for the blind 30s tick. Two reasons:
+    //   1. latency -- system_alert was up to 30s behind the other seven finding types,
+    //      which #44's four-stage model did not account for at all
+    //   2. /api/monitor/alerts is CONSUME-ON-READ, so a blind poll touches a one-shot
+    //      resource twice a minute whether or not anything is there. Reading when the flag
+    //      says there is something narrows the window in which an SMP session or a stray
+    //      curl can steal an alert from us
+    //
+    // ADDITIVE, deliberately: the blind interval below is untouched. A missed flag
+    // transition then costs latency, not the alert -- whereas replacing the blind poll
+    // would make a missed transition mean the alert is never collected at all. Strictly
+    // more collection, never less (agreed with Dev C on #67).
+    if (snapshot.systemAlertsNew > 0) {
+      console.log(
+        `[poller] iris_system_alerts_new=${snapshot.systemAlertsNew} — collecting alerts now ` +
+        `instead of waiting up to ${ALERTS_INTERVAL}ms`
+      );
+      await pollAlerts();
+    }
+
     const hs = snapshot._meta.hostStatus;
     let suffix = '';
     if (!IRIS_HOSTSTATUS_PATH) {
