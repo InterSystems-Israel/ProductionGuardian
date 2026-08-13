@@ -276,15 +276,22 @@ stops working.
 | `throughput_drop` | Stop the HL7Generator and let traffic drain | Rate falls to 0, under the 0.4 baseline fraction. Needs baseline ≥ 0.1 msg/s — generating every 2 s gives 0.5 msg/s |
 | `slow_processing` | Add `hang 1` to the top of `PatientDemographicsOperation.OnMessage` (that class is `Cloud API`), recompile | Gate is the greater of the 0.3 s `Cloud API` floor and 3× its ~0.05 s baseline, so 0.3 s. A 1 s hang clears it. `hang 5` also works but backs the queue up behind it |
 | `growing_queue_wait` | Same `hang 1` — watch `Cloud API` while the generator keeps running | Messages wait behind the hung one. Floor is 0.15 s and 3× the ~0.03 s baseline, so a 1 s hang clears it once traffic overlaps |
-| `elevated_error_rate` | Set `Cloud API`'s `HTTPPort` to a closed port (e.g. 59999) | Every message errors. Floor is 1.0 errors/min and 3× baseline; at one message per 2 s that is ~30/min |
+| `elevated_error_rate` | Set `Cloud API`'s `HTTPPort` to a closed port (e.g. 59999) **and make failure fast** — `FailureTimeout`, `RetryInterval`, `ConnectTimeout`, `ResponseTimeout` all to `1` | Floor is 1.0 errors/min and 3× baseline. **The timeouts are the point:** at the default 15 s `FailureTimeout` each message burns 15 s before erroring, so the rate stays *under* the floor and nothing fires. With them at 1 s, measured live: `12.0 errors/min, 14x baseline` |
 | `stalled_host` | Disable `Cloud API` so its queue holds messages, then wait | Needs no activity for `inactiveSeconds` (300) **while messages are queued** — so it takes **5 minutes**, and `requiresQueued` means an idle-but-empty host will not do |
-| `queue_buildup` | **Does not currently fire — see the caveat below.** The queue builds; no finding appears | Depth must exceed the absolute floor of **50** *and* 5× baseline. Clearing the floor is easy; the 5× is unreachable against a growing queue |
-| `system_alert` | Enable `Alert on Error` on `Cloud API`, then induce the error-rate trigger above | An errored message with alerting on writes an alert that `/api/monitor/alerts` serves. This is the only rule that can produce an `info` finding |
+| `queue_buildup` | Use the `elevated_error_rate` trigger below — a closed port makes `Cloud API` retry, and the queue runs away past a baseline it already learned. **Disabling the host does NOT work**; see the caveat | Depth must exceed the floor of **50** *and* 5× baseline. Measured live: `Queue depth 110 is 14x baseline` against a baseline of 7.97 |
+| `system_alert` | Write an alert-severity entry that **names a host**: `do ##class(%SYS.System).WriteToConsoleLog("ERROR <Ens>ErrGeneral: Cloud API failed to send message",0,2)` from `%SYS`. **`Alert on Error` does NOT work — see #57** | `/api/monitor/alerts` serves the instance's alert log, and the rule matches an alert to a host by the host name appearing in the message text. Measured live at `info` severity — the only rule that produces an `info` finding |
 
-Disabling a host induces `dead_host` too, so the `stalled_host` and `queue_buildup`
-triggers each surface two findings. That is correct behaviour, not a duplicate.
+Disabling a host induces `dead_host` too, so the `stalled_host` trigger surfaces two
+findings. That is correct behaviour, not a duplicate — and the closed-port trigger is the
+most productive single action in this table, surfacing four at once with the fast timeouts
+(`dead_host`, `elevated_error_rate`, `throughput_drop`, `growing_queue_wait`) or reaching
+`queue_buildup` if you leave the default 15 s timeouts in place instead.
 
-> **`queue_buildup` caveat — the plumbing is fixed, the rule still cannot fire (#43).**
+**All eight types have been observed against real IRIS** on the deployed
+`ProductionGuardian.LabDemo.Production` (2026-08-12). Where a row below says "measured
+live", the quoted numbers are from that run rather than from a fixture.
+
+> **`queue_buildup` caveat — it fires, but only when a baseline existed first (#43).**
 >
 > The old caveat here said per-host depth was missing from the Prometheus text and the
 > engine therefore could not see the queue. **That half is solved:** #12 landed, the proxy
@@ -292,18 +299,23 @@ triggers each surface two findings. That is correct behaviour, not a duplicate.
 > receives real numbers — `dead_host` reports them in its message (*"Cloud API is Disabled
 > with 6 message(s) queued"*).
 >
-> **But the rule still does not fire, for a different reason.** Measured on live LABDEMO:
-> disabling `Cloud API` grew the queue 6 → 122 and `queue_buildup` stayed silent the whole
-> way, well past its floor of 50. The rolling baseline rises *with* the queue, so the ratio
-> never reaches the 5× gate — and **no generator rate changes that**, because scaling a ramp
-> scales its mean identically (pinned in `services/detection-engine/test/baseline.test.ts`).
-> The closed form and the multiplier values that *would* fire are worked out on #45; that
-> argument belongs there and in #25, not in a README.
+> **Which trigger you use decides whether it fires**, and the deciding factor is whether a
+> non-zero baseline existed *before* the depth ran away — not how fast the queue grows.
 >
-> So there is currently **no way to induce this finding on a live instance**, and the old
-> `Run(80, 0.2)` instruction did not work. Demo mode still shows all eight types. Tracked
-> in #43; the fix changes what the baseline is compared against and belongs with #25's
-> thresholds ADR rather than a tuning change.
+> | | **Disable** the host | **Break its target** (closed port) |
+> |---|---|---|
+> | host behaviour | stops consuming at once | stays up and keeps retrying |
+> | queue while the baseline warms | 0, then ramps | small but real |
+> | baseline when depth runs away | rises *with* the ramp | already learned (7.97 measured) |
+> | ratio | ceiling **2.18×**, under the 5× gate | **13.8×** — fires |
+>
+> So disabling `Cloud API` grew the queue 6 → 122 in silence, and the old `Run(80, 0.2)`
+> instruction never worked. The closed-port trigger produced `Queue depth 110 is 14x
+> baseline` live. A queue that builds **from idle** is still invisible, which is the open
+> half of #43 — and it is the `dead_host`-adjacent case, where the queue is most obviously a
+> problem. The ramp arithmetic is pinned in
+> `services/detection-engine/test/baseline.test.ts`; the closed form is on #45 and the fix
+> belongs with #25's thresholds ADR.
 >
 > The lesson worth keeping: the fixture at
 > `services/detection-engine/fixtures/proxy/queue-buildup.json` jumps 0 → 486 in a single
@@ -311,6 +323,23 @@ triggers each surface two findings. That is correct behaviour, not a duplicate.
 > ramps. **The fixture is honest about the value and wrong about the shape**, and this rule
 > is sensitive to shape — which is why the whole test suite was green while the live path
 > was broken.
+
+> **`system_alert` caveat — `Alert on Error` is inert here (#57).** `AlertOnError` routes an
+> alert to an **`Ens.Alert` business host**, and `Production.cls` defines none. So the setting
+> is silently ineffective: measured with 92 real errors on `Cloud API`,
+> `Ens_Alerting.Alert` had **0 rows** and `/api/monitor/alerts` stayed `[]`. Nothing warns you
+> — IRIS simply has nowhere to send the alert.
+>
+> The rule consumes the **instance alert log**, which is a different source, and it matches an
+> alert to a host by the **host name appearing in the message text** (`detect/engine.ts`). An
+> alert that names no host produces no finding — verified, my first test alert was correctly
+> ignored for exactly that reason.
+>
+> **Do not curl `/api/monitor/alerts` to check.** It is consume-on-read: reading it clears
+> what it returns. Observed directly — the proxy captured an alert and the very next read of
+> the IRIS endpoint returned `[]`. The proxy accumulates them in memory
+> (`services/metrics-proxy/src/cache.js`), so read `/proxy/alerts` on :3001 instead. Restarting
+> the proxy is how you clear a test alert, since they are not persisted.
 
 After the `slow_processing` / `growing_queue_wait` test, **remove the `hang`** and
 recompile — a hang left in place poisons every later baseline.
