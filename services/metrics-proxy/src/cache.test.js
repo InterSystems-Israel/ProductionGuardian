@@ -101,6 +101,52 @@ describe('alerts buffer — accumulation', () => {
   });
 });
 
+describe('alerts buffer — two concurrent readers (#69)', () => {
+  beforeEach(() => _resetForTests());
+
+  // #69 added a second caller of pollAlerts() -- the iris_system_alerts_new flag path --
+  // alongside the 30s interval. So two reads of a CONSUME-ON-READ endpoint can now overlap,
+  // and exactly one of them gets the alert while the other gets []. A change motivated by
+  // reducing races on that endpoint must not introduce one.
+  //
+  // WHAT ACTUALLY MAKES IT SAFE, having tested it: the buffer is APPEND-ONLY. `_alerts` is
+  // never reassigned by a read -- only pushed to, trimmed when over the cap, and cleared by
+  // _resetForTests(). So an empty read has nothing to clobber with.
+  //
+  // @tanifgit and I both identified `if (!snapshot.alerts.length) return;` as the
+  // load-bearing line. It is not: removing it leaves all 103 tests passing, because
+  // iterating an empty array is a no-op. It is an early-out, not a guard. Recording that
+  // because a comment naming the wrong protective mechanism is worse than none -- someone
+  // hardening this would preserve the return and feel safe, when the property to preserve is
+  // append-only.
+  it('keeps the alert whichever concurrent read lands second', () => {
+    setAlertsSnapshot(poll([{ message: 'Cloud API failed' }], '2026-08-13T10:00:00.000Z'));
+    setAlertsSnapshot(poll([], '2026-08-13T10:00:01.000Z'));
+    assert.equal(getAlertsSnapshot().alerts.length, 1, 'the empty read must not clobber it');
+
+    _resetForTests();
+
+    // And the other order, because "whichever lands second" is the whole claim.
+    setAlertsSnapshot(poll([], '2026-08-13T10:00:00.000Z'));
+    setAlertsSnapshot(poll([{ message: 'Cloud API failed' }], '2026-08-13T10:00:01.000Z'));
+    assert.equal(getAlertsSnapshot().alerts.length, 1, 'order must not matter');
+  });
+
+  it('newInLastPoll can briefly understate, while count does not', () => {
+    // The one cosmetic consequence: `_alertsSnapshot = snapshot` runs before the early
+    // return, so a racing empty read leaves newInLastPoll at 0 for one cycle even though
+    // the alert WAS collected. Pinned rather than fixed -- count comes from the buffer per
+    // the contract, so nothing user-visible is wrong, and #67's argument was partly about
+    // diagnostics being trustworthy, so the one field that can understate should be known.
+    setAlertsSnapshot(poll([{ message: 'Cloud API failed' }], '2026-08-13T10:00:00.000Z'));
+    setAlertsSnapshot(poll([], '2026-08-13T10:00:01.000Z'));
+
+    const out = getAlertsSnapshot();
+    assert.equal(out._meta.newInLastPoll, 0, 'understates for one cycle, by design');
+    assert.equal(out.alerts.length, 1, 'but the alert is there');
+  });
+});
+
 describe('alerts buffer — bounded growth', () => {
   beforeEach(() => _resetForTests());
 

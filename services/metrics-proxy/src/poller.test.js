@@ -51,6 +51,45 @@ function requestedPath(basePath) {
  * something under IRIS_BASE_PATH, so which prefix applies to which URL is the thing
  * most likely to be got wrong and the least visible when it is.
  */
+/**
+ * One metrics cycle where the metrics body reports `iris_system_alerts_new = flagValue`.
+ * Returns every path requested, so a test can assert whether /api/monitor/alerts was
+ * collected within that cycle rather than left to the blind interval (#67).
+ */
+function pathsForAlertsFlag(flagValue) {
+  const script = `
+    const http = require('http');
+    const seen = [];
+    const server = http.createServer((req, res) => {
+      seen.push(req.url);
+      if (req.url.includes('hoststatus')) {
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({hosts: [], _meta: {productionState: 'Running'}}));
+      } else if (req.url.includes('alerts')) {
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end('[]');
+      } else {
+        res.writeHead(200, {'Content-Type': 'text/plain'});
+        res.end('iris_system_alerts_new ${flagValue}\\n');
+      }
+    });
+    server.listen(0, '127.0.0.1', async () => {
+      process.env.IRIS_HOST = '127.0.0.1';
+      process.env.IRIS_PORT = String(server.address().port);
+      const { pollMetrics } = require(${JSON.stringify(path.join(__dirname, "poller.js"))});
+      await pollMetrics();
+      process.stdout.write('<<<' + JSON.stringify(seen) + '>>>');
+      server.close();
+    });
+  `;
+  const out = execFileSync(process.execPath, ['-e', script], {
+    env: { ...process.env, IRIS_HOSTSTATUS_PATH: '' },
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+  return JSON.parse(out.slice(out.indexOf('<<<') + 3, out.lastIndexOf('>>>')));
+}
+
 function requestedPathsForCycle(env) {
   // The result is fenced in a sentinel because the poller logs to stdout itself, and
   // reported exactly once after pollMetrics resolves — awaiting it is what guarantees
@@ -139,5 +178,30 @@ describe('IRIS_BASE_PATH', () => {
 
   it('ignores surrounding whitespace from a hand-edited .env', () => {
     assert.equal(requestedPath('  /iris4health_2024_1  '), '/iris4health_2024_1/api/monitor/metrics');
+  });
+});
+
+describe('iris_system_alerts_new triggers immediate alert collection (#67)', () => {
+  it('collects alerts within the metrics cycle when the flag is set', () => {
+    // Spec §1.3 names this gauge as a source for system_alert alongside the alerts
+    // endpoint. It was parsed and carried in the snapshot but never acted on, so
+    // system_alert lagged the other seven finding types by up to ALERTS_POLL_INTERVAL_MS
+    // (30s) — a term #44's four-stage latency model did not account for at all.
+    const paths = pathsForAlertsFlag(1);
+    assert.ok(
+      paths.some((p) => p.includes('/api/monitor/alerts')),
+      `expected the alerts endpoint to be collected in this cycle, saw ${JSON.stringify(paths)}`,
+    );
+  });
+
+  it('does NOT collect when the flag is zero', () => {
+    // The consumption half: /api/monitor/alerts is consume-on-read, so a poll when nothing
+    // is waiting is a needless touch of a one-shot resource — and a window in which an SMP
+    // session or a stray curl can steal an alert from the proxy.
+    const paths = pathsForAlertsFlag(0);
+    assert.ok(
+      !paths.some((p) => p.includes('/api/monitor/alerts')),
+      `expected no alerts request when nothing is waiting, saw ${JSON.stringify(paths)}`,
+    );
   });
 });
