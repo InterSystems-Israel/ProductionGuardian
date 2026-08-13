@@ -45,6 +45,23 @@ Worse, the two timers are independent `setInterval`s in separate processes, so t
 sitting at its floor, which means the unfavourable case is not merely possible but eventually
 certain — and it arrives hours into a run rather than at startup, where no restart reproduces it.
 
+**This stopped being a prediction while the ADR was in review.** Halving the proxy poll to
+2.5 s (#75) re-phased the two timers, and the debounce immediately left the floor it had been
+pinned to:
+
+| | debounce, measured |
+|---|---|
+| proxy at 5000 ms, n=7 | 5.64–7.35 s — six of seven within 0.07 s of each other |
+| proxy at 2500 ms, n=2 | **6.43–8.86 s** — 8.86 s is the highest recorded on this project |
+
+So the sweep was demonstrated in one restart rather than over hours, and the two runs after
+that change came out at **10.18 s and 11.32 s** — worse than the mean above, because the proxy
+improvement (−0.66 s) was smaller than the debounce re-phasing (+1.5 to +3.2 s). The 5.64–5.71 s
+cluster was an artifact, as this section already argued; #75 is the evidence rather than the
+argument. It also means **8.86 s is the first sample from the upper half of `[5, 10)`**, so the
+arithmetic bound below is not a hypothetical worst case being defended against measurements —
+the measurements have started walking into it.
+
 So the honest bound is the arithmetic one:
 
 ```
