@@ -417,7 +417,7 @@ From §4.5 of the MVP plan, in order:
 | # | Task | Est. | Done when |
 |---|---|---|---|
 | 1 | Dashboard against mocked schema — host grid, findings list, severity summary | 1.5 d | Renders every host the API returns, whatever the count, and all fixture findings; every state designed; `tsc` clean |
-| 2 | Live polling + demo/live toggle (`?mode=live`) | 0.75 d | Visible change reflected within 10 s; API failure degrades to last-good + banner, never blanks |
+| 2 | Live polling + demo/live toggle (`?mode=live`) | 0.75 d | Visible change reflected within the latency stated in **ADR 0005** (not restated here); API failure degrades to last-good + banner, never blanks |
 | 3 | Finding detail view | 0.5 d | Click a finding → current vs. baseline, metric, timestamp; keyboard accessible; drawer survives polls |
 | 4 | Static fallback build | 0.5 d | `dist/index.html` opens from `file://` in demo mode |
 | ~~4b~~ | ~~Screencast~~ | — | **DESCOPED from MVP 1** — after MVP 1, see below |
@@ -428,6 +428,12 @@ From §4.5 of the MVP plan, in order:
 `docs/demo/` therefore does not exist and should not be created before MVP 1 closes. If a request asks for the cue sheet or the screencast, say it is descoped rather than building it — the same rule §1.1 applies to the later modules.
 
 **Overall acceptance (from the MVP doc):** *dashboard renders all hosts + findings live; updates within 10 s of a change; fallback to demo mode is seamless.*
+
+**The middle clause is not met, deliberately and on the record — see [ADR 0005](../../docs/decisions/0005-latency-bar.md), which is the only place the restated criterion is written down.** Reaching 10 s would mean lowering `sustainedSeconds`, i.e. lowering the false-positive protection MVP §6 names as the top risk; that was declined twice on the record (#44, #64). The dashboard poll was the one term gated by no invariant, and it was spent (5 s → 2 s, #68).
+
+The quote above is left verbatim because the MVP doc is read-only (root `CLAUDE.md` §3) — this note is the deviation record, not an edit to the criterion.
+
+**Do not restate the latency figures anywhere in this directory**, including here: link the ADR. Three copied values in this repo have already gone stale — the backoff ladder and the engine poll floor in `README.md`, and the bare "within 10 s" that used to sit in the task 2 row above.
 
 Sequencing note: tasks 1–3 need only the contract, so they proceed regardless of backend readiness. Task 2's live path is verifiable against a two-endpoint stub returning fixture JSON — build that stub inside `apps/dashboard/` if Dev B's API is not up yet, and delete it once it is.
 

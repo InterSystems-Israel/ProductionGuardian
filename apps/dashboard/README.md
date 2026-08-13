@@ -56,8 +56,14 @@ can always tell what you are looking at.
 
 ## Live mode
 
-The dashboard polls both endpoints every 5 s (`VITE_POLL_INTERVAL_MS`), pauses
+The dashboard polls both endpoints every 2 s (`VITE_POLL_INTERVAL_MS`), pauses
 while the tab is hidden, and refetches the moment it returns.
+
+2 s, not 5 s: this poll is the last stage before the screen and the only one gated
+by no invariant, so it is the one latency term we could spend (#68). What that does
+and does not buy for the end-to-end figure is
+[ADR 0005](../../docs/decisions/0005-latency-bar.md) — which is the only place that
+figure is written down, deliberately, so there is nothing here to go stale.
 
 Dev B's detection engine serves both endpoints on `:3002`. It runs with **nothing
 on `:3001`** — it replays captured LABDEMO fixtures through healthy → degrading →
@@ -67,12 +73,20 @@ dead → recovery, so findings appear *and clear* without IRIS being involved:
 cd ../../services/detection-engine && npm install && npm start
 ```
 
-The default 10 s poll means the baseline needs ~14 polls to warm before the first
-finding is confirmed. To watch a whole cycle without waiting, compress it:
+The engine's default 5 s poll means the baseline needs ~14 polls to warm before the
+first finding is confirmed. To watch a whole cycle without waiting, compress it —
+**but not below 2000 ms**:
 
 ```bash
-POLL_INTERVAL_MS=700 npm start     # full appear-and-clear cycle in ~30 s
+POLL_INTERVAL_MS=2000 npm start    # full appear-and-clear cycle, still emits
 ```
+
+`POLL_INTERVAL_MS` has floors, and they do not fail loudly. The engine's
+`sustainedSeconds` gate needs `(sustainedSamples - 1) x interval > sustainedSeconds`,
+so **4500 ms already breaks an invariant** and finding types stop emitting entirely
+below ~1750 ms (#64, #65). This file used to suggest `700`, at which **nothing fires
+at all** — you get a warm baseline, a healthy grid, and no findings, which reads as a
+broken dashboard rather than a poll rate below its floor.
 
 Then open <http://localhost:5173/?mode=live>, or click **Live** in the header.
 The mode is reflected in the URL, so it's shareable.
@@ -82,10 +96,13 @@ The mode is reflected in the URL, so it's shareable.
 This is the demo-reliability path, and the one worth testing by hand:
 
 1. Start the engine, open `?mode=live`, confirm the teal **LIVE** pill and data flowing.
-2. **Kill the engine.** Within ~5 s: a red banner appears, the last-good data stays
+2. **Kill the engine.** Within ~2 s: a red banner appears, the last-good data stays
    on screen but dimmed, labelled `Showing data as of HH:MM:SS UTC`. **It must
    never blank.**
-3. Wait. Polling backs off 5 s → 10 s → 20 s → 30 s rather than hammering. At
+3. Wait. Polling backs off by **doubling from the poll interval**, capped at 30 s,
+   rather than hammering — at the default 2 s that is 4 s → 8 s → 16 s → 30 s. The
+   ladder is derived from the interval rather than fixed, so it moves with
+   `VITE_POLL_INTERVAL_MS`; don't re-copy it here when that changes. At
    **3 consecutive failures** a *Switch to demo mode* button appears — the
    on-stage escape hatch.
 4. **Restart the engine.** The banner clears on the next successful poll, with no
