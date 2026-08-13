@@ -72,6 +72,10 @@ function evaluate(
       errored: h.errored,
       avgProcessingTime: h.avgProcessingTime,
       avgQueueingTime: h.avgQueueingTime,
+      // Derived back from the published timestamp so existing cases keep the idle time they
+      // set via `lastActivity`. A test opts into the unmeasured path with
+      // `raw: { lastActivityElapsedSeconds: null }`.
+      lastActivityElapsedSeconds: (extra.now ?? NOW) / 1000 - Date.parse(h.lastActivity) / 1000,
       ...extra.raw,
     },
     baselines,
