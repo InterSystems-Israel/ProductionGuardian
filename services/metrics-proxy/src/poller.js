@@ -48,11 +48,25 @@ function normalizeBasePath(raw) {
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }
 
-// 5s, halved from 10s for #44's latency budget: the engine cannot see a change sooner
-// than we do, so this was one of the two 10s stages that put the chain over the 10s
-// acceptance bar. /api/monitor/metrics is a cheap read, so 2x the scrape rate is fine.
-// Alerts stay at 30s -- they are events with their own timestamps, not a sampled value.
-const METRICS_INTERVAL = parseInt(process.env.METRICS_POLL_INTERVAL_MS || '5000', 10);
+// 2500ms. Halved twice now for #44's latency budget -- 10s -> 5s -> 2.5s -- because this is
+// the only term in the four-stage chain gated by nothing but the IRIS scrape rate. The
+// engine's interval has a hard floor (#64: 4500 already breaks an invariant); this does not.
+//
+// Measured across 7 end-to-end runs at 5000ms, staleness ranged 0.33-3.93s, and the 3.93s
+// sample produced the only run over the bar. Halving the interval halves that range.
+//
+// It does NOT reach the 10s bar and is not claimed to: the debounce dominates and is the
+// term we deliberately will not shorten (MVP §6 false positives).
+//
+// WHY 2500 AND NOT 3000: 5000 is a multiple of 2500, so the proxy and engine timers stay
+// HARMONICALLY related and their phase relationship stays stable. A non-divisor would
+// decorrelate them, making the debounce sweep its whole [5,10) range over hours
+// (@tanifgit, #44). Stability is preferable for a demo: behaving the same at hour 3 as at
+// minute 3 is worth more than an averaged-out worst case.
+//
+// Alerts stay at 30s -- events with their own timestamps, not a sampled value, and #69's
+// flag-triggered collection is what actually made them timely.
+const METRICS_INTERVAL = parseInt(process.env.METRICS_POLL_INTERVAL_MS || '2500', 10);
 const ALERTS_INTERVAL  = parseInt(process.env.ALERTS_POLL_INTERVAL_MS  || '30000', 10);
 
 /**
