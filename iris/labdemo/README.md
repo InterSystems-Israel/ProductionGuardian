@@ -30,6 +30,7 @@ the `<Item Name="...">` set in `Production.cls` is authoritative.
 | `REST/HostStatusDispatcher.cls` | %CSP.REST dispatcher — GET /labdemo/monitor/hoststatus, per-host queue depth + error counts for the metrics proxy (read-only) |
 | `Data/PatientRecord.cls` | %Persistent table — upsert keyed on PatientID |
 | `HL7Generator.cls` | Writes synthetic ADT/ORU .hl7 files to drop dir |
+| `Triggers.cls` | **Trigger toggles** — one idempotent call per finding type, plus `Reset()` and `Status()` |
 
 ---
 
@@ -241,6 +242,20 @@ write rec.LastName, " ", rec.FirstName, " (", rec.UpdateCount, " updates)"
 Only `EMR Source`, `Lab Router` and `Cloud API` exist **in `Production.cls`**, so every trigger targets one of
 those three. Use the config item names exactly.
 
+**Use `Triggers.cls` rather than the Management Portal.** Every row below is one call, each is
+idempotent, each prints what it changed and what it is still waiting for, and
+`Triggers.Reset()` undoes all of them:
+
+```
+do ##class(ProductionGuardian.LabDemo.Triggers).Status()          // what is armed
+do ##class(ProductionGuardian.LabDemo.Triggers).ErrorRate()       // four findings at once
+do ##class(ProductionGuardian.LabDemo.Triggers).Reset()           // undo everything
+```
+
+It refuses to act unless `ProductionGuardian.LabDemo.Production` is the running one, because
+these toggles manipulate item names from `Production.cls` and would silently edit the wrong
+thing otherwise (#34).
+
 **Three things to know before you start, or nothing will fire and it will look broken.**
 
 *Check which production is running before editing a class.* Every trigger below assumes
@@ -272,14 +287,14 @@ stops working.
 
 | Finding type | How to induce | Why it clears the threshold |
 |---|---|---|
-| `dead_host` | Disable `EMR Source` in the Management Portal | Absolute rule: fires on status `Disabled`. No baseline needed |
-| `throughput_drop` | Stop the HL7Generator and let traffic drain | Rate falls to 0, under the 0.4 baseline fraction. Needs baseline ≥ 0.1 msg/s — generating every 2 s gives 0.5 msg/s |
-| `slow_processing` | Add `hang 1` to the top of `PatientDemographicsOperation.OnMessage` (that class is `Cloud API`), recompile | Gate is the greater of the 0.3 s `Cloud API` floor and 3× its ~0.05 s baseline, so 0.3 s. A 1 s hang clears it. `hang 5` also works but backs the queue up behind it |
-| `growing_queue_wait` | Same `hang 1` — watch `Cloud API` while the generator keeps running | Messages wait behind the hung one. Floor is 0.15 s and 3× the ~0.03 s baseline, so a 1 s hang clears it once traffic overlaps |
-| `elevated_error_rate` | Set `Cloud API`'s `HTTPPort` to a closed port (e.g. 59999) **and make failure fast** — `FailureTimeout`, `RetryInterval`, `ConnectTimeout`, `ResponseTimeout` all to `1` | Floor is 1.0 errors/min and 3× baseline. **The timeouts are the point:** at the default 15 s `FailureTimeout` each message burns 15 s before erroring, so the rate stays *under* the floor and nothing fires. With them at 1 s, measured live: `12.0 errors/min, 14x baseline` |
-| `stalled_host` | Disable `Cloud API` so its queue holds messages, then wait | Needs no activity for `inactiveSeconds` (300) **while messages are queued** — so it takes **5 minutes**, and `requiresQueued` means an idle-but-empty host will not do |
-| `queue_buildup` | Use the `elevated_error_rate` trigger below — a closed port makes `Cloud API` retry, and the queue runs away past a baseline it already learned. **Disabling the host does NOT work**; see the caveat | Depth must exceed the floor of **50** *and* 5× baseline. Measured live: `Queue depth 110 is 14x baseline` against a baseline of 7.97 |
-| `system_alert` | Write an alert-severity entry that **names a host**: `do ##class(%SYS.System).WriteToConsoleLog("ERROR <Ens>ErrGeneral: Cloud API failed to send message",0,2)` from `%SYS`. **`Alert on Error` does NOT work — see #57** | `/api/monitor/alerts` serves the instance's alert log, and the rule matches an alert to a host by the host name appearing in the message text. Measured live at `info` severity — the only rule that produces an `info` finding |
+| `dead_host` | `do ##class(ProductionGuardian.LabDemo.Triggers).DeadHost()` | Absolute rule: fires on status `Disabled`. No baseline needed |
+| `throughput_drop` | `...Triggers).ThroughputDrop()` — stops `EMR Source`, so it fires alone | Rate falls to 0, under the 0.4 baseline fraction. Needs baseline ≥ 0.1 msg/s — generating every 2 s gives 0.5 msg/s |
+| `slow_processing` | `...Triggers).SlowProcessing(1000)` — **no recompile**; measured live at `840ms is 11x baseline` | Gate is the greater of the 0.3 s `Cloud API` floor and 3× its ~0.05 s baseline, so 0.3 s. A 1 s hang clears it. `hang 5` also works but backs the queue up behind it |
+| `growing_queue_wait` | Same `SlowProcessing(1000)`; measured live at `7.04s is 5.0x baseline` | Messages wait behind the hung one. Floor is 0.15 s and 3× the ~0.03 s baseline, so a 1 s hang clears it once traffic overlaps |
+| `elevated_error_rate` | `...Triggers).ErrorRate()` — sets the closed port **and** all four timeouts together | Floor is 1.0 errors/min and 3× baseline. **The timeouts are the point:** at the default 15 s `FailureTimeout` each message burns 15 s before erroring, so the rate stays *under* the floor and nothing fires. With them at 1 s, measured live: `12.0 errors/min, 14x baseline` |
+| `stalled_host` | `...Triggers).StalledHost()` — same toggle as `dead_host`, then wait | Needs no activity for `inactiveSeconds` (300) **while messages are queued** — so it takes **5 minutes**, and `requiresQueued` means an idle-but-empty host will not do |
+| `queue_buildup` | `...Triggers).QueueBuildup()` — the same toggle as `ErrorRate()`, deliberately. **Disabling the host does NOT work**; see the caveat | Depth must exceed the floor of **50** *and* 5× baseline. Measured live: `Queue depth 110 is 14x baseline` against a baseline of 7.97 |
+| `system_alert` | `...Triggers).SystemAlert()` | Writes an alert-severity entry **naming a host** — the name is what attributes it, so an alert about the instance produces nothing (#61). **`Alert on Error` does NOT work** (#57), and **`Reset()` cannot undo this one**: the proxy buffers alerts in memory, so restart it. Measured live at `info` severity — the only rule that produces one |
 
 Disabling a host induces `dead_host` too, so the `stalled_host` trigger surfaces two
 findings. That is correct behaviour, not a duplicate — and the closed-port trigger is the
@@ -345,8 +360,10 @@ live", the quoted numbers are from that run rather than from a fixture.
 > (`services/metrics-proxy/src/cache.js`), so read `/proxy/alerts` on :3001 instead. Restarting
 > the proxy is how you clear a test alert, since they are not persisted.
 
-After the `slow_processing` / `growing_queue_wait` test, **remove the `hang`** and
-recompile — a hang left in place poisons every later baseline.
+After any test, run **`Triggers.Reset()`**. It clears the injected delay, restores the port
+and timeouts, and re-enables every host. The old instruction here was to remove a `hang`
+from `PatientDemographicsOperation` and recompile — the delay is now a global the
+operation reads at runtime, so there is nothing to leave behind in source.
 
 ---
 

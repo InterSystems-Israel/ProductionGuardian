@@ -85,4 +85,12 @@ npm run mock
 1. Proxy returns documented per-host JSON within 2 s of poll.
 2. Parser handles all 8 metric types listed in spec §1.3.
 3. Each of the 8 finding types can be induced on demand via trigger toggles.
+   **Met by `iris/labdemo/Triggers.cls`** — one idempotent method per type, `Reset()` to undo
+   all of them, `Status()` to report what is armed. Until 2026-08-13 this criterion was met by
+   a table of manual steps in `README.md`, which is not the same thing: two of them required
+   editing and recompiling `PatientDemographicsOperation` mid-demo, and one required five
+   settings changed together. Verified live — every method induces its finding against the
+   running engine, and `Reset()` clears it. The one exception is documented in the class and
+   the README: a `system_alert` finding outlives `Reset()`, because the alert sits in the
+   proxy's in-memory buffer on `:3001`, which IRIS cannot reach.
 4. `/api/monitor/alerts` forwarded as JSON at `/proxy/alerts`.
