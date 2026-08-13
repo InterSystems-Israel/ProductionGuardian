@@ -130,7 +130,28 @@ services:
       # wget, not curl: this image has wget and python3 but NO curl. Checked rather than
       # assumed -- a healthcheck whose binary is missing fails identically to a genuinely
       # unready instance, and would have looked like IRIS never starting.
-      test: ["CMD-SHELL", "/irisHealth.sh && wget -qO- http://localhost:52773/api/monitor/metrics | grep -q iris_interop_"]
+      #
+      # AND NOT /irisHealth.sh, WHICH IS UNRELIABLE AS A GATE. It parses `iris qlist` and
+      # requires field 9 to be `ok` or `warn` -- but that field reads `alert` whenever this
+      # instance has alerted RECENTLY, and it alerts on startup:
+      #   ERROR #5002: ObjectScript error: <METHOD DOES NOT EXIST>Sharding+2^STU *Sharding,SYS.ICM
+      #   Previous system shutdown was abnormal, system forced down or crashed
+      # The second is guaranteed after any `docker kill`, i.e. after any ungraceful stop.
+      #
+      # Measured, because my first reading of this was wrong: the field is TIME-SENSITIVE, not
+      # latched -- it read `alert` during the "3 alerts in 10 seconds ... suspending alert
+      # notifications" window and decayed to `warn` afterwards, staying `warn` across five
+      # minutes of polling and across a kill-and-restart. So `/irisHealth.sh` does not fail
+      # forever; it fails for a window around startup, which is EXACTLY when a healthcheck
+      # gates dependents. That is worse than a permanent failure, because it is intermittent:
+      # it left pg-iris `unhealthy` for minutes while it served 200s with 98 interop metric
+      # lines and the production at state=1, and it would pass on a re-run.
+      #
+      # The HTTP probe is the stronger test regardless: it proves the web server, the
+      # namespace, the production and metrics collection are all working, which is strictly
+      # more than "the instance is up and nothing has alerted lately". Losing the qlist check
+      # costs nothing we were relying on, and removes a startup-window race.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:52773/api/monitor/metrics | grep -q iris_interop_"]
       # 60 x 5s = 5 minutes, which covers a cold EnableNamespace (minutes) plus production
       # start. A first run legitimately takes that long; a later one passes in seconds.
       start_period: 0s
