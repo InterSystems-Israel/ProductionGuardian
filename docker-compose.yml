@@ -11,12 +11,17 @@
 # dependency. See README.md "Prerequisites"; `docker/preflight.sh` prints the sequence if
 # the tag is missing.
 #
-# TWO IMAGES, DELIBERATELY, and do not "fix" this to use one:
-#   - CI's iris-compile job uses PUBLIC intersystems/irishealth-community, because CI cannot
-#     authenticate to a private registry and a compile only needs Ens.* and the HL7 schema
-#   - this file uses the EAP AI Hub image, because that is the one every live measurement on
-#     #70 was taken against, and switching would put all of them back in question
-# The divergence is stated in .github/workflows/ci.yml too, next to the job.
+# ONE RUNTIME IMAGE. This file uses the EAP AI Hub image -- the one every live measurement
+# on #70 was taken against -- and there is no second runtime image.
+#
+# CI's iris-compile job compiles against the PUBLIC intersystems/irishealth-community image
+# because a GitHub-hosted runner cannot authenticate to a private registry, let alone perform
+# an EAP download. So that job's choice was never "which image do we prefer" but
+# "compile-check the ObjectScript on every PR, or not at all" (#77).
+#
+# Do not align them. The consequence -- iris-compile is a SUBSET check, and will go red on
+# correct code the day we use an AI-Hub-only class -- is written up next to that job, with
+# the options ranked, because the cheapest response to a red build is the worst one.
 
 name: production-guardian
 
@@ -138,24 +143,36 @@ services:
         condition: service_healthy
 
   # ─── 5. dashboard ───────────────────────────────────────────────────────────────────
-  # Dev C's service. Placeholder shape only — build context and command are theirs to
-  # settle (#72), and the two choices are the Vite dev server or serving the single-file
-  # build. Left commented rather than guessed at, because a wrong guess here is a wrong
-  # claim about their area.
-  #
-  # dashboard:
-  #   build:
-  #     context: ./apps/dashboard
-  #   container_name: pg-dashboard
-  #   ports:
-  #     - "5173:5173"
-  #   environment:
-  #     # The dev server proxies /api/healthscan to this target, so CORS is never the
-  #     # dashboard's problem (apps/dashboard/vite.config.ts already reads this).
-  #     VITE_HEALTHSCAN_TARGET: http://detection-engine:3002
-  #   depends_on:
-  #     detection-engine:
-  #       condition: service_healthy
+  # Dev C's service (#79). Multi-stage: node builds the same single-file bundle the
+  # `file://` fallback is verified against, nginx serves it and proxies /api/healthscan.
+  dashboard:
+    build:
+      context: ./apps/dashboard
+    container_name: pg-dashboard
+    ports:
+      # 5173:80 -- the container listens on 80, not 8080. Keeping 5173 on the host so the
+      # URL people already have keeps working. A wrong mapping here looks exactly like a
+      # broken proxy from outside, which cost me two minutes on #79.
+      - "${PG_DASHBOARD_PORT:-5173}:80"
+    environment:
+      # The browser runs on the HOST, so it cannot resolve `detection-engine` -- nginx
+      # proxies instead, which keeps the bundle environment-independent and makes the
+      # container behave identically to the dev server.
+      HEALTHSCAN_UPSTREAM: detection-engine:3002
+      # OPT-IN, and it is not optional here. The image's 15-local-resolvers.envsh returns
+      # early unless this is set, leaving ${NGINX_LOCAL_RESOLVERS} rendered LITERALLY and
+      # nginx dead with `host not found in resolver "${NGINX_LOCAL_RESOLVERS}"` -- an error
+      # that names the variable and so reads as a typo rather than a missing flag (#79).
+      NGINX_ENTRYPOINT_LOCAL_RESOLVERS: "1"
+
+    # NO depends_on, DELIBERATELY. nginx resolves the upstream per request rather than at
+    # config load, so this serves demo mode with no engine and no IRIS at all -- verified:
+    # GET / -> 200 and GET /api -> 502 with 0 restarts, then 200 once the engine appears,
+    # without a dashboard restart.
+    #
+    # Gating it on IRIS would mean nobody sees anything for the minutes IRIS takes to
+    # initialise, when demo mode was available the whole time. That is the wrong failure
+    # for the one service an audience is looking at.
 
 volumes:
   # Named rather than a bind mount: the LABDEMO namespace, the production definition and

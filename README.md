@@ -93,15 +93,20 @@ The engine defaults to `PROXY_MODE=mock` (ADR 0004), so the engine and dashboard
 with no IRIS and no proxy at all — fixtures over real HTTP, all eight finding types. That is
 how the consumer side of the contract is verifiable on any machine (#70).
 
-## Two images, deliberately
+## One runtime image, and a CI job with no choice
 
-CI's `iris-compile` job uses the **public** `intersystems/irishealth-community` image,
-because CI cannot authenticate to a private registry and a compile only needs `Ens.*` and the
-HL7 schema. Compose uses the **EAP AI Hub** image, because that is what every live
-measurement was taken against.
+Compose uses the **EAP AI Hub** image — the one every live measurement was taken against.
+There is no second runtime image.
 
-Do not "fix" this to use one image. The divergence is stated in `docker-compose.yml` and
-`.github/workflows/ci.yml` for that reason.
+CI's `iris-compile` job compiles against the **public** `intersystems/irishealth-community`
+image because a GitHub-hosted runner cannot authenticate to a private registry, let alone
+perform an EAP download. So that job's choice was never *which image to prefer* — it was
+*compile-check the ObjectScript on every PR, or not at all*.
+
+**Do not align them.** The consequence is that `iris-compile` is a **subset check**: it has
+never produced a false pass, but it will go red on correct code the day we depend on an
+AI-Hub-only class. The options for that day are ranked in a comment beside the job, because
+the cheapest response to a red build — deleting the job — is the worst one.
 
 ## Documentation
 
