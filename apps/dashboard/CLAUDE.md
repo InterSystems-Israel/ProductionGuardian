@@ -328,7 +328,7 @@ plugins: [react(), viteSingleFile()]
 - `npm run build` → `dist/index.html`, a single self-contained file, demo mode by default.
 - Verify it by opening `dist/index.html` **directly from the filesystem** (not via a server). If it needs a server, the fallback has failed.
 - `docs/production-guardian-demo.html` stays as the belt-and-braces concept fallback. Do not modify it.
-- Deliver alongside: the **screencast** and the **presenter cue sheet** (`docs/demo/`), both explicitly on Dev C's task list.
+- The **screencast** and the **presenter cue sheet** (`docs/demo/`) are **descoped from MVP 1** — see §8. Demo mode itself is the deliverable; the artefacts describing it come later.
 
 ---
 
@@ -419,8 +419,13 @@ From §4.5 of the MVP plan, in order:
 | 1 | Dashboard against mocked schema — host grid, findings list, severity summary | 1.5 d | Renders every host the API returns, whatever the count, and all fixture findings; every state designed; `tsc` clean |
 | 2 | Live polling + demo/live toggle (`?mode=live`) | 0.75 d | Visible change reflected within 10 s; API failure degrades to last-good + banner, never blanks |
 | 3 | Finding detail view | 0.5 d | Click a finding → current vs. baseline, metric, timestamp; keyboard accessible; drawer survives polls |
-| 4 | Screencast + static fallback | 0.5 d | `dist/index.html` opens from `file://` in demo mode; screencast recorded |
-| 5 | Presenter cue sheet | 0.25 d | `docs/demo/cue-sheet.md` — click path, what to say, what to do if live mode dies |
+| 4 | Static fallback build | 0.5 d | `dist/index.html` opens from `file://` in demo mode |
+| ~~4b~~ | ~~Screencast~~ | — | **DESCOPED from MVP 1** — after MVP 1, see below |
+| ~~5~~ | ~~Presenter cue sheet~~ | — | **DESCOPED from MVP 1** — after MVP 1, see below |
+
+**Tasks 4b and 5 are descoped from MVP 1** (decided 2026-08-13). The screencast and `docs/demo/cue-sheet.md` are presentation artefacts, not product: neither is code, neither is verifiable by a test, and the screencast needs a human to record. Nothing in the *overall* acceptance below depends on either — the static fallback is what makes the demo survivable, and that is done.
+
+`docs/demo/` therefore does not exist and should not be created before MVP 1 closes. If a request asks for the cue sheet or the screencast, say it is descoped rather than building it — the same rule §1.1 applies to the later modules.
 
 **Overall acceptance (from the MVP doc):** *dashboard renders all hosts + findings live; updates within 10 s of a change; fallback to demo mode is seamless.*
 

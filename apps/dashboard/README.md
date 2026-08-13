@@ -3,10 +3,10 @@
 Operator-facing frontend for Production Guardian MVP 1. React 18 + Vite +
 TypeScript, no runtime dependencies beyond React itself.
 
-**Current state:** host grid, findings list, severity summary, finding detail
-drawer, live polling and a demo/live toggle — tasks 1–3 of `CLAUDE.md` §8, plus
-the static fallback build. Outstanding: the screencast and the presenter cue
-sheet, both of which need a human rather than code — see
+**Current state: MVP 1 complete.** Host grid, findings list, severity summary,
+finding detail drawer, live polling and a demo/live toggle — tasks 1–4 of
+`CLAUDE.md` §8, including the static fallback build. The screencast and the
+presenter cue sheet are **descoped from MVP 1** and will follow after it — see
 [Status by phase](#status-by-phase).
 
 ---
@@ -209,8 +209,13 @@ watching in the console.
 | 2 | Live polling, demo/live toggle, `ConnectionBanner`, last-good cache | **done** |
 | 3 | Finding detail drawer — current vs. baseline, metric, timestamp | **done** |
 | 4 | Static fallback build | **done** — `dist/index.html` opens from `file://` |
-| 4 | Screencast (needs a human to record) | not started |
-| 5 | `docs/demo/cue-sheet.md` | not started |
+| — | Screencast | **descoped from MVP 1** (2026-08-13) |
+| — | `docs/demo/cue-sheet.md` | **descoped from MVP 1** (2026-08-13) |
+
+Both are presentation artefacts rather than product, neither is verifiable by a
+test, and the screencast needs a human to record. Nothing in MVP 1's overall
+acceptance depends on either — the static fallback is what makes the demo
+survivable, and it is done. `docs/demo/` does not exist yet by design.
 
 Click any finding row to open the detail drawer: current vs. baseline side by
 side, the comparison between them, the underlying IRIS metric, and detected-at as
