@@ -13,13 +13,22 @@ import assert from 'node:assert/strict';
 import { dirname, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_CONFIG } from '../src/config/thresholds.ts';
+import { DEFAULT_CONFIG, DEFAULT_POLL_INTERVAL_MS } from '../src/config/thresholds.ts';
 import { DetectionEngine } from '../src/detect/engine.ts';
 import { DEFAULT_SCENARIO, MockProxyClient } from '../src/proxy/mockClient.ts';
 import { FINDING_TYPES, type FindingType, type Severity } from '../src/types/healthscan.ts';
 
 const fixtureDir = resolve(dirname(fileURLToPath(import.meta.url)), '../fixtures/proxy');
-const POLL_MS = 10_000;
+/**
+ * The SHIPPED cadence, read rather than restated (#64).
+ *
+ * This was a hardcoded `10_000` until @tanifgit noticed it had diverged from the default when
+ * #46 halved the polls to 5000 — so the test asserting "the demo loop can produce all eight
+ * types" was asserting it at a cadence the service does not use, and would have stayed green
+ * through a change that broke the shipped configuration. Same shape as the `orZero` story on
+ * #54: a test passing for a reason unrelated to the thing it protects.
+ */
+const POLL_MS = DEFAULT_POLL_INTERVAL_MS;
 
 /** Run the whole default scenario once, collecting every finding ever confirmed. */
 async function runScenario(): Promise<{
@@ -145,5 +154,45 @@ describe('default scenario coverage', () => {
 
   it('returns to healthy at the end so the loop restarts clean', () => {
     assert.equal(DEFAULT_SCENARIO.at(-1)?.fixture, 'healthy');
+  });
+});
+
+/**
+ * The demo loop needs the poll interval to satisfy the SAMPLE gate, which binds long before
+ * coverage does (#64, #65).
+ *
+ * My first version of this modelled the wrong quantity, and @tanifgit measured it: it asserted
+ * that a degraded RUN spans `sustainedSeconds`, whereas confirmation is gated on the gap
+ * between the FIRST TWO samples. At a 1500ms interval a 4-poll run spans 4500ms and satisfied
+ * my model, while the real gate needed 4000ms between sample 1 and sample 2 and got 1500ms. So
+ * the two assertions passed across the entire broken range and never fired at all.
+ *
+ * They also produced a derived "floor" of 1334ms, which is neither of the two real numbers:
+ *
+ *     4500ms   the jitter invariant breaks first (test/engine.test.ts, #46)
+ *     2500ms   the reachability invariant breaks
+ *     1750ms   coverage finally breaks -- 6/8 types
+ *
+ * So the shipped 5000ms is AT the floor with 1000ms of margin, not comfortably above a 2000ms
+ * one. Coverage is never the first thing to break, and both invariants are already asserted in
+ * `test/engine.test.ts` in the form that binds. Two arithmetic models of one constraint, from
+ * different angles, is how the 1334ms figure happened -- so this file asserts the shipped
+ * cadence satisfies the gate and defers the reasoning rather than restating it.
+ */
+describe('demo-loop timing floor (#64)', () => {
+  it('the shipped interval satisfies the sample gate with margin', () => {
+    // Deliberately the SAME arithmetic as `the shipped gate is reachable within
+    // sustainedSamples polls, WITH MARGIN` in test/engine.test.ts, which is the assertion
+    // that actually binds. Repeated here only because this file is where someone changing
+    // POLL_MS for the demo loop will be looking; the engine test is the authority.
+    const gateMs = DEFAULT_CONFIG.sustainedSeconds * 1000;
+    const spanCoveredBySamples = (DEFAULT_CONFIG.sustainedSamples - 1) * POLL_MS;
+
+    assert.ok(
+      spanCoveredBySamples > gateMs,
+      `POLL_INTERVAL_MS=${POLL_MS} gives ${spanCoveredBySamples}ms between the first two ` +
+        `samples, which does not clear sustainedSeconds=${DEFAULT_CONFIG.sustainedSeconds} ` +
+        `with margin. Nothing confirms on the second sample. See test/engine.test.ts.`,
+    );
   });
 });
