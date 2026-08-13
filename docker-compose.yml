@@ -123,9 +123,23 @@ services:
       # mean what dependents actually need. It also makes the wait self-resolving: the proxy
       # simply waits for IRIS to say it is ready, rather than racing it.
       #
-      # `grep -q iris_interop_` is the test because that family appears only once the
-      # production is running in an interop-enabled namespace -- exactly the condition the
-      # proxy needs. Uses the embedded Apache on 52773, so no gateway is involved.
+      # GATES ON *OUR* PRODUCTION BY NAME, not on the generic `iris_interop_` family.
+      #
+      # The family only proves that SOME production is running in SOME interop-enabled
+      # namespace, and this image ships LABDEMO already interop-enabled (FirstBoot reports
+      # "already interop-enabled" on a cold volume, which is also why a cold `up` is ~60s
+      # rather than the minutes an EnableNamespace would cost). The `-a` hook and the
+      # healthcheck then run concurrently, so a generic grep could open the gate before
+      # FirstBoot has started ours -- the proxy would poll the wrong production, and the
+      # engine's rolling baseline would warm on its metrics. Nothing would look broken:
+      # the hosts would briefly be wrong and the baseline quietly polluted (@tanifgit, #78).
+      #
+      # Measured on a cold `up`: health flipped 4.0s AFTER "7. production ... started", so the
+      # generic version happened not to race -- but 4.0s of margin against a 5s probe interval
+      # is luck, not design. `iris_interop_hosts` carries a `production="..."` label, so the
+      # gate can name ours and the race disappears by construction.
+      #
+      # Uses the embedded Apache on 52773, so no gateway is involved.
       #
       # wget, not curl: this image has wget and python3 but NO curl. Checked rather than
       # assumed -- a healthcheck whose binary is missing fails identically to a genuinely
@@ -151,9 +165,16 @@ services:
       # namespace, the production and metrics collection are all working, which is strictly
       # more than "the instance is up and nothing has alerted lately". Losing the qlist check
       # costs nothing we were relying on, and removes a startup-window race.
-      test: ["CMD-SHELL", "wget -qO- http://localhost:52773/api/monitor/metrics | grep -q iris_interop_"]
-      # 60 x 5s = 5 minutes, which covers a cold EnableNamespace (minutes) plus production
-      # start. A first run legitimately takes that long; a later one passes in seconds.
+      test:
+        - CMD-SHELL
+        - wget -qO- http://localhost:52773/api/monitor/metrics | grep -q 'production="ProductionGuardian.LabDemo.Production"'
+      # 60 x 5s = 5 minutes, which is HEADROOM rather than a measured requirement. Every cold
+      # run measured on this image reaches healthy in ~60s, because LABDEMO ships
+      # interop-enabled and the slow `EnableNamespace` branch never executes here. An earlier
+      # version of this comment justified the budget by "covers a cold EnableNamespace
+      # (minutes)", which describes a path that does not run on this image (@tanifgit, #78) --
+      # the honest justification is that 5 minutes costs nothing when the normal case is 60s,
+      # and an image without the namespace baked in WOULD take the slow path.
       start_period: 0s
       interval: 5s
       timeout: 10s

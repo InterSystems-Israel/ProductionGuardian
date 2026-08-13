@@ -80,6 +80,31 @@ Watch it happen:
 docker compose logs -f iris
 ```
 
+### If `compose up` fails, read the IRIS log first
+
+Now that first boot runs inside the container, **a first-boot failure surfaces three services
+away from its cause**:
+
+```
+dependency failed to start: container pg-iris is unhealthy
+```
+
+That message names the symptom. The cause is in `docker compose logs iris` — every step of
+`FirstBoot` prints what it did or what it could not do, and `pg-firstboot:` lines bracket the
+run. The same applies to `metrics-proxy` or `detection-engine` reporting a failed dependency:
+they are gated on IRIS being ready, so the explanation is upstream of them, not in their own
+logs.
+
+IRIS reports healthy only once the **LABDEMO production is serving interop metrics**, so
+"unhealthy" after several minutes means first boot did not finish, not that IRIS is down. Check
+in this order:
+
+```bash
+docker compose logs iris | grep pg-firstboot   # did first boot run, and did it finish?
+docker compose logs iris | grep -E '^[0-9]'    # the numbered steps, and which one stopped
+docker compose ps -a                           # iris-init should be Exited (0), not Exited (1)
+```
+
 To run it by hand (it is safe at any time):
 
 ```bash
