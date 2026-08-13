@@ -1,0 +1,45 @@
+; Web gateway -> IRIS binding, TEMPLATE.
+;
+; Copy to CSP.ini and set the password, or let `docker compose up` do it: the gateway
+; service generates CSP.ini from this file on first start.
+;
+; NOT COMMITTED WITH A PASSWORD. The value is IRIS's obfuscation of the CSPSystem account
+; password -- a built-in gateway account on a default install rather than a user
+; credential, so the exposure is small. But root CLAUDE.md §5 says never commit
+; credentials, and "it is only the default" is exactly the reasoning that leaks a real one
+; later when someone changes the password and updates this file in place.
+;
+; Ip_Address=iris is the compose SERVICE NAME and is already correct -- this config was
+; compose-ready before there was a compose file. Do not change it to an IP.
+[SYSTEM]
+IRISCONNECT_LIBRARY_PATH=/opt/webgateway/bin
+System_Manager=*.*.*.*
+SM_Timeout=28800
+Server_Response_Timeout=60
+No_Activity_Timeout=86400
+Queued_Request_Timeout=60
+Default_Server=LOCAL
+
+[SYSTEM_INDEX]
+LOCAL=Enabled
+
+[LOCAL]
+Ip_Address=iris
+TCP_Port=1972
+Minimum_Server_Connections=1
+Maximum_Session_Connections=6
+Username=CSPSystem
+Password=<set by docker/webgateway/generate-csp-ini.sh>
+
+
+[APP_PATH_INDEX]
+/=Enabled
+/csp=Enabled
+
+[APP_PATH:/]
+Default_Server=LOCAL
+Alternative_Server_0=1~~~~~~LOCAL
+
+[APP_PATH:/csp]
+Default_Server=LOCAL
+Alternative_Server_0=1~~~~~~LOCAL

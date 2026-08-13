@@ -1,0 +1,164 @@
+# Production Guardian — the whole chain, five services (#72).
+#
+#   docker compose up
+#
+# Then: http://localhost:5173/?mode=live
+#
+# ONE-TIME PREREQUISITE. The IRIS image is not pullable — it comes from the InterSystems
+# Early Access Program, which needs a customer login rather than a registry credential. So
+# this file references a LOCAL TAG only, which is what lets compose reproduce *the* system
+# our measurements were taken on (#70) with no credentials in the repo and no network
+# dependency. See README.md "Prerequisites"; `docker/preflight.sh` prints the sequence if
+# the tag is missing.
+#
+# TWO IMAGES, DELIBERATELY, and do not "fix" this to use one:
+#   - CI's iris-compile job uses PUBLIC intersystems/irishealth-community, because CI cannot
+#     authenticate to a private registry and a compile only needs Ens.* and the HL7 schema
+#   - this file uses the EAP AI Hub image, because that is the one every live measurement on
+#     #70 was taken against, and switching would put all of them back in question
+# The divergence is stated in .github/workflows/ci.yml too, next to the job.
+
+name: production-guardian
+
+services:
+  # ─── 1. IRIS ────────────────────────────────────────────────────────────────────────
+  # LABDEMO namespace, the production, and the HL7 generator.
+  #
+  # First boot is ProductionGuardian.Setup.FirstBoot (#73), which captures the nine manual
+  # steps from the #34/#53 deploy — three of which were only discovered because the
+  # production failed on first start. Without it this service would be a research task.
+  iris:
+    image: ${PG_IRIS_IMAGE:-productionguardian/irishealth:local}
+    container_name: pg-iris
+    # 1972 is the superserver, which the webgateway connects to. NOT published to the host:
+    # nothing outside the compose network needs it, and the whole point of the gateway is
+    # that HTTP arrives on :80.
+    expose:
+      - "1972"
+    volumes:
+      - iris-data:/iris-shared
+      # Source, read-only. FirstBoot compiles from here, so a class change is a restart
+      # rather than a rebuild.
+      - ./iris:/pg-src:ro
+      - ./docker/iris-firstboot.sh:/pg-firstboot.sh:ro
+    environment:
+      # ISC_DATA_DIRECTORY makes the namespace survive `compose down`; without it the
+      # LABDEMO setup would re-run from scratch every time.
+      ISC_DATA_DIRECTORY: /iris-shared/durable
+    # FirstBoot runs AFTER IRIS is up, so it cannot be the entrypoint -- the image's own
+    # /iris-main must stay in charge of starting and stopping IRIS cleanly. Run it once the
+    # container is healthy:
+    #
+    #   docker compose exec iris /pg-firstboot.sh
+    #
+    # Automating that needs either a sidecar or an image with a first-boot hook; both are
+    # more moving parts than a documented one-liner is worth, and getting it wrong risks
+    # IRIS not shutting down cleanly. Stated rather than silently manual.
+    healthcheck:
+      # The image ships its own healthcheck script — using it rather than a port probe,
+      # because IRIS answers on 1972 before it will accept a session. That distinction cost
+      # a CI debugging cycle on #41: %SYS answers while "Startup in progress" is still true.
+      test: ["CMD", "/irisHealth.sh"]
+      start_period: 0s
+      interval: 5s
+      timeout: 10s
+      retries: 60
+
+  # ─── 2. web gateway ─────────────────────────────────────────────────────────────────
+  # Apache + the IRIS gateway module. This is why Production.cls names a hostname rather
+  # than 127.0.0.1: the REST endpoints live behind THIS service, not inside the IRIS
+  # container, and nothing listens on 52773 anywhere (#53).
+  webgateway:
+    image: ${PG_WEBGATEWAY_IMAGE:-productionguardian/webgateway:local}
+    container_name: pg-webgateway
+    ports:
+      # The only HTTP port a human needs on the IRIS side: /api/monitor/*, /labdemo/*,
+      # and the Management Portal.
+      - "${PG_WEB_PORT:-80}:80"
+    volumes:
+      # CSP.ini binds the gateway to the IRIS server. The existing config already uses
+      # `Ip_Address=iris`, i.e. a service name, so it is compose-ready unchanged — worth
+      # knowing before anyone rewrites it.
+      # NOT read-only: generate-csp-ini.sh writes CSP.ini here from the committed
+      # template on first start, because we do not commit a password field (§5).
+      - ./docker/webgateway:/webgateway-shared
+    depends_on:
+      iris:
+        condition: service_healthy
+
+  # ─── 3. metrics proxy ───────────────────────────────────────────────────────────────
+  metrics-proxy:
+    build:
+      context: ./services/metrics-proxy
+    container_name: pg-metrics-proxy
+    ports:
+      - "3001:3001"
+    environment:
+      # Through the gateway on :80, not the IRIS container on 52773 — same reason as
+      # Production.cls. IRIS_BASE_PATH stays empty: on this instance /api/monitor/ is at
+      # the web server root, and a wrong prefix is quiet in a way that reads as an idle
+      # production rather than a misconfiguration.
+      IRIS_HOST: webgateway
+      IRIS_PORT: "80"
+      IRIS_BASE_PATH: ""
+      IRIS_USER: ${PG_IRIS_USER:-superuser}
+      IRIS_PASS: ${PG_IRIS_PASS:-SYS}
+      IRIS_NAMESPACE: LABDEMO
+      IRIS_HOSTSTATUS_PATH: /labdemo/monitor/hoststatus
+      # 2500ms per #75. Do not raise this without reading ADR 0005 — it is the one latency
+      # term gated by nothing, and it was halved twice deliberately.
+      METRICS_POLL_INTERVAL_MS: "2500"
+      ALERTS_POLL_INTERVAL_MS: "30000"
+    depends_on:
+      webgateway:
+        condition: service_started
+      iris:
+        condition: service_healthy
+
+  # ─── 4. detection engine ────────────────────────────────────────────────────────────
+  detection-engine:
+    build:
+      context: ./services/detection-engine
+    container_name: pg-detection-engine
+    ports:
+      - "3002:3002"
+    environment:
+      PROXY_MODE: live
+      PROXY_BASE_URL: http://metrics-proxy:3001
+      # 5000ms, and it has a HARD FLOOR: 4500 already breaks an invariant, because
+      # sustainedSeconds must be reachable within sustainedSamples polls with margin (#64).
+      # Shortening this means retuning sustainedSeconds in the same change.
+      POLL_INTERVAL_MS: "5000"
+    volumes:
+      # Hot-reloaded (ADR 0003), so mounting it lets an operator tune thresholds without a
+      # rebuild. Read-only: the engine only ever reads it.
+      - ./services/detection-engine/thresholds.json:/app/thresholds.json:ro
+    depends_on:
+      metrics-proxy:
+        condition: service_healthy
+
+  # ─── 5. dashboard ───────────────────────────────────────────────────────────────────
+  # Dev C's service. Placeholder shape only — build context and command are theirs to
+  # settle (#72), and the two choices are the Vite dev server or serving the single-file
+  # build. Left commented rather than guessed at, because a wrong guess here is a wrong
+  # claim about their area.
+  #
+  # dashboard:
+  #   build:
+  #     context: ./apps/dashboard
+  #   container_name: pg-dashboard
+  #   ports:
+  #     - "5173:5173"
+  #   environment:
+  #     # The dev server proxies /api/healthscan to this target, so CORS is never the
+  #     # dashboard's problem (apps/dashboard/vite.config.ts already reads this).
+  #     VITE_HEALTHSCAN_TARGET: http://detection-engine:3002
+  #   depends_on:
+  #     detection-engine:
+  #       condition: service_healthy
+
+volumes:
+  # Named rather than a bind mount: the LABDEMO namespace, the production definition and
+  # the PatientRecord table live here, and they must survive `compose down`. `compose down
+  # -v` is the deliberate reset.
+  iris-data:
