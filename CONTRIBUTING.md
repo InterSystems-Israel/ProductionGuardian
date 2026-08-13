@@ -187,8 +187,8 @@ Reading stays allowed â€” Dev C *should* read the contract. Only writing is bloc
 Agreed on #70 after a week in which the errors were overwhelmingly *prose about correct
 measurements* rather than wrong measurements or broken code.
 
-**An end-to-end claim names who measured it, on what, how many times, and — if timing is
-involved — under what alignment.** Not ceremony: every one of those four was omitted at least
+**An end-to-end claim names who measured it, on what, how many times, and â€” if timing is
+involved â€” under what alignment.** Not ceremony: every one of those four was omitted at least
 once this week, and each omission changed a conclusion.
 
 | omit | what it cost |
@@ -196,21 +196,21 @@ once this week, and each omission changed a conclusion.
 | **who / on what** | `:3001` and `:3002` answer only on Dev B's machine, so "verified live" meant one person's session. Dev C could not run the check they had committed to (#34, #70) |
 | **how many** | "measured 9.67s and 10.42s" read as a bracket. At n=7 one run hit 11.59s, and *2 of 7* were over the bar (#44) |
 | **under what alignment** | 6 of 7 samples put one term at the floor of its range, because two 5s pollers had been started a second apart and were accidentally phase-locked. The mean was an artifact of launch order (#44, ADR 0005) |
-| **composed vs measured** | "9.67s on screen" was one machine's measurement plus another's bound. That composition is a third category and it is the one most likely to hide an error — it did (#70) |
+| **composed vs measured** | "9.67s on screen" was one machine's measurement plus another's bound. That composition is a third category and it is the one most likely to hide an error â€” it did (#70) |
 
 So: **a measurement composed from two environments is not a measurement**, and should say so.
 
 Two habits that follow, both cheap:
 
 - **before quoting an operating range, run the suite across it.** A test already asserting the
-  real constraint is the fastest way to find out you have modelled the wrong quantity — one
+  real constraint is the fastest way to find out you have modelled the wrong quantity â€” one
   `npm test` at the interval in question would have caught a wrong floor twice (#64, #65)
 - **when a review claims "this is safe because X", the reviewer owes the same non-vacuity test
   the author does.** Naming a protective mechanism without checking that removing it breaks
   something leaves a booby trap for whoever hardens it next (#69)
 
 None of this applies to unit or contract evidence, which is machine-independent and shared by
-construction — that is ADR 0004 paying off. It applies to live, cross-service,
+construction â€” that is ADR 0004 paying off. It applies to live, cross-service,
 timing-dependent claims, which is where our strongest evidence and our weakest attribution
 have both been.
 
