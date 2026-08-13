@@ -10,10 +10,12 @@ the screencast source (`apps/dashboard/CLAUDE.md` §5).
   (service), `Lab Router` (process), `Cloud API` (operation), per the `<Item>` set
   in `iris/labdemo/Production.cls`. **The rule is "no invented hosts", not "there
   are three"**: `FHIR Transform` was a fourth until `contracts/` PR #15 — a real
-  pass-through routing item that left the production when the pipeline became
-  HL7→PID, which made the samples older than the production rather than wrong. A
-  fixture is a frozen snapshot of one production and is expected to need editing
-  when that production changes; nothing in `src/` is (issue #25).
+  pass-through routing item, an `<Item>` in this production from the first commit
+  until `1801a50`, removed when the pipeline became HL7→PID. Why the shared
+  `contracts/` samples still show four hosts is a separate question, and not this
+  file's to answer — see #34 and #55, which is settling it. A fixture is a frozen
+  snapshot of one production and is expected to need editing when that production
+  changes; nothing in `src/` is (issue #25).
 - **Numbers are anchored to measured LABDEMO values, never invented** (issue #6).
   The healthy steady state is the capture Dev B re-measured over three samples:
   `EMR Source 0.2` msg/sec, `Lab Router 1.2`, `Cloud API 0.4`;

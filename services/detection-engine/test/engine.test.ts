@@ -985,6 +985,80 @@ describe('no message ever stringifies a null (#51)', () => {
 });
 
 /**
+ * The wire must carry `null` through for the two fields the schema declares nullable.
+ *
+ * This closes a hole @tanifgit found on #52: with the coercion RESTORED on `main`, all
+ * 167 tests still passed. Nothing defended the un-coerced wire, so `orZero()` could come
+ * back for `queued`/`errored` and no check would object — which is exactly how it survived
+ * past its justification in the first place (a test asserting "no nullable numerics"
+ * actively kept it alive until #51).
+ *
+ * A permitted-but-unexercised path decays. Their side now REQUIRES a fixture to render the
+ * em dash; this is the same requirement one layer up, on the producer.
+ *
+ * Scope is deliberate: only `queued` and `errored`. The schema still declares
+ * messagesPerSec, avgProcessingTime and avgQueueingTime as plain numbers, so coercing
+ * those is REQUIRED and asserted below — widening them is a contract PR, not a fix.
+ */
+describe('the published wire preserves null where the schema allows it (#52)', () => {
+  /** Every nullable proxy count absent — what an undescribed host looks like (#36). */
+  function unmeasured(overrides: Partial<ProxyHost> = {}): ProxyHost {
+    return proxyHost({
+      queued: null,
+      errored: null,
+      messagesPerSec: null,
+      avgProcessingTime: null,
+      avgQueueingTime: null,
+      ...overrides,
+    });
+  }
+
+  it('serves queued and errored as null, not 0', () => {
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    engine.applyPoll(response([unmeasured()]), T0);
+
+    const [host] = engine.snapshot().hosts;
+    assert.ok(host !== undefined);
+    assert.equal(host.queued, null, 'a coerced 0 here is a confident lie about a real host');
+    assert.equal(host.errored, null, 'same for errored — absent is not "no errors"');
+  });
+
+  it('still coerces the three fields the schema declares as plain numbers', () => {
+    // The other half of the contract. If this fails, we are emitting null against a
+    // non-nullable field and Dev C's guard is entitled to reject the whole host (#32).
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    engine.applyPoll(response([unmeasured()]), T0);
+
+    const [host] = engine.snapshot().hosts;
+    assert.ok(host !== undefined);
+    for (const field of ['messagesPerSec', 'avgProcessingTime', 'avgQueueingTime'] as const) {
+      assert.equal(
+        typeof host[field],
+        'number',
+        `Host.${field} is not nullable in the schema — widening it is a contracts/ PR`,
+      );
+    }
+  });
+
+  it('keeps a measured zero distinguishable from an absent count', () => {
+    // The distinction the whole of #49 turns on. If both render as 0 the dashboard cannot
+    // tell "nothing queued" from "depth unknown", which is what the em dash exists for.
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), () => {});
+    engine.applyPoll(
+      response([
+        proxyHost({ host: 'Measured', queued: 0, errored: 0 }),
+        unmeasured({ host: 'Unknown' }),
+      ]),
+      T0,
+    );
+
+    const byHost = new Map(engine.snapshot().hosts.map((h) => [h.host, h]));
+    assert.equal(byHost.get('Measured')?.queued, 0, 'a measured zero is a reading');
+    assert.equal(byHost.get('Unknown')?.queued, null, 'an absent count is not');
+  });
+});
+
+/**
  * stalled_host must not read a fabricated activity timestamp (#58).
  *
  * Found by @tanifgit reviewing #54 — its argument that a permitted-but-unexercised path

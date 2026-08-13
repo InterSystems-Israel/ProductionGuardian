@@ -26,7 +26,15 @@ Method OnMessage(
     Output pResponse As Ens.StringResponse) As %Status
 {
     set sc = $$$OK
-    set pResponse = ##class(Ens.Response).%New()
+    // Ens.StringResponse, matching the signature above -- NOT Ens.Response, which has no
+    // StringValue property. The mismatch compiled fine and failed only at runtime, on the
+    // `set pResponse.StringValue=str` lines below:
+    //   ERROR <Ens>ErrException: <PROPERTY DOES NOT EXIST> *StringValue
+    // The upsert had already succeeded, so a record landed AND the operation reported an
+    // error -- Cloud API sat in Error with messageCount 0 while patients/count rose. Found
+    // on the #34 deploy; same runtime-only class as #37, which is exactly what the
+    // iris-compile CI job is documented as NOT catching.
+    set pResponse = ##class(Ens.StringResponse).%New()
     try {
         // Build the JSON payload from the request message.
         set payload = {

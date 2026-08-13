@@ -5,6 +5,41 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-13 — sample-provenance caveat on `metrics-dump.txt` (Dev B)
+
+**Documentation only. No field added, removed or retyped; no schema change; every existing
+payload stays valid.** Recorded here because `contracts/` is edited by PR regardless of how
+small the change is, and because the thing being written down was load-bearing enough to cost
+a full diagnosis cycle.
+
+`samples/metrics-dump.txt` reports four application hosts, `samples/hosts-response.json`
+reports three, and that disagreement sits in the one directory whose purpose is that everybody
+mocks the same bytes. The reason is now stated in `proxy-api.md` §1: the sample was captured
+from **`LABDEMO.Production`, an unrelated production with its own class tree that does not
+exist in this repo** — not from a stale deployment of `iris/labdemo/Production.cls`, which was
+not compiled in the namespace at all until 2026-08-12.
+
+So the sample is authoritative for label *shapes* and metric *families*, and not for the
+roster. Requested by Dev C on #34, who also asked that the note say **different production**
+rather than *stale deployment*, since writing down the wrong reason is how a wrong conclusion
+gets re-derived later.
+
+**The evidence is in the repo, not on an instance** — deliberately, since `contracts/` is read
+by whoever comes next and they will not have this instance. `metrics-dump.txt` carries
+`production="LABDEMO.Production"`; `Production.cls` has been
+`ProductionGuardian.LabDemo.Production` in every commit; and the sample's spaced host names
+coexist with `FHIR Transform`, a combination no commit of `Production.cls` produced, because
+FHIR Transform was removed *before* the rename to spaced names. Dev C established that chain
+on #55 and it is stronger than the compile-date reason this entry originally carried.
+
+For completeness, and cited rather than asserted: `LABDEMO.Production` was still present on the
+instance on 2026-08-13 (it is deliberately not deleted, #34 condition 4), and its items are
+`LABDEMO.Service.EMRSource`, `LABDEMO.Process.LabRouter`, `LABDEMO.Process.FHIRTransform`,
+`LABDEMO.Operation.CloudAPI`. That is an observation from `Ens.Config.Production`, not something
+derivable from this repo — which is why the note in `proxy-api.md` rests on the two repo facts
+instead.
+
+
 ## 2026-08-12 — `_meta.hostStatus.undescribedHosts` added (Dev B)
 
 Adds one diagnostic field, no change to any host or finding field. Follows the same-day entry
@@ -318,6 +353,17 @@ from the start.
 four hosts until it is reloaded from `iris/labdemo/`. That is expected and breaks nothing: an extra
 host is over-coverage, and the parser reads whatever `host` labels arrive.
 
+> **ATTRIBUTION SUPERSEDED 2026-08-13 — see the 2026-08-13 entry at the top.** The paragraph above
+> reads the four-host capture as *this* production, one version behind. It was a different
+> production: the sample's own label says `production="LABDEMO.Production"`, and
+> `iris/labdemo/Production.cls` has been `ProductionGuardian.LabDemo.Production` in every commit.
+> The sample's host names are also a combination this repo never produced — spaced names *and*
+> `FHIR Transform`, whereas here FHIR Transform only ever coexisted with **unspaced** names.
+>
+> The rest of this entry stands, including the part that matters most: the capture is **real, not
+> invented**. Only the "one version behind our own production" attribution is wrong. Left in place
+> rather than rewritten, because an entry that quietly changes its reasoning stops being a record.
+
 **Changes:**
 
 - `samples/hosts-response.json` — the `FHIR Transform` entry is gone. Three hosts remain, still in
@@ -404,10 +450,18 @@ Units confirmed empirically rather than assumed: Cloud API configured at 0.05s l
 Samples carry real measured values from the LABDEMO production, including a genuinely induced
 degraded state (Cloud API disabled → queue depth 48), not invented numbers.
 
-### Known gap, not a contract change
+### Known gap, not a contract change — CLOSED 2026-08-12
 
 `iris_interop_queued` carries no `host` label — it emits once per production. Per-host queue depth
 is available from `Ens.Util.Statistics:EnumerateHostStatus` (verified: `Cloud API = 48` while
 disabled), so `Host.queued` stays a required number. **This needs Dev A's proxy to read host
 status, not only the Prometheus metrics text.** Raised with Dev A separately; no contract impact
 if that holds.
+
+**Resolved, and one clause of it turned out wrong.** The proxy reads host status as of #12/#36,
+so per-host depth flows end to end. But "`Host.queued` stays a required number" did not hold:
+it is `["integer","null"]` since the 2026-08-12 entry above, because a host whose depth is not
+measurable must be distinguishable from one measuring zero. Still required — a null *value* is
+legal, an absent *key* is not. #31 confirmed the same per-production shape for
+`messages_errored`, re-verified 2026-08-12 against `ProductionGuardian.LabDemo.Production`
+with traffic flowing rather than only against the capture from an unrelated production.
