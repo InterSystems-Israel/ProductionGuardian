@@ -9,8 +9,68 @@ them. Committed so every developer mocks against the same bytes (ADR 0004).
 | `metrics-live-capture-preRename.txt` | **Real.** The same instance earlier the same day, 313 lines, before the rename: unspaced item names (`EMRSource`, `LabRouter`), `PIDExtractProcess` present, activity reporter called `ActivityReporter`. |
 | `alerts-live-capture.json` | **Real.** Full `/api/monitor/alerts` body, same instance, 2026-08-11. See the warning below — this endpoint cannot be re-captured at will. |
 | `hoststatus-live-capture.json` | **Real, and the mock default for per-host queued/errored.** Body served over HTTP by `/labdemo/monitor/hoststatus` from live LABDEMO, IRIS for Health 2026.1, captured 2026-08-12. 13 hosts, 4 application, production `Running`. See below. |
+| `metrics-live-capture-3host.txt` | **Real, and the only capture taken from the production this repo defines.** 1383 lines, IRIS for Health 2026.1, captured 2026-08-12 with the generator running, immediately after `ProductionGuardian.LabDemo.Production` was first deployed (#34). 12 hosts, 3 application. Carries all four signals the earlier 3-host capture lacked — see below. |
+| `hoststatus-live-capture-3host.json` | **Real.** `/labdemo/monitor/hoststatus` from the same production, same moment. 10 hosts, 3 application, production `Running`. |
 | `metrics.txt` | Hand-trimmed 3-host excerpt in the real label shape. Small enough to reason about; `MOCK_FIXTURE=metrics.txt npm run mock` serves it. |
 | `alerts.json` | **Hand-written, and its field names are wrong** — see below. |
+
+## Two unrelated productions, not two versions of one (#34)
+
+**The captures come from more than one environment, and — more importantly — from two
+productions that were never related to each other.** Getting this wrong cost a full
+diagnosis cycle, so it is recorded here rather than re-derived.
+
+| Capture | Production | Application hosts |
+|---|---|---|
+| `metrics-live-capture.txt`, `metrics-live-capture-preRename.txt` | `ProductionGuardian.LabDemo.Production` | 3 |
+| `hoststatus-live-capture.json` | **`LABDEMO.Production`** | **4** (incl. `FHIR Transform`) |
+| `metrics-live-capture-3host.txt`, `hoststatus-live-capture-3host.json` | `ProductionGuardian.LabDemo.Production` | 3 |
+
+`LABDEMO.Production` had its own class tree (`LABDEMO.Service.EMRSource`,
+`LABDEMO.Process.FHIRTransform`, …) that **does not exist in this repo**. It was not a
+stale deployment of `Production.cls` — there was no version of `Production.cls` it was
+behind. `ProductionGuardian.LabDemo.Production` was not compiled in that namespace at all
+until 2026-08-12, when 9 of this repo's 10 classes were deployed for the first time.
+
+So a 4-host roster in a capture is not evidence that `Production.cls` ever had four items.
+Both rosters were always correct, about different productions. The `-3host` captures are
+the first from a production this repo actually defines, which is why they supersede rather
+than merely update the others.
+
+`LABDEMO.Production` is deliberately **not deleted**: it is the only artifact of whatever
+built it, and #43/#44's measurements were taken against it.
+
+## What the earlier 3-host capture is missing, and why it matters
+
+`metrics-live-capture.txt` was taken from an **idle** production, so three metric families
+and one label value are absent from it entirely:
+
+| | `metrics-live-capture.txt` | `metrics-live-capture-3host.txt` |
+|---|---|---|
+| `iris_interop_last_activity` | absent | **present** |
+| `iris_interop_messages_errored` | absent | **present** |
+| `hosttype="actor"` | absent (only `service`) | **present** |
+| `iris_interop_avg_processing_time` | present | present |
+
+Those are the inputs to `stalled_host`, to #31, and to PROXY-Q6. **A capture taken from an
+idle production cannot serve as evidence about them** — it looks like a production with no
+errors and no activity rather than one that does not publish those figures per host. Always
+capture with the generator running.
+
+## #31 confirmed on the shipped production
+
+#31's conclusion — `iris_interop_messages_errored` carries no `host` label — previously
+rested only on the 4-host capture, i.e. on a production we do not ship. Re-confirmed
+2026-08-12 against `ProductionGuardian.LabDemo.Production` with traffic flowing:
+
+```
+iris_interop_messages_errored{id="LABDEMO",production="ProductionGuardian.LabDemo.Production"} 0
+iris_interop_queued{id="LABDEMO",production="ProductionGuardian.LabDemo.Production"} 0
+```
+
+One line each, no `host` label, while `iris_interop_last_activity` (11 lines) and
+`iris_interop_avg_processing_time` (4 lines) do carry one. So the per-host/per-production
+split is a property of IRIS, not of that one environment.
 
 ## Why the pre-rename capture is kept
 
