@@ -40,6 +40,13 @@ Parameter PROCESS = "Lab Router";
 /// that refuses (#34).
 Parameter PRODUCTION = "ProductionGuardian.LabDemo.Production";
 
+/// The unreachable port ErrorRate() points the operation at.
+///
+/// A parameter rather than a literal in two places: Status() recognises the armed state by
+/// comparing against it, so a change to one and not the other would leave Status() silently
+/// reporting nothing armed -- a status method lying by omission (@tanifgit, #66).
+Parameter CLOSEDPORT = 59999;
+
 /// dead_host -- absolute, fires within two polls. The demo's headline finding.
 ClassMethod DeadHost() As %Status
 {
@@ -104,11 +111,11 @@ ClassMethod ErrorRate() As %Status
     // arm-then-Reset() left it at 80.
     //
     // Same stash pattern SlowProcessing() uses for the injected delay, and stashed only if
-    // not already set, so arming twice does not overwrite the saved value with 59999.
+    // not already set, so arming twice does not overwrite the saved value with the closed port.
     if '$data(^ProductionGuardian.Trigger("PortWas")) {
         set ^ProductionGuardian.Trigger("PortWas") = ..GetSetting(..#OPERATION, "HTTPPort")
     }
-    set sc = ..SetSetting(..#OPERATION, "Adapter", "HTTPPort", 59999)
+    set sc = ..SetSetting(..#OPERATION, "Adapter", "HTTPPort", ..#CLOSEDPORT)
     if $$$ISERR(sc) {
         quit sc
     }
@@ -297,7 +304,7 @@ ClassMethod Status() As %Status
         if 'item.Enabled {
             set note = "  <- disabled"
         }
-        if port = 59999 {
+        if port = ..#CLOSEDPORT {
             set note = "  <- pointed at a closed port"
         }
         write "  ", $justify(item.Name, 16), " enabled=", item.Enabled, note, !
@@ -358,11 +365,18 @@ ClassMethod SetSetting(pItem As %String, pTarget As %String, pName As %String, p
     if '$IsObject(def) {
         quit $$$ERROR($$$GeneralError, "cannot open " _ ..#PRODUCTION)
     }
+    // Track whether the ITEM was found, not just the setting. Without this an unknown item
+    // makes this method a silent no-op, so a rename in Production.cls would have
+    // ErrorRate() print ARMED having changed nothing -- and CheckProduction() would not
+    // catch it, since it only compares the production NAME (@tanifgit, #66). A trigger that
+    // reports armed and is not is the worst failure this class can have.
+    set foundItem = 0
     for i = 1:1:def.Items.Count() {
         set item = def.Items.GetAt(i)
         if item.Name '= pItem {
             continue
         }
+        set foundItem = 1
         set found = 0
         for j = 1:1:item.Settings.Count() {
             set setting = item.Settings.GetAt(j)
@@ -379,6 +393,9 @@ ClassMethod SetSetting(pItem As %String, pTarget As %String, pName As %String, p
             do item.Settings.Insert(setting)
         }
     }
+    if 'foundItem {
+        quit $$$ERROR($$$GeneralError, "no such config item: " _ pItem _ " (renamed in Production.cls?)")
+    }
     quit def.%Save()
 }
 
@@ -390,11 +407,13 @@ ClassMethod RemoveSetting(pItem As %String, pName As %String) As %Status
     if '$IsObject(def) {
         quit $$$ERROR($$$GeneralError, "cannot open " _ ..#PRODUCTION)
     }
+    set foundItem = 0
     for i = 1:1:def.Items.Count() {
         set item = def.Items.GetAt(i)
         if item.Name '= pItem {
             continue
         }
+        set foundItem = 1
         // Descending, because RemoveAt shifts the indices below it.
         for j = item.Settings.Count():-1:1 {
             set setting = item.Settings.GetAt(j)
@@ -402,6 +421,11 @@ ClassMethod RemoveSetting(pItem As %String, pName As %String) As %Status
                 do item.Settings.RemoveAt(j)
             }
         }
+    }
+    // Same reason as SetSetting: silence here would make Reset() report success having
+    // restored nothing.
+    if 'foundItem {
+        quit $$$ERROR($$$GeneralError, "no such config item: " _ pItem _ " (renamed in Production.cls?)")
     }
     quit def.%Save()
 }
