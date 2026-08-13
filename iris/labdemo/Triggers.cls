@@ -97,6 +97,17 @@ ClassMethod ErrorRate() As %Status
     if $$$ISERR(sc) {
         quit sc
     }
+    // Capture the real port BEFORE overwriting it. Production.cls says HTTPServer/HTTPPort/
+    // Credentials are the only settings that depend on the deployment and should be
+    // overridden per environment -- so "restore it to 80" would silently break any
+    // environment that followed that instruction. Reproduced: with the port at 8443,
+    // arm-then-Reset() left it at 80.
+    //
+    // Same stash pattern SlowProcessing() uses for the injected delay, and stashed only if
+    // not already set, so arming twice does not overwrite the saved value with 59999.
+    if '$data(^ProductionGuardian.Trigger("PortWas")) {
+        set ^ProductionGuardian.Trigger("PortWas") = ..GetSetting(..#OPERATION, "HTTPPort")
+    }
     set sc = ..SetSetting(..#OPERATION, "Adapter", "HTTPPort", 59999)
     if $$$ISERR(sc) {
         quit sc
@@ -214,12 +225,27 @@ ClassMethod Reset() As %Status
     // Restore the operation's real target and its shipped timeouts. Removing the four
     // timeout settings rather than setting them back to a value: they are not in
     // Production.cls, so absent IS the shipped state.
-    do ..SetSetting(..#OPERATION, "Adapter", "HTTPPort", 80)
+    // Restore the port to what it WAS, not to a literal. If nothing was stashed then
+    // ErrorRate() never ran, so the port is whatever the environment configured and must be
+    // left alone -- touching it would be this method inventing a deployment setting.
+    set restored = "left as configured"
+    if $data(^ProductionGuardian.Trigger("PortWas")) {
+        set was = ^ProductionGuardian.Trigger("PortWas")
+        if was '= "" {
+            do ..SetSetting(..#OPERATION, "Adapter", "HTTPPort", was)
+            set restored = "port restored to " _ was
+        } else {
+            // Absent before arming: absent is the right state to return it to.
+            do ..RemoveSetting(..#OPERATION, "HTTPPort")
+            set restored = "HTTPPort removed, as it was before arming"
+        }
+        kill ^ProductionGuardian.Trigger("PortWas")
+    }
     set settings = $listbuild("FailureTimeout", "RetryInterval", "ConnectTimeout", "ResponseTimeout", "AlertOnError")
     for i = 1:1:$listlength(settings) {
         do ..RemoveSetting(..#OPERATION, $list(settings, i))
     }
-    write "  restored ", ..#OPERATION, " to port 80 and removed the fast-failure timeouts", !
+    write "  ", ..#OPERATION, ": ", restored, ", fast-failure timeouts removed", !
 
     // Re-enable every application host.
     set hosts = $listbuild(..#SERVICE, ..#PROCESS, ..#OPERATION)
@@ -386,11 +412,43 @@ ClassMethod UpdateProduction() As %Status
     quit ##class(Ens.Director).UpdateProduction()
 }
 
-/// stalled_host's configured wait, read from thresholds rather than restated. Falls back
-/// to the shipped 300 when the engine's config is not readable from here.
+/// stalled_host's configured wait, for the message StalledHost() prints.
+///
+/// RESTATES the shipped 300 from `services/detection-engine/thresholds.json` -- it does not
+/// read it. Nothing writes the override global; it exists so a demo on a retuned engine can
+/// set it by hand rather than print a wrong number.
+///
+/// An earlier comment here claimed the value was "read from thresholds rather than restated",
+/// which was false: no writer existed, so it always returned 300. Correct today, because
+/// thresholds.json says 300 -- which is what made it the same defect as the 2.18x ceiling
+/// (#63), a restated constant whose comment claims it is derived. `inactiveSeconds` is
+/// hot-reloaded (ADR 0003), so a retune would make this print a wrong wait confidently.
 ClassMethod InactiveSeconds() As %Integer
 {
     quit +$get(^ProductionGuardian.Trigger("InactiveSeconds"), 300)
+}
+
+/// One setting's current value, or "" when absent. Used to capture state before arming.
+ClassMethod GetSetting(pItem As %String, pName As %String) As %String
+{
+    set def = ##class(Ens.Config.Production).%OpenId(..#PRODUCTION)
+    if '$IsObject(def) {
+        quit ""
+    }
+    set value = ""
+    for i = 1:1:def.Items.Count() {
+        set item = def.Items.GetAt(i)
+        if item.Name '= pItem {
+            continue
+        }
+        for j = 1:1:item.Settings.Count() {
+            set setting = item.Settings.GetAt(j)
+            if setting.Name = pName {
+                set value = setting.Value
+            }
+        }
+    }
+    quit value
 }
 
 }
