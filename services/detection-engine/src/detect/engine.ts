@@ -154,6 +154,7 @@ export class DetectionEngine {
             errored: proxyHost.errored,
             avgProcessingTime: proxyHost.avgProcessingTime,
             avgQueueingTime: proxyHost.avgQueueingTime,
+            lastActivityElapsedSeconds: proxyHost.lastActivityElapsedSeconds,
           },
           baselines: this.#baselines,
           config: this.#config,
