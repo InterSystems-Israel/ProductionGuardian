@@ -27,9 +27,13 @@ faster, noisier one. That trade is defensible and it is written down here in tho
 Seven end-to-end runs, all by Dev B on the only machine where the whole chain runs (#70), with
 the injection staggered across the proxy's poll phase at Dev C's request:
 
-| term | range (arithmetic, from the shipped intervals) | measured, n=7 |
+**Every measurement below was taken with the proxy polling at 5000 ms.** #75 has since halved
+that to 2500 ms, which narrows one term and re-phases another — both effects are recorded below,
+and the arithmetic bound is restated for the shipped configuration rather than the measured one.
+
+| term | range at the time of measurement | measured, n=7 |
 |---|---|---|
-| proxy staleness | `[0, 5.0)` | min 0.33, max 3.93, mean 1.77 |
+| proxy staleness | `[0, 5.0)` — 5000 ms poll | min 0.33, max 3.93, mean 1.77 |
 | engine debounce | `[5.0, 10.0)` | min 5.64, max 7.35, mean 6.13 |
 | dashboard poll | `[0, 2.0)` | bounded at 2.0; separately measured min 0.67, max 1.45, mean 1.03 |
 | **on screen** | | **min 8.81, max 11.59, mean 9.90 — 2 of 7 over 10 s** |
@@ -62,12 +66,22 @@ argument. It also means **8.86 s is the first sample from the upper half of `[5,
 arithmetic bound below is not a hypothetical worst case being defended against measurements —
 the measurements have started walking into it.
 
-So the honest bound is the arithmetic one:
+So the honest bound is the arithmetic one, stated for the **shipped** intervals — proxy 2500 ms
+(#75), engine 5000 ms, dashboard 2000 ms (#68):
 
 ```
-worst    5.0 + 10.0 + 2.0  ~=  17 s
-typical  2.5 +  7.5 + 1.0  ~=  11 s
+worst    2.5 + 10.0 + 2.0  ~=  14.5 s
+typical  1.25 + 7.5 + 1.0  ~=  9.8 s
 ```
+
+For reference, at the 5000 ms proxy poll the n=7 measurements were taken against, the same
+arithmetic gave `5.0 + 10.0 + 2.0 ≈ 17 s` worst and `~11 s` typical. **The decision does not
+move**: 20 s covered 17 s and covers 14.5 s with more margin. What changes is that a reader
+comparing the bound against the shipped configuration now gets the same answer the ADR gives.
+
+Note the typical figure has dropped below 10 s while the **bound has not**, and the bound is what
+a criterion is. That gap — a system that usually meets a bar it cannot guarantee — is the whole
+reason this ADR exists rather than a one-line change to a number.
 
 ## Why 10 s is not reachable
 
@@ -87,21 +101,30 @@ The two other terms were examined and are not where the budget is:
 
 - **the dashboard poll** was the one term gated by no invariant, and it was spent: 5 s → 2 s
   (#68), measured worst case 1.45 s. Nothing further to take
-- **the proxy scrape** is being halved 5 s → 2.5 s for margin (#44). It removes ~2.5 s from the
-  worst case and does not reach the bar. Note 2.5 and 5 are harmonically related, so this does
-  **not** decorrelate the phase-lock described above
+- **the proxy scrape** was halved 5 s → 2.5 s for margin (#75). It removes ~2.5 s from the worst
+  case and does not reach the bar. 2.5 and 5 are harmonically related, so the two timers keep a
+  fixed *ratio* — but the phase offset still wanders, so this neither prevents nor causes the
+  sweep. It was in fact the restart that revealed it
 
 ## Decision
 
-**State the criterion as: findings appear on screen within 20 s of a change, typically ~11 s,
-measured 8.8–11.6 s (n=7) — for the seven metric-derived finding types.**
+**State the criterion as: findings appear on screen within 20 s of a change, typically ~10 s,
+measured 8.8–11.6 s — for the seven metric-derived finding types.**
 
 Three numbers, each true, rather than one that needs a footnote:
 
 - **20 s** is the bound we can defend without qualification, because it covers the swept worst
-  case rather than the phase alignment we happened to measure
-- **~11 s** is the typical figure once the phase-lock artifact is removed
-- **8.8–11.6 s** is what was actually observed, with `n` and whose machine, per #70
+  case (14.5 s on the shipped intervals) rather than the phase alignment we happened to measure
+- **~10 s** is the typical figure on the shipped intervals with the phase-lock artifact removed
+  (9.8 s arithmetic). It was ~11 s before the proxy poll was halved
+- **8.8–11.6 s** is what was actually observed, with `n` and whose machine, per #70 — n=7 at the
+  5000 ms proxy poll, plus n=2 at 2500 ms which came out at 10.2 s and 11.3 s
+
+**Do not collapse these into one number.** The typical figure sits below 10 s and the bound does
+not, which is exactly the situation the criterion has to describe: a system that usually meets a
+bar it cannot guarantee. Quoting only the typical would re-create the claim this ADR exists to
+retract, and quoting only the bound would understate a product that is normally twice as good as
+its guarantee.
 
 `system_alert` is stated **separately** and is not covered by the above. Until #69 it came down a
 different path — a blind 30 s poll of the consume-on-read alerts endpoint — so its worst case was

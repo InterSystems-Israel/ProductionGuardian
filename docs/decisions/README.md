@@ -14,7 +14,7 @@ rather than in the spec itself.
 | [0002](0002-baseline-strategy.md) | Rolling 30-minute in-memory window; nothing persisted | proposed |
 | [0003](0003-threshold-configuration.md) | JSON config file, hot-reloaded, conservative defaults | proposed |
 | [0004](0004-mock-first-contracts.md) | All three build against mocked contracts from Day 1 | accepted 2026-08-12 |
-| [0005](0005-latency-bar.md) | The "updates within 10 s" criterion is not met; we state 20 s | proposed |
+| [0005](0005-latency-bar.md) | The "updates within 10 s" criterion is not met; we state 20 s, typically ~10 s | proposed |
 
 0001–0003 were drafted by Dev B, who implements them, and follow the MVP doc's recommendations.
 
