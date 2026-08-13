@@ -997,16 +997,19 @@ describe('no message ever stringifies a null (#51)', () => {
  * idle-with-queue producing nothing, ever, because the fabricated timestamp advances with the
  * poll.
  *
- * WHAT THESE TESTS DO AND DO NOT PIN, having tried to break them: they do **not** catch the
- * old code. Reverting the fix leaves all three passing, because `normalizeHost()` sets
- * `lastActivity = now - elapsed`, so the two readings agree exactly whenever `elapsed` is a
- * real number, and both produce NO finding when it is null. Verified the old path could not
- * fire even at `inactiveSeconds: 1`. The behaviour is observably identical.
+ * WHAT THESE THREE TESTS DO AND DO NOT PIN: they do **not** catch the old code. Reverting the
+ * fix leaves all three passing, because `normalizeHost()` sets `lastActivity = now - elapsed`,
+ * so any test entering through `applyPoll` is measuring an identity — the two readings cannot
+ * disagree there. Verified the old path could not fire even at `inactiveSeconds: 1`.
  *
- * So the fix removes a fabricated reading and makes the intent explicit; it does not change
- * what the engine emits. These tests pin the *intended* behaviour — silence from "no data",
- * and firing the moment a real reading arrives — which is worth having even though it was
- * already true.
+ * The regression IS pinnable, at the rule boundary, where the input can be a combination
+ * normalizeHost never emits: see "declines when the idle time is unknown, even if the
+ * published stamp is stale" in `rules.test.ts` (@tanifgit, #60 review). I had concluded no
+ * test could distinguish the two paths; that was wrong, and it was wrong because I only
+ * checked the entry point I had already been using.
+ *
+ * These three still earn their place: they pin the behaviour end to end, which the
+ * rule-boundary test does not.
  *
  * The part of #58 that IS a live defect is the published `Host.lastActivity`, which still
  * carries the poll clock for a host that has never run. That needs a nullable field, i.e. a
