@@ -158,83 +158,41 @@ describe('default scenario coverage', () => {
 });
 
 /**
- * The demo loop's timing has a FLOOR, and shortening the poll interval silently crosses it
- * (#64, found by @tanifgit).
+ * The demo loop needs the poll interval to satisfy the SAMPLE gate, which binds long before
+ * coverage does (#64, #65).
  *
- * `sustainedSeconds` (#46) gates confirmation on elapsed *time*; `DEFAULT_SCENARIO`'s steps
- * are counted in *polls*. So a degraded step is visible for `(polls − 1) × interval`, and a
- * condition confirms only if that reaches `sustainedSeconds`. Reproduced across the range:
+ * My first version of this modelled the wrong quantity, and @tanifgit measured it: it asserted
+ * that a degraded RUN spans `sustainedSeconds`, whereas confirmation is gated on the gap
+ * between the FIRST TWO samples. At a 1500ms interval a 4-poll run spans 4500ms and satisfied
+ * my model, while the real gate needed 4000ms between sample 1 and sample 2 and got 1500ms. So
+ * the two assertions passed across the entire broken range and never fired at all.
  *
- *     10000ms -> 8/8      1750ms -> 6/8      (loses queue_buildup, system_alert)
- *      5000ms -> 8/8      1250ms -> 4/8      (+ elevated_error_rate, stalled_host)
- *      2000ms -> 8/8       700ms -> 0/8      (everything, including dead_host)
+ * They also produced a derived "floor" of 1334ms, which is neither of the two real numbers:
  *
- * The failure is silent and looks like a broken engine rather than a misconfiguration —
- * @tanifgit's own note recommending `POLL_INTERVAL_MS=700` was written before #46 added the
- * time gate, and following it now shows no findings at all.
+ *     4500ms   the jitter invariant breaks first (test/engine.test.ts, #46)
+ *     2500ms   the reachability invariant breaks
+ *     1750ms   coverage finally breaks -- 6/8 types
  *
- * The two existing notes on `sustainedSeconds` ("must be reachable within sustainedSamples
- * polls WITH MARGIN") reason about a *persisting* condition. This is the case they do not
- * cover: a condition that lasts a handful of polls, which is every step in the demo loop.
+ * So the shipped 5000ms is AT the floor with 1000ms of margin, not comfortably above a 2000ms
+ * one. Coverage is never the first thing to break, and both invariants are already asserted in
+ * `test/engine.test.ts` in the form that binds. Two arithmetic models of one constraint, from
+ * different angles, is how the 1334ms figure happened -- so this file asserts the shipped
+ * cadence satisfies the gate and defers the reasoning rather than restating it.
  */
 describe('demo-loop timing floor (#64)', () => {
-  /**
-   * Contiguous non-healthy RUNS, not individual steps.
-   *
-   * My first version of this asserted the shortest degraded *step* and failed immediately:
-   * the error storm is four consecutive 1-poll steps, each spanning 0ms on its own. The
-   * condition they represent persists across all four, so the run is the unit that has to
-   * clear the gate — which is also why the storm was written as four fixtures rather than
-   * one held for four polls (see DEFAULT_SCENARIO's comment on the rising counter).
-   */
-  function degradedRunSpansMs(): number[] {
-    const spans: number[] = [];
-    let polls = 0;
-    for (const step of DEFAULT_SCENARIO) {
-      if (step.fixture === 'healthy') {
-        if (polls > 0) spans.push((polls - 1) * POLL_MS);
-        polls = 0;
-      } else {
-        polls += step.polls;
-      }
-    }
-    if (polls > 0) spans.push((polls - 1) * POLL_MS);
-    return spans;
-  }
-
-  it('every degraded run outlives sustainedSeconds at the shipped interval', () => {
-    // Asserted as ARITHMETIC rather than by running the loop, so it fails on a retune of
-    // POLL_INTERVAL_MS, sustainedSeconds OR a step's poll count — the coverage test above
-    // only fails once a finding type has already been lost.
+  it('the shipped interval satisfies the sample gate with margin', () => {
+    // Deliberately the SAME arithmetic as `the shipped gate is reachable within
+    // sustainedSamples polls, WITH MARGIN` in test/engine.test.ts, which is the assertion
+    // that actually binds. Repeated here only because this file is where someone changing
+    // POLL_MS for the demo loop will be looking; the engine test is the authority.
     const gateMs = DEFAULT_CONFIG.sustainedSeconds * 1000;
-    const spans = degradedRunSpansMs();
-    assert.ok(spans.length > 0, 'the scenario must contain a degraded run at all');
-
-    for (const span of spans) {
-      assert.ok(
-        span >= gateMs,
-        `a degraded run spans ${span}ms but sustainedSeconds needs ${gateMs}ms — a finding ` +
-          `type can no longer confirm. Lengthen the run, shorten the gate, or raise ` +
-          `POLL_INTERVAL_MS. Measured floor: 8/8 down to 2000ms, 6/8 at 1750ms, 0/8 at 700ms.`,
-      );
-    }
-  });
-
-  it('names the interval below which coverage breaks', () => {
-    // The number an operator actually needs, derived rather than written down: the shortest
-    // degraded run divided into the gate. Documented in .env.example against this value.
-    const gateMs = DEFAULT_CONFIG.sustainedSeconds * 1000;
-    const shortestRunPolls = Math.min(
-      ...degradedRunSpansMs().map((span) => span / POLL_MS + 1),
-    );
-    const floorMs = Math.ceil(gateMs / (shortestRunPolls - 1));
+    const spanCoveredBySamples = (DEFAULT_CONFIG.sustainedSamples - 1) * POLL_MS;
 
     assert.ok(
-      POLL_MS >= floorMs,
-      `the shipped ${POLL_MS}ms is below the ${floorMs}ms floor for this scenario`,
+      spanCoveredBySamples > gateMs,
+      `POLL_INTERVAL_MS=${POLL_MS} gives ${spanCoveredBySamples}ms between the first two ` +
+        `samples, which does not clear sustainedSeconds=${DEFAULT_CONFIG.sustainedSeconds} ` +
+        `with margin. Nothing confirms on the second sample. See test/engine.test.ts.`,
     );
-    // Guards the guard: if the floor ever computes at or above the shipped value, the
-    // margin this test claims to protect has already gone.
-    assert.ok(floorMs < POLL_MS, `no margin left: floor ${floorMs}ms vs shipped ${POLL_MS}ms`);
   });
 });

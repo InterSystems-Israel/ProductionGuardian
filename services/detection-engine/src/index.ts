@@ -9,12 +9,20 @@
  *   PORT                   default 3002
  *   POLL_INTERVAL_MS       default 5000 (matches the proxy's IRIS poll)
  *
- * DO NOT SHORTEN POLL_INTERVAL_MS BELOW ~2000 WITHOUT READING #64. `sustainedSeconds` gates
- * confirmation on elapsed TIME, so a condition that lasts a fixed number of polls becomes
- * unconfirmable as the interval shrinks. Measured against the demo loop: 8/8 finding types
- * down to 2000ms, 6/8 at 1750ms, 4/8 at 1250ms, and 0/8 at 700ms -- including `dead_host`.
- * The failure is silent and looks like a broken engine rather than a misconfiguration.
- * `test/scenario.test.ts` now asserts the arithmetic, so it fails loudly instead.
+ * DO NOT SHORTEN POLL_INTERVAL_MS. 5000 is AT the floor, not above it -- 4500 already breaks
+ * an invariant. `sustainedSeconds: 4` (#46) gates confirmation on the elapsed time between the
+ * first two samples, so `(sustainedSamples - 1) x interval` must exceed it with margin:
+ * 1 x 5000 > 4000 leaves 1000ms. Measured by sweeping the default (#65):
+ *
+ *   4500ms   the jitter invariant fails -- a fetch quicker than the last slips confirmation
+ *   2500ms   the reachability invariant fails -- nothing confirms on the second sample
+ *   1750ms   coverage finally drops, 6/8 finding types
+ *    700ms   0/8, including `dead_host`
+ *
+ * Coverage is NOT the first thing to break, which is what makes shortening this dangerous:
+ * by the time findings go missing, the debounce has been broken for 3000ms of interval.
+ * `test/engine.test.ts` asserts both invariants, so a change fails loudly rather than
+ * silently. Shortening it therefore means retuning `sustainedSeconds` in the same change.
  */
 
 import { dirname, resolve } from 'node:path';
