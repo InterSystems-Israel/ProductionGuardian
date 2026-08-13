@@ -20,6 +20,11 @@
 /// IDEMPOTENT. Every step checks before acting and reports what it found, so re-running
 /// after a partial failure is safe and says what it skipped.
 ///
+/// VERIFIED ONLY AGAINST AN ALREADY-CONFIGURED INSTANCE, which is the only state we have --
+/// every step reported "exists" and changed nothing. The FRESH-namespace path, where each
+/// step actually creates something, cannot be exercised until there is a second environment
+/// (#70, #72). Treat the create branches as unproven until then.
+///
 /// WHAT IT DOES NOT DO. It does not create the namespace or enable interop -- that is
 /// `%Library.EnsembleMgr.EnableNamespace`, it takes minutes, and it has its own failure
 /// modes (a dropped connection mid-call is the config activating, not an error). Run that
@@ -68,7 +73,10 @@ ClassMethod Run(pSourceDir As %String = "", pStartGenerator As %Boolean = 1) As 
         quit sc
     }
 
-    do ..ApplyDeploymentSettings()
+    set sc = ..ApplyDeploymentSettings()
+    if $$$ISERR(sc) {
+        quit sc
+    }
 
     set sc = ..StartProduction()
     if $$$ISERR(sc) {
@@ -199,22 +207,41 @@ ClassMethod EnableMetrics() As %Status
 /// Absent globals leave the shipped values alone, so this is a no-op on the verified
 /// instance -- deliberately, because silently rewriting a working deployment is the defect
 /// Reset() had in #66.
-ClassMethod ApplyDeploymentSettings()
+ClassMethod ApplyDeploymentSettings() As %Status
 {
     set server = $get(^ProductionGuardian.Setup("HTTPServer"), "")
     set port = $get(^ProductionGuardian.Setup("HTTPPort"), "")
     if (server = "") && (port = "") {
         write "6b. deployment settings: none set, keeping Production.cls values", !
-        quit
+        quit $$$OK
     }
+    // Triggers.#OPERATION rather than a second copy of "Cloud API". That parameter exists
+    // precisely so the name lives in one place (root CLAUDE.md §5), and re-copying it here
+    // would matter more than usual: see the status check below.
+    set item = ##class(ProductionGuardian.LabDemo.Triggers).#OPERATION
+
+    // CHECK THE STATUS. Calling SetSetting with `do` discarded it, so the
+    // no-such-config-item error added in #66 went unreported -- a rename of the operation
+    // would leave a container's first boot silently misconfigured against the wrong web
+    // gateway, which is the failure this whole class exists to prevent. Verified: the error
+    // is returned and `do` swallows it (@tanifgit, #73).
     if server '= "" {
-        do ##class(ProductionGuardian.LabDemo.Triggers).SetSetting("Cloud API", "Adapter", "HTTPServer", server)
+        set sc = ##class(ProductionGuardian.LabDemo.Triggers).SetSetting(item, "Adapter", "HTTPServer", server)
+        if $$$ISERR(sc) {
+            write "6b. HTTPServer FAILED: ", $system.Status.GetErrorText(sc), !
+            quit sc
+        }
         write "6b. HTTPServer -> ", server, !
     }
     if port '= "" {
-        do ##class(ProductionGuardian.LabDemo.Triggers).SetSetting("Cloud API", "Adapter", "HTTPPort", port)
+        set sc = ##class(ProductionGuardian.LabDemo.Triggers).SetSetting(item, "Adapter", "HTTPPort", port)
+        if $$$ISERR(sc) {
+            write "6b. HTTPPort FAILED: ", $system.Status.GetErrorText(sc), !
+            quit sc
+        }
         write "6b. HTTPPort   -> ", port, !
     }
+    quit $$$OK
 }
 
 /// Start the production, or report it already running. Refuses to switch a DIFFERENT
