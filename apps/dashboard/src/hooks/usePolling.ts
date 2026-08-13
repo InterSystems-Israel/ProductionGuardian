@@ -6,7 +6,9 @@
  *    "last updated" meaningless
  *  - abort the in-flight request before each new tick and on unmount
  *  - pause while `document.hidden`, refetch immediately on becoming visible
- *  - back off 5s → 10s → 20s → 30s on failure, reset on the first success
+ *  - back off by doubling the interval on each failure, capped at 30s, reset on
+ *    the first success — the sequence is derived from the interval, not fixed, so
+ *    it moves with `VITE_POLL_INTERVAL_MS` rather than being restated here
  *
  * Everything funnels through one `schedule()`/`runAndReschedule()` pair, and
  * every entry point clears the pending timer first. Rescheduling logic lives in
@@ -16,10 +18,25 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-const DEFAULT_INTERVAL_MS = 5000;
+/**
+ * 2s, not 5s (#44).
+ *
+ * This poll is the last stage between a change in IRIS and a change on screen, and once
+ * Dev B measured the engine-visible latency at 6.0-7.2s it became the largest single
+ * remaining term: a 5s poll put the worst case at 11-12s against a 10s bar. Every upstream
+ * stage is gated by an invariant that makes shortening it a trade -- the proxy's scrape rate
+ * against a customer instance, and the engine's `sustainedSeconds` debounce, which is the
+ * false-positive protection MVP §6 asks for and which puts a hard floor at its shipped 5000ms
+ * (#64). This stage is gated by nothing: the engine serves from memory and no correctness
+ * property depends on how often we ask.
+ *
+ * So it is the one term to spend. Halving it again would buy a second and cost nothing
+ * either, but 2s already brings the worst case under the bar and the returns stop there.
+ */
+const DEFAULT_INTERVAL_MS = 2000;
 const MAX_BACKOFF_MS = 30_000;
 
-/** Poll cadence from `VITE_POLL_INTERVAL_MS`, falling back to 5s. */
+/** Poll cadence from `VITE_POLL_INTERVAL_MS`, falling back to 2s. */
 export function pollIntervalMs(): number {
   const raw = import.meta.env.VITE_POLL_INTERVAL_MS;
   if (raw === undefined) return DEFAULT_INTERVAL_MS;
@@ -96,7 +113,8 @@ export function usePolling({ onTick, intervalMs }: UsePollingOptions): UsePollin
   scheduleRef.current = (): void => {
     clearTimer();
     const failures = failuresRef.current;
-    // 5s → 10s → 20s → 30s (capped), per §4.4.
+    // Doubling from the interval, capped — §4.4. Not a written-out sequence, because it
+    // moves with the interval and a copied one goes stale the moment that changes.
     const delay =
       failures === 0 ? intervalMs : Math.min(intervalMs * 2 ** failures, MAX_BACKOFF_MS);
     setCurrentDelayMs(delay);
