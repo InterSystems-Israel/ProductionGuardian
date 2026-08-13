@@ -54,7 +54,27 @@ OBJECTSCRIPT
 
 # Then the nine steps, in one call. Compile from the read-only source mount so a class
 # change is a restart rather than an image rebuild.
+#
+# SET THE DEPLOYMENT GLOBALS FIRST. Production.cls ships HTTPServer=webgateway-webinar --
+# the verified demo instance's web gateway container name, which does not resolve on the
+# compose network. ApplyDeploymentSettings() exists precisely to override it, but it is a
+# no-op unless these globals are set BEFORE Run() reaches step 6b, and nothing set them:
+# the first clean compose run printed "6b. deployment settings: none set" and Cloud API then
+# sat in Retry with 151 messages queued while every other host read OK.
+#
+# That failure is quiet in the way that matters -- the production runs, metrics flow, the
+# dashboard renders three hosts, and the only clue is one host retrying against a hostname
+# that never existed here.
+#
+# PG_WEBGATEWAY_SERVICE lets a differently-named compose service override it without
+# touching the production.
+GATEWAY_SERVICE="${PG_WEBGATEWAY_SERVICE:-webgateway}"
+GATEWAY_PORT="${PG_WEBGATEWAY_INTERNAL_PORT:-80}"
+
 iris session IRIS -U LABDEMO <<OBJECTSCRIPT
+set ^ProductionGuardian.Setup("HTTPServer") = "$GATEWAY_SERVICE"
+set ^ProductionGuardian.Setup("HTTPPort") = $GATEWAY_PORT
+write "deployment target: $GATEWAY_SERVICE:$GATEWAY_PORT", !
 set sc = \$system.OBJ.LoadDir("$SETUP_SRC", "ck", .e, 1)
 write "setup classes: ", \$select(sc: "compiled", 1: \$system.Status.GetErrorText(sc)), !
 set sc = ##class(ProductionGuardian.Setup.FirstBoot).Run("$SRC", 1)

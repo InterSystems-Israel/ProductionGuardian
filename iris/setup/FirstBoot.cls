@@ -66,6 +66,7 @@ ClassMethod Run(pSourceDir As %String = "", pStartGenerator As %Boolean = 1) As 
 
     do ..MakeDirectories()
     do ..RegisterWebApps()
+    do ..ClearPasswordChangeFlag()
     do ..CreateCredential()
 
     set sc = ..EnableMetrics()
@@ -167,6 +168,55 @@ ClassMethod RegisterWebApps()
         set sc = ##class(Security.Applications).Create(path, .props)
         write "4. web app ", path, ": ", $select(sc: "created", 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
     }
+}
+
+/// Clear the "must change password on next login" flag on the account the proxy polls with.
+///
+/// A FRESH container ships `superuser` with ChangePassword=1, and IRIS then refuses REST
+/// authentication until the password has been changed interactively -- so every request to
+/// /labdemo/monitor/hoststatus comes back 401 no matter which credential is presented, even
+/// the correct one. The verified demo instance has ChangePassword=0 only because somebody
+/// changed it by hand months ago, which is exactly the kind of undocumented manual step this
+/// class exists to capture (#73).
+///
+/// WHY IT LOOKS LIKE SOMETHING ELSE. The failure is partial in a very misleading way:
+/// /api/monitor/metrics answers 200 UNAUTHENTICATED (it is served at the web server root,
+/// where the %All-less monitor role suffices), so metrics flow, the proxy reports healthy,
+/// the dashboard shows three hosts -- and only `queued` and `errored` are null, because
+/// those two come from the one endpoint that needs a login. The visible symptom is a missing
+/// FIELD, which reads as a parser or contract problem rather than an auth one. Found on the
+/// first clean compose run; the 401 is in the proxy log, but the proxy correctly degrades
+/// instead of failing, so nothing upstream goes red.
+///
+/// Do not misread this as an AutheEnabled problem. Both web applications are 96
+/// (unauthenticated OR password) and that is correct; an unauthenticated GET through an
+/// external gateway is refused regardless, which is why the credential exists at all. I
+/// changed /labdemo/monitor to 32 while diagnosing this and it made no difference -- the
+/// working instance returns 401 without auth too. The password flag was the whole story.
+ClassMethod ClearPasswordChangeFlag()
+{
+    set user = $get(^ProductionGuardian.Setup("CredUser"), "superuser")
+    set pass = $get(^ProductionGuardian.Setup("CredPass"), "SYS")
+
+    new $namespace
+    set $namespace = "%SYS"
+
+    if '##class(Security.Users).Exists(user) {
+        write "4b. user ", user, ": DOES NOT EXIST -- cannot clear password flag", !
+        quit
+    }
+    do ##class(Security.Users).Get(user, .props)
+    if +$get(props("ChangePassword")) = 0 {
+        write "4b. user ", user, ": password flag already clear", !
+        quit
+    }
+    // Setting Password alongside ChangePassword=0 is required: clearing the flag on its own
+    // leaves the account in a state IRIS still treats as needing a change.
+    kill p
+    set p("Password") = pass
+    set p("ChangePassword") = 0
+    set sc = ##class(Security.Users).Modify(user, .p)
+    write "4b. user ", user, ": ", $select(sc: "password flag cleared", 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
 }
 
 /// The credential Cloud API POSTs with. Through an external gateway the REST app answers

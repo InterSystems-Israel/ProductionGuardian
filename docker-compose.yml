@@ -26,6 +26,29 @@
 name: production-guardian
 
 services:
+  # ─── 0. volume permissions ──────────────────────────────────────────────────────────
+  # A fresh named volume mounts root-owned (0:0), but IRIS runs as irisowner (51773), so
+  # the very first start dies before the healthcheck ever runs:
+  #
+  #   Error while moving data directories ERROR #5001: Cannot create target: /iris-shared/durable/
+  #   [FATAL] Error starting InterSystems IRIS (final attempt)
+  #
+  # WHY THIS WAS NOT ALREADY KNOWN: the working demo instance bind-mounts a Windows host
+  # directory, and Docker Desktop's Windows bind mounts ignore unix ownership entirely, so
+  # the durable path is writable there by accident of the platform. Switching to a named
+  # volume -- which is what makes the namespace survive `compose down` -- is what exposes it.
+  # The two mount types are not interchangeable, and this is the difference.
+  #
+  # Runs to completion and exits 0; `service_completed_successfully` below is what orders it
+  # ahead of IRIS. Idempotent, so a restart on an already-correct volume is a no-op.
+  iris-init:
+    image: ${PG_IRIS_IMAGE:-productionguardian/irishealth:local}
+    container_name: pg-iris-init
+    user: root
+    volumes:
+      - iris-data:/iris-shared
+    entrypoint: ["sh", "-c", "chown -R 51773:51773 /iris-shared && echo 'iris-init: /iris-shared owned by irisowner'"]
+
   # ─── 1. IRIS ────────────────────────────────────────────────────────────────────────
   # LABDEMO namespace, the production, and the HL7 generator.
   #
@@ -50,6 +73,9 @@ services:
       # ISC_DATA_DIRECTORY makes the namespace survive `compose down`; without it the
       # LABDEMO setup would re-run from scratch every time.
       ISC_DATA_DIRECTORY: /iris-shared/durable
+    depends_on:
+      iris-init:
+        condition: service_completed_successfully
     # FirstBoot runs AFTER IRIS is up, so it cannot be the entrypoint -- the image's own
     # /iris-main must stay in charge of starting and stopping IRIS cleanly. Run it once the
     # container is healthy:
@@ -87,6 +113,40 @@ services:
       # NOT read-only: generate-csp-ini.sh writes CSP.ini here from the committed
       # template on first start, because we do not commit a password field (§5).
       - ./docker/webgateway:/webgateway-shared
+    environment:
+      # THE MOUNT ALONE DOES NOTHING. Without these two the image writes its own default
+      # CSP.ini at /opt/webgateway/bin/CSP.ini with `Ip_Address=127.0.0.1` -- the gateway
+      # then looks for IRIS inside its OWN container, finds nothing, and answers every
+      # request with a bare 404. Not a 502, not a connection error: a 404, which reads as
+      # "the web application is not registered in IRIS" and sends you to fix the wrong thing.
+      # That is what /api/monitor/metrics and /labdemo/monitor/hoststatus both did on the
+      # first real compose run, while IRIS itself was healthy the whole time.
+      # Copied from the verified demo instance, which sets exactly these.
+      ISC_CSP_INI_FILE: /webgateway-shared/CSP.ini
+      ISC_CSP_CONF_FILE: /webgateway-shared/CSP.conf
+    # Generate CSP.ini from the committed template before Apache starts, then hand off to the
+    # image's own entrypoint. The script is a no-op when CSP.ini already exists, so a restart
+    # keeps whatever an operator edited by hand.
+    entrypoint: ["sh", "-c", "/webgateway-shared/generate-csp-ini.sh && exec /startWebGateway"]
+    # OVERRIDING THE IMAGE'S OWN HEALTHCHECK, which is broken in the image itself:
+    #
+    #   Test: [CMD-SHELL ["/webGatewayHealth.sh"] || exit 1]
+    #
+    # CMD-SHELL passes the string to `sh -c`, so the JSON-array brackets are handed to the
+    # shell literally and it looks for a command NAMED `[/webGatewayHealth.sh]`:
+    #
+    #   /bin/sh: 1: [/webGatewayHealth.sh]: not found
+    #
+    # The script is present and executable -- only the quoting is wrong -- so the service sits
+    # permanently `unhealthy` while serving 200s perfectly. Left alone that trains everyone to
+    # ignore this container's health, which is the state in which a real failure goes unnoticed.
+    # Exec form, no shell, no brackets.
+    healthcheck:
+      test: ["CMD", "/webGatewayHealth.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     depends_on:
       iris:
         condition: service_healthy
@@ -97,7 +157,11 @@ services:
       context: ./services/metrics-proxy
     container_name: pg-metrics-proxy
     ports:
-      - "3001:3001"
+      # Overridable because the host may already be running a dev proxy on 3001 -- which is
+      # the normal state while the demo instance is up, so a fixed mapping made the stack
+      # un-runnable exactly when someone would most want to compare the two.
+      # Container side stays 3001: only the host mapping moves.
+      - "${PG_PROXY_PORT:-3001}:3001"
     environment:
       # Through the gateway on :80, not the IRIS container on 52773 — same reason as
       # Production.cls. IRIS_BASE_PATH stays empty: on this instance /api/monitor/ is at
@@ -126,7 +190,10 @@ services:
       context: ./services/detection-engine
     container_name: pg-detection-engine
     ports:
-      - "3002:3002"
+      # Overridable, same reason as the proxy above. The dashboard reaches the engine over the
+      # compose network (HEALTHSCAN_UPSTREAM), so moving the HOST port does not affect it --
+      # this mapping is only for curling the findings API from the host.
+      - "${PG_ENGINE_PORT:-3002}:3002"
     environment:
       PROXY_MODE: live
       PROXY_BASE_URL: http://metrics-proxy:3001
