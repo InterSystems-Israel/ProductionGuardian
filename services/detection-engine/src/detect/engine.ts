@@ -54,6 +54,8 @@ export class DetectionEngine {
   #stale = false;
   /** Inert-override warnings already emitted, so the log is not repeated per poll. */
   #warnedOverrides = new Set<string>();
+  /** Unattributed alerts already logged, so a persistent one is reported once (#61). */
+  #loggedUnattributedAlerts = new Set<string>();
   readonly #log: (msg: string) => void;
 
   #config: ThresholdConfig;
@@ -179,9 +181,43 @@ export class DetectionEngine {
     }
 
     this.#warnInertOverrides(seenHosts);
+    this.#logUnattributedAlerts(response.alerts, seenHosts);
 
     this.#lastPollAt = now;
     this.#stale = false;
+  }
+
+  /**
+   * Log each alert that matches no configured host, once (#61).
+   *
+   * `system_alert` matches an alert to a host by the host name appearing in the message
+   * text, and only REPORTED hosts are candidates -- framework items are skipped before
+   * `seenHosts` is built, so they are configured but not reported. So an instance-level alert
+   * (disk, license, journal) AND an alert naming a framework host both produce NO finding. That is deliberate for MVP 1 (see CLAUDE.md §5.2b: the alternatives
+   * are a pseudo-host that breaks the "only config items appear" guarantee, or a
+   * production-level channel that belongs to Health Summary).
+   *
+   * But silently discarding it is worse than declining it: a consumer cannot tell "no such
+   * alert" from "alert dropped" by reading either endpoint. This makes the gap visible in
+   * operation for the cost of a log line, with no contract change.
+   *
+   * Keyed by alert time + message so a persistent alert logs once rather than every poll --
+   * the same reasoning as `#warnedOverrides`.
+   */
+  #logUnattributedAlerts(
+    alerts: readonly ProxyAlert[],
+    seenHosts: ReadonlySet<string>,
+  ): void {
+    for (const alert of alerts) {
+      if ([...seenHosts].some((host) => alert.message.includes(host))) continue;
+      const key = `${alert.time}|${alert.message}`;
+      if (this.#loggedUnattributedAlerts.has(key)) continue;
+      this.#loggedUnattributedAlerts.add(key);
+      this.#log(
+        `alert matches no reported host, so no finding is emitted for it ` +
+          `(severity ${alert.severity}): ${alert.message}`,
+      );
+    }
   }
 
   snapshot(): EngineSnapshot {

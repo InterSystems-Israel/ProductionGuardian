@@ -1151,3 +1151,98 @@ describe('stalled_host declines on an unmeasured activity time (#58)', () => {
     );
   });
 });
+
+/**
+ * An alert matching no host is logged, not silently dropped (#61).
+ *
+ * `system_alert` matches by host name appearing in the message text, so instance-level
+ * alerts — disk space, license limit, journal full, write daemon — produce no finding at all.
+ * That limitation is deliberate for MVP 1 (CLAUDE.md §5.2b), but it must be visible: a
+ * consumer cannot tell "no such alert" from "alert discarded" by reading either endpoint.
+ *
+ * Raised by @tanifgit on #61, who noted they would have guessed such alerts appeared
+ * unattributed rather than not at all — which is the reason the gap has to be stated rather
+ * than merely accepted.
+ */
+describe('unattributed alerts are logged (#61)', () => {
+  function withAlert(message: string): ProxyResponse {
+    return {
+      ...response([proxyHost({ host: 'Cloud API' })]),
+      alerts: [{ time: '2026-08-06T15:59:00Z', severity: '1', message }],
+    };
+  }
+
+  it('logs an instance-level alert and emits no finding for it', () => {
+    const lines: string[] = [];
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), (m) => lines.push(m));
+    engine.applyPoll(withAlert('Journal file system is full'), T0);
+
+    assert.deepEqual(
+      engine.snapshot().findings.map((f) => f.type),
+      [],
+      'an alert naming no host must not produce a finding',
+    );
+    assert.equal(lines.length, 1, `expected one log line, got ${JSON.stringify(lines)}`);
+    assert.match(lines[0] ?? '', /matches no reported host/);
+    assert.match(lines[0] ?? '', /Journal file system is full/, 'the text must be quoted');
+  });
+
+  it('logs it ONCE, not every poll', () => {
+    // Same reasoning as #warnedOverrides: a persistent alert would otherwise fill the log.
+    const lines: string[] = [];
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), (m) => lines.push(m));
+    let at = T0;
+    for (let i = 0; i < 20; i += 1) {
+      engine.applyPoll(withAlert('License limit exceeded'), at);
+      at += POLL_MS;
+    }
+    assert.equal(lines.length, 1, `logged ${lines.length} times across 20 polls`);
+  });
+
+  it('logs an alert naming a FRAMEWORK host, which is configured but not reported', () => {
+    // @tanifgit's fourth case on #62, and the one most likely to be hit: /api/monitor/alerts
+    // is largely about IRIS's own subsystems. A framework item IS a config item, but
+    // applyPoll skips isFrameworkHost() before building seenHosts, so it is not a candidate
+    // for attribution and the alert produces no finding.
+    //
+    // Pins against a plausible tidy-up: build seenHosts BEFORE the framework guard and a
+    // framework-named alert stops being logged while still producing no finding — straight
+    // back to invisible, with the other three tests green.
+    const lines: string[] = [];
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), (m) => lines.push(m));
+    engine.applyPoll(
+      {
+        ...response([
+          proxyHost({ host: 'Cloud API' }),
+          proxyHost({ host: 'Ens.MonitorService', isFramework: true }),
+        ]),
+        alerts: [
+          { time: '2026-08-06T15:59:00Z', severity: '1', message: 'Ens.MonitorService failed to start' },
+        ],
+      },
+      T0,
+    );
+
+    assert.deepEqual(
+      engine.snapshot().findings.map((f) => f.type),
+      [],
+      'a framework host is not an attribution candidate',
+    );
+    assert.equal(lines.length, 1, `expected the gap to be logged, got ${JSON.stringify(lines)}`);
+    assert.match(lines[0] ?? '', /no reported host/, 'and "reported" is the accurate word');
+  });
+
+  it('does NOT log an alert that does name a host', () => {
+    // Otherwise the log would fire on exactly the alerts that work correctly.
+    const lines: string[] = [];
+    const engine = new DetectionEngine(structuredClone(DEFAULT_CONFIG), (m) => lines.push(m));
+    engine.applyPoll(withAlert('Cloud API failed to send message'), T0);
+    engine.applyPoll(withAlert('Cloud API failed to send message'), T0 + POLL_MS);
+
+    assert.deepEqual(lines, [], 'a host-attributable alert is handled, not reported as a gap');
+    assert.ok(
+      engine.snapshot().findings.some((f) => f.type === 'system_alert'),
+      'and it must still fire',
+    );
+  });
+});
