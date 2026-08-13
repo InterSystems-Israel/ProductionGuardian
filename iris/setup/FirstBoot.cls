@@ -241,7 +241,11 @@ ClassMethod CreateCredential()
 ClassMethod EnableMetrics() As %Status
 {
     write "6. interop metrics:", !
-    quit ##class(ProductionGuardian.Setup.EnableMetrics).Run()
+    // Pass OUR production name explicitly. This runs before StartProduction, so the active
+    // production is still the image's own LABDEMOPKG.FoundationProduction -- letting the
+    // check default to "whatever is running" made it inspect that one and print an ACTION
+    // REQUIRED for an item Production.cls already contains (@tanifgit, #78).
+    quit ##class(ProductionGuardian.Setup.EnableMetrics).Run(..#PRODUCTION)
 }
 
 /// Apply the three settings that depend on the deployment, from overridable globals.
@@ -309,6 +313,27 @@ ClassMethod StartProduction() As %Status
         quit $$$ERROR($$$GeneralError, "a different production is running: " _ running)
     }
     set sc = ##class(Ens.Director).StartProduction(..#PRODUCTION)
+
+    // A CONTAINER STOP IS NOT A CLEAN SHUTDOWN. `docker stop` / `compose stop` / a host
+    // reboot kills IRIS with the production still running, and the next start then refuses:
+    //
+    //   ERROR <Ens>ErrProductionNotShutdownCleanly: Production '...' was not shutdown cleanly
+    //
+    // CleanProduction() clears that state and is the documented recovery. Retrying once here
+    // rather than reporting the error is deliberate: for a containerised demo an unclean stop
+    // is the NORMAL case, not an exception worth a human decision, and the alternative is a
+    // stack that comes up dead every second time it is started with no hosts and no findings.
+    // Only reached on that specific failure -- any other error still surfaces.
+    if $$$ISERR(sc), $system.Status.GetErrorText(sc) [ "NotShutdownCleanly" {
+        write "7. production: previous run did not shut down cleanly, cleaning...", !
+        set clean = ##class(Ens.Director).CleanProduction()
+        if $$$ISERR(clean) {
+            write "7. CleanProduction FAILED: ", $system.Status.GetErrorText(clean), !
+            quit clean
+        }
+        set sc = ##class(Ens.Director).StartProduction(..#PRODUCTION)
+    }
+
     write "7. production ", ..#PRODUCTION, ": ", $select(sc: "started", 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
     quit sc
 }

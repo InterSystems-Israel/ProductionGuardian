@@ -8,33 +8,40 @@ system alerts. It detects and reports; it does not act (root `CLAUDE.md` §2).
 ## Running the whole chain
 
 ```bash
-docker compose up
+./docker/up.sh
 ```
+
+That runs the preflight check, starts IRIS, waits for it to be genuinely ready, runs first
+boot, and then brings up the rest. Plain `docker compose up` also works, but you have to do
+the two-step first boot below yourself.
 
 Then open **http://localhost:5173/?mode=live**
 
 `?mode=live` matters. Without it the dashboard serves demo fixtures rather than live IRIS
 data — which is the intended fallback, not a failure.
 
-### Prerequisites — one time, and `compose up` will tell you if you skip it
+### Prerequisites — one time, and `up.sh` will tell you if you skip it
 
 The IRIS image is **not pullable**. It comes from the InterSystems Early Access Program,
 which needs a customer login rather than a registry credential, so this repo references a
 **local tag** and contains no credentials at all.
 
 ```bash
-# 1. Download the AI Hub image from the EAP portal
+# 1. Download the AI Hub image from the EAP portal.
+#    It arrives as an OCI archive. Note it may be named .tar.gz while actually being an
+#    uncompressed tar -- docker load handles either, so do not try to gunzip it first.
 # 2. Load it
 docker load -i <the-downloaded-file>
 # 3. Tag it to the name compose expects
 docker tag <loaded-name>:<tag> productionguardian/irishealth:local
 ```
 
-Same for the web gateway image, tagged `productionguardian/webgateway:local`.
+One image, and no web gateway image: this build serves HTTP itself (see below).
 
 `docker/preflight.sh` checks for the tag and prints this sequence if it is missing — because
 Docker's own error is `pull access denied ... repository does not exist`, which reads as a
-typo rather than a missed prerequisite.
+typo rather than a missed prerequisite. `up.sh` runs it; until #78 nothing did, which made
+this heading untrue.
 
 **Why a local tag rather than a registry path:** compose then reproduces *the* system every
 measurement in `docs/decisions/0005` and issue #70 was taken against. Pointing at the public
@@ -46,26 +53,39 @@ question (#72).
 IRIS needs its namespace, classes, web applications, credential and production once:
 
 ```bash
-docker compose exec iris /pg-firstboot.sh
+docker compose exec iris sh /pg-firstboot.sh
 ```
+
+`up.sh` does this for you. Run it directly if you started with plain `docker compose up`.
 
 This calls `ProductionGuardian.Setup.FirstBoot`, which is idempotent — safe to re-run, and
 it reports what it found rather than what it assumed. It is not the container entrypoint on
 purpose: the image's own `/iris-main` must stay in charge of starting and stopping IRIS
 cleanly, and first boot has to happen *after* IRIS is accepting sessions.
 
-## The five services
+## The four services
 
 | service | port | what it does |
 |---|---|---|
-| `iris` | — | LABDEMO namespace, the production, the HL7 generator |
-| `webgateway` | 80 | Apache + the IRIS gateway. `/api/monitor/*`, `/labdemo/*`, the Management Portal |
+| `iris` | 52773 | LABDEMO namespace, the production, the HL7 generator — and the HTTP endpoints |
 | `metrics-proxy` | 3001 | polls IRIS, serves per-host JSON |
 | `detection-engine` | 3002 | rolling baseline, the eight rules, `/api/healthscan/*` |
 | `dashboard` | 5173 | the operator UI |
 
-Nothing listens on 52773. The REST endpoints live behind the **gateway**, which is why
-`Production.cls` names a hostname rather than `127.0.0.1` (#53).
+Plus `iris-init`, which runs once to fix volume ownership and exits — a fresh named volume is
+root-owned and IRIS runs as uid 51773, so without it IRIS dies before it starts.
+
+**IRIS serves its own HTTP on 52773.** This image runs an embedded Apache
+(`httpd ... -c Listen 52773`, and the image label `com.intersystems.ports.default.webserver`
+says so), so `/api/monitor/*`, `/labdemo/*` and the Management Portal all come straight from
+the `iris` container and there is no gateway service.
+
+That **reverses #53's premise for this image.** "Nothing listens on 52773" was true of
+`containers.intersystems.com/intersystems/irishealth`, which the demo instance runs — not of
+the EAP build. So `Production.cls`'s original `127.0.0.1:52773` was right all along here, and
+`FirstBoot.ApplyDeploymentSettings()` is what switches between the two deployments without a
+code change. `docker/webgateway/` is kept for the demo instance, which *is* gateway-fronted;
+compose does not use it.
 
 ## Inducing a finding
 
@@ -86,6 +106,8 @@ still waiting for. Full table in `iris/labdemo/README.md`.
 
 **Do not `curl /api/monitor/alerts`** — it is consume-on-read, and reading it steals the
 alert from the proxy. Read `http://localhost:3001/proxy/alerts` instead.
+
+The Management Portal is at **http://localhost:52773/csp/sys/UtilHome.csp**.
 
 ## Running without IRIS
 

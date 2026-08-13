@@ -31,10 +31,20 @@ Class ProductionGuardian.Setup.EnableMetrics
 {
 
 /// Main entry point. Run once per namespace.
-ClassMethod Run() As %Status
+///
+/// `pProductionName` is the production step 3 should inspect. Pass it when calling this
+/// BEFORE that production is started -- otherwise the check reads whichever production is
+/// active, which on a fresh container is the image's own `LABDEMOPKG.FoundationProduction`,
+/// and it then reports ACTION REQUIRED for an item our production already contains.
+/// Empty means "whatever is running", which is right for an interactive re-run.
+ClassMethod Run(pProductionName As %String = "") As %Status
 {
     set sc = $$$OK
-    write "=== Production Guardian — Enable Interop Metrics ===",!
+    // ASCII only. This banner used to carry an em-dash and printed as
+    // `=== Production Guardian ? Enable Interop Metrics ===` in a container terminal, which
+    // is the same mojibake family as #81 arriving through ObjectScript source instead of
+    // markdown. Terminal output has no encoding negotiation, so keep it to ASCII.
+    write "=== Production Guardian - Enable Interop Metrics ===",!
 
     // Step 1: Enable SAM metric export for this namespace.
     // This makes iris_interop_* metrics appear in /api/monitor/metrics.
@@ -65,7 +75,7 @@ ClassMethod Run() As %Status
     // processing-time activity metrics. We can't add it programmatically here
     // because production modification requires a config change + restart.
     write "Step 3: Checking for Ens.Activity.Operation.Local ...",!
-    do ..CheckActivityOperation()
+    do ..CheckActivityOperation(pProductionName)
 
     write !
     if $$$ISOK(sc) {
@@ -76,19 +86,31 @@ ClassMethod Run() As %Status
     quit sc
 }
 
-/// Check whether Ens.Activity.Operation.Local is configured in the current production.
+/// Check whether Ens.Activity.Operation.Local is configured in a production.
 /// Reports what it finds; does not modify anything.
-ClassMethod CheckActivityOperation()
+///
+/// `pProductionName` names the production to inspect. It is a parameter rather than always
+/// "whatever is running" because this check is useful BEFORE the production starts, and
+/// reading the active one there is actively misleading: on a fresh container the active
+/// production is the image's `LABDEMOPKG.FoundationProduction`, which of course does not
+/// contain our activity reporter, so the check printed a confident ACTION REQUIRED telling
+/// an operator to add an item that `Production.cls` already ships. Reported by @tanifgit on
+/// the first cold compose run (#78) -- verified harmless (all 10 iris_interop_* families
+/// appear once traffic flows) but wrong at the moment a first-time operator is least able to
+/// judge it. EnumerateConfigItems works on a DEFINED production, running or not.
+ClassMethod CheckActivityOperation(pProductionName As %String = "")
 {
-    // Get the name of the currently running production in this namespace.
-    set prodName = ##class(Ens.Director).GetActiveProductionName()
+    set prodName = pProductionName
+    if prodName = "" {
+        set prodName = ##class(Ens.Director).GetActiveProductionName()
+    }
     if prodName = "" {
         write "  WARNING: No production is currently running in this namespace.",!
         write "  Start the LABDEMO production first, then re-run this check.",!
         quit
     }
 
-    write "  Active production: ", prodName, !
+    write "  Checking production: ", prodName, !
 
     // Check if any item in the production is of class Ens.Activity.Operation.Local.
     set found = 0

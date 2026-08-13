@@ -1,8 +1,20 @@
-# Production Guardian — the whole chain, five services (#72).
+# Production Guardian — the whole chain, four services (#72).
 #
 #   docker compose up
 #
 # Then: http://localhost:5173/?mode=live
+#
+# NO WEB GATEWAY SERVICE. This image runs an embedded Apache on 52773 -- verified in the
+# container: `httpd -f .../httpd.conf -d /usr/irissys/httpd -c Listen 52773`, plus the label
+# `com.intersystems.ports.default.webserver=52773`. So /api/monitor/*, /labdemo/* and the
+# Management Portal are all served by IRIS itself and a separate gateway has nothing to do.
+#
+# That REVERSES #53's premise for this image. "Nothing listens on 52773 anywhere" was true of
+# containers.intersystems.com/intersystems/irishealth, which the demo instance runs; it is not
+# true of the EAP AI Hub build. Established independently by @tanifgit on 2026.2 and confirmed
+# here on 2026.3 (#78) -- so Production.cls's ORIGINAL 127.0.0.1:52773 was right all along for
+# this image, and ApplyDeploymentSettings() (#73) is what switches between the two without a
+# code change. Four files and one published port went away with the service.
 #
 # ONE-TIME PREREQUISITE. The IRIS image is not pullable — it comes from the InterSystems
 # Early Access Program, which needs a customer login rather than a registry credential. So
@@ -58,9 +70,13 @@ services:
   iris:
     image: ${PG_IRIS_IMAGE:-productionguardian/irishealth:local}
     container_name: pg-iris
-    # 1972 is the superserver, which the webgateway connects to. NOT published to the host:
-    # nothing outside the compose network needs it, and the whole point of the gateway is
-    # that HTTP arrives on :80.
+    ports:
+      # 52773 is the embedded Apache: /api/monitor/*, /labdemo/* AND the Management Portal
+      # (/csp/sys/UtilHome.csp). One published port where there used to be two, and this is
+      # the one a human needs.
+      - "${PG_IRIS_WEB_PORT:-52773}:52773"
+    # 1972 is the superserver. Not published: nothing outside the compose network needs it
+    # now that HTTP is served in-container.
     expose:
       - "1972"
     volumes:
@@ -86,70 +102,34 @@ services:
     # more moving parts than a documented one-liner is worth, and getting it wrong risks
     # IRIS not shutting down cleanly. Stated rather than silently manual.
     healthcheck:
-      # The image ships its own healthcheck script — using it rather than a port probe,
-      # because IRIS answers on 1972 before it will accept a session. That distinction cost
-      # a CI debugging cycle on #41: %SYS answers while "Startup in progress" is still true.
-      test: ["CMD", "/irisHealth.sh"]
+      # "READY" MEANS THE LABDEMO PRODUCTION IS SERVING, not merely that IRIS started.
+      #
+      # /irisHealth.sh alone -- which is what this used to be -- goes healthy as soon as the
+      # instance is up, which on a first run is minutes before LABDEMO exists. Every service
+      # gated on it therefore started against an instance with no production, and the proxy
+      # (whose own healthcheck requires interop metrics) could never become healthy, so the
+      # engine's dependency never resolved and `compose up` ended with two services stuck in
+      # `created` and an error about an unhealthy dependency. The cause was three services
+      # away from the message.
+      #
+      # Probing the metrics endpoint for an interop family instead makes the readiness signal
+      # mean what dependents actually need. It also makes the wait self-resolving: the proxy
+      # simply waits for IRIS to say it is ready, rather than racing it.
+      #
+      # `grep -q iris_interop_` is the test because that family appears only once the
+      # production is running in an interop-enabled namespace -- exactly the condition the
+      # proxy needs. Uses the embedded Apache on 52773, so no gateway is involved.
+      #
+      # wget, not curl: this image has wget and python3 but NO curl. Checked rather than
+      # assumed -- a healthcheck whose binary is missing fails identically to a genuinely
+      # unready instance, and would have looked like IRIS never starting.
+      test: ["CMD-SHELL", "/irisHealth.sh && wget -qO- http://localhost:52773/api/monitor/metrics | grep -q iris_interop_"]
+      # 60 x 5s = 5 minutes, which covers a cold EnableNamespace (minutes) plus production
+      # start. A first run legitimately takes that long; a later one passes in seconds.
       start_period: 0s
       interval: 5s
       timeout: 10s
       retries: 60
-
-  # ─── 2. web gateway ─────────────────────────────────────────────────────────────────
-  # Apache + the IRIS gateway module. This is why Production.cls names a hostname rather
-  # than 127.0.0.1: the REST endpoints live behind THIS service, not inside the IRIS
-  # container, and nothing listens on 52773 anywhere (#53).
-  webgateway:
-    image: ${PG_WEBGATEWAY_IMAGE:-productionguardian/webgateway:local}
-    container_name: pg-webgateway
-    ports:
-      # The only HTTP port a human needs on the IRIS side: /api/monitor/*, /labdemo/*,
-      # and the Management Portal.
-      - "${PG_WEB_PORT:-80}:80"
-    volumes:
-      # CSP.ini binds the gateway to the IRIS server. The existing config already uses
-      # `Ip_Address=iris`, i.e. a service name, so it is compose-ready unchanged — worth
-      # knowing before anyone rewrites it.
-      # NOT read-only: generate-csp-ini.sh writes CSP.ini here from the committed
-      # template on first start, because we do not commit a password field (§5).
-      - ./docker/webgateway:/webgateway-shared
-    environment:
-      # THE MOUNT ALONE DOES NOTHING. Without these two the image writes its own default
-      # CSP.ini at /opt/webgateway/bin/CSP.ini with `Ip_Address=127.0.0.1` -- the gateway
-      # then looks for IRIS inside its OWN container, finds nothing, and answers every
-      # request with a bare 404. Not a 502, not a connection error: a 404, which reads as
-      # "the web application is not registered in IRIS" and sends you to fix the wrong thing.
-      # That is what /api/monitor/metrics and /labdemo/monitor/hoststatus both did on the
-      # first real compose run, while IRIS itself was healthy the whole time.
-      # Copied from the verified demo instance, which sets exactly these.
-      ISC_CSP_INI_FILE: /webgateway-shared/CSP.ini
-      ISC_CSP_CONF_FILE: /webgateway-shared/CSP.conf
-    # Generate CSP.ini from the committed template before Apache starts, then hand off to the
-    # image's own entrypoint. The script is a no-op when CSP.ini already exists, so a restart
-    # keeps whatever an operator edited by hand.
-    entrypoint: ["sh", "-c", "/webgateway-shared/generate-csp-ini.sh && exec /startWebGateway"]
-    # OVERRIDING THE IMAGE'S OWN HEALTHCHECK, which is broken in the image itself:
-    #
-    #   Test: [CMD-SHELL ["/webGatewayHealth.sh"] || exit 1]
-    #
-    # CMD-SHELL passes the string to `sh -c`, so the JSON-array brackets are handed to the
-    # shell literally and it looks for a command NAMED `[/webGatewayHealth.sh]`:
-    #
-    #   /bin/sh: 1: [/webGatewayHealth.sh]: not found
-    #
-    # The script is present and executable -- only the quoting is wrong -- so the service sits
-    # permanently `unhealthy` while serving 200s perfectly. Left alone that trains everyone to
-    # ignore this container's health, which is the state in which a real failure goes unnoticed.
-    # Exec form, no shell, no brackets.
-    healthcheck:
-      test: ["CMD", "/webGatewayHealth.sh"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 10s
-    depends_on:
-      iris:
-        condition: service_healthy
 
   # ─── 3. metrics proxy ───────────────────────────────────────────────────────────────
   metrics-proxy:
@@ -163,12 +143,11 @@ services:
       # Container side stays 3001: only the host mapping moves.
       - "${PG_PROXY_PORT:-3001}:3001"
     environment:
-      # Through the gateway on :80, not the IRIS container on 52773 — same reason as
-      # Production.cls. IRIS_BASE_PATH stays empty: on this instance /api/monitor/ is at
+      # Straight at IRIS's embedded Apache. IRIS_BASE_PATH stays empty: /api/monitor/ is at
       # the web server root, and a wrong prefix is quiet in a way that reads as an idle
       # production rather than a misconfiguration.
-      IRIS_HOST: webgateway
-      IRIS_PORT: "80"
+      IRIS_HOST: iris
+      IRIS_PORT: "52773"
       IRIS_BASE_PATH: ""
       IRIS_USER: ${PG_IRIS_USER:-superuser}
       IRIS_PASS: ${PG_IRIS_PASS:-SYS}
@@ -179,8 +158,6 @@ services:
       METRICS_POLL_INTERVAL_MS: "2500"
       ALERTS_POLL_INTERVAL_MS: "30000"
     depends_on:
-      webgateway:
-        condition: service_started
       iris:
         condition: service_healthy
 
