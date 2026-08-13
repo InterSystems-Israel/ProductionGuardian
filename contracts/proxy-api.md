@@ -20,14 +20,30 @@ quoted here.
 > **The sample's HOST ROSTER is not the part it is authoritative for.** `metrics-dump.txt` is a
 > real capture, and every label *shape* and metric *family* in it is canonical — that is what
 > this document is derived from and what your parser must handle. But its four application
-> hosts (`EMR Source`, `Lab Router`, `FHIR Transform`, `Cloud API`) come from
-> **`LABDEMO.Production` — a different production, with its own class tree
-> (`LABDEMO.Process.FHIRTransform`, …) that does not exist in this repo** (#34).
+> hosts come from a **different production**, whose class tree does not exist in this repo.
 >
-> It was never a stale deployment of `iris/labdemo/Production.cls`: that class was not
-> compiled in the namespace at all until 2026-08-12. So `_meta.applicationHostCount: 4` below
-> is a true reading of a production we do not ship, and it disagrees with
-> `samples/hosts-response.json`'s 3 for that reason and no other. **Neither is wrong.**
+> Two facts settle that from the repo alone, no instance access needed (#34):
+>
+> ```
+> $ grep -o 'production="[^"]*"' contracts/samples/metrics-dump.txt | sort -u
+> production="LABDEMO.Production"
+> ```
+>
+> `iris/labdemo/Production.cls` has been `Class ProductionGuardian.LabDemo.Production` in
+> **every commit of its history**, first commit included. And the sample's host names are a
+> combination this repo never produced: when a FHIR Transform item existed here the names were
+> **unspaced** (`EMRSource`, `LabRouter`, `FHIRTransform`), and the spaced names arrived only
+> *after* that item had been removed. The sample carries spaced names **and** `FHIR Transform`
+> together.
+>
+> So `_meta.applicationHostCount: 4` is a true reading of a production we do not ship, and it
+> disagrees with `samples/hosts-response.json`'s 3 for that reason and no other. **Neither is
+> wrong.**
+>
+> **What is NOT claimed:** that a FHIR Transform host was never ours. It was — as
+> `<Item Name="FHIRTransform">` from the first commit until `1801a50`, when the pipeline became
+> HL7→PID. The narrow, provable claim is that **this capture** did not come from this repo's
+> production.
 >
 > `iris/labdemo/Production.cls` is authoritative for the roster, and
 > `services/metrics-proxy/fixtures/metrics-live-capture-3host.txt` is the first capture taken

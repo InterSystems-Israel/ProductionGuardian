@@ -24,6 +24,21 @@ roster. Requested by Dev C on #34, who also asked that the note say **different 
 rather than *stale deployment*, since writing down the wrong reason is how a wrong conclusion
 gets re-derived later.
 
+**The evidence is in the repo, not on an instance** — deliberately, since `contracts/` is read
+by whoever comes next and they will not have this instance. `metrics-dump.txt` carries
+`production="LABDEMO.Production"`; `Production.cls` has been
+`ProductionGuardian.LabDemo.Production` in every commit; and the sample's spaced host names
+coexist with `FHIR Transform`, a combination no commit of `Production.cls` produced, because
+FHIR Transform was removed *before* the rename to spaced names. Dev C established that chain
+on #55 and it is stronger than the compile-date reason this entry originally carried.
+
+For completeness, and cited rather than asserted: `LABDEMO.Production` was still present on the
+instance on 2026-08-13 (it is deliberately not deleted, #34 condition 4), and its items are
+`LABDEMO.Service.EMRSource`, `LABDEMO.Process.LabRouter`, `LABDEMO.Process.FHIRTransform`,
+`LABDEMO.Operation.CloudAPI`. That is an observation from `Ens.Config.Production`, not something
+derivable from this repo — which is why the note in `proxy-api.md` rests on the two repo facts
+instead.
+
 
 ## 2026-08-12 — `_meta.hostStatus.undescribedHosts` added (Dev B)
 
@@ -337,6 +352,17 @@ from the start.
 **Dev B's instance still runs the older production definition,** so a fresh capture there will show
 four hosts until it is reloaded from `iris/labdemo/`. That is expected and breaks nothing: an extra
 host is over-coverage, and the parser reads whatever `host` labels arrive.
+
+> **ATTRIBUTION SUPERSEDED 2026-08-13 — see the 2026-08-13 entry at the top.** The paragraph above
+> reads the four-host capture as *this* production, one version behind. It was a different
+> production: the sample's own label says `production="LABDEMO.Production"`, and
+> `iris/labdemo/Production.cls` has been `ProductionGuardian.LabDemo.Production` in every commit.
+> The sample's host names are also a combination this repo never produced — spaced names *and*
+> `FHIR Transform`, whereas here FHIR Transform only ever coexisted with **unspaced** names.
+>
+> The rest of this entry stands, including the part that matters most: the capture is **real, not
+> invented**. Only the "one version behind our own production" attribution is wrong. Left in place
+> rather than rewritten, because an entry that quietly changes its reasoning stops being a record.
 
 **Changes:**
 
