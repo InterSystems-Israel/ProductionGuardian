@@ -3,12 +3,18 @@
 The four decisions §7.4 of the MVP doc asks to settle before starting. Recorded because they are
 the questions most likely to be re-litigated on Day 4.
 
+0005 is not one of those four. It was added because a **measured deviation from the MVP doc's
+acceptance criteria** has nowhere else to live: the doc is read-only source material (root
+`CLAUDE.md` §3), so a criterion we do not meet can only be recorded alongside the decisions
+rather than in the spec itself.
+
 | ADR | Decision | Status |
 |---|---|---|
 | [0001](0001-detection-engine-location.md) | Detection engine runs outside IRIS, in `services/detection-engine/` | proposed |
 | [0002](0002-baseline-strategy.md) | Rolling 30-minute in-memory window; nothing persisted | proposed |
 | [0003](0003-threshold-configuration.md) | JSON config file, hot-reloaded, conservative defaults | proposed |
 | [0004](0004-mock-first-contracts.md) | All three build against mocked contracts from Day 1 | accepted 2026-08-12 |
+| [0005](0005-latency-bar.md) | The "updates within 10 s" criterion is not met; we state 20 s | proposed |
 
 0001–0003 were drafted by Dev B, who implements them, and follow the MVP doc's recommendations.
 
