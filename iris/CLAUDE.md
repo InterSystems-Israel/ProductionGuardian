@@ -85,12 +85,25 @@ npm run mock
 1. Proxy returns documented per-host JSON within 2 s of poll.
 2. Parser handles all 8 metric types listed in spec §1.3.
 3. Each of the 8 finding types can be induced on demand via trigger toggles.
-   **Met by `iris/labdemo/Triggers.cls`** — one idempotent method per type, `Reset()` to undo
-   all of them, `Status()` to report what is armed. Until 2026-08-13 this criterion was met by
-   a table of manual steps in `README.md`, which is not the same thing: two of them required
-   editing and recompiling `PatientDemographicsOperation` mid-demo, and one required five
-   settings changed together. Verified live — every method induces its finding against the
-   running engine, and `Reset()` clears it. The one exception is documented in the class and
-   the README: a `system_alert` finding outlives `Reset()`, because the alert sits in the
-   proxy's in-memory buffer on `:3001`, which IRIS cannot reach.
+   **Met by `iris/labdemo/Triggers.cls` for 6 of 8, with the other two stated rather than
+   implied** — one idempotent method per type, `Reset()` to undo all of them, `Status()` to
+   report what is armed. Until 2026-08-13 this criterion was met by a table of manual steps in
+   `README.md`, which is not the same thing: two of them required editing and recompiling
+   `PatientDemographicsOperation` mid-demo, and one required five settings changed together.
+
+   **Demonstrated live against the containerised stack** (2026-08-13, four containers, real
+   IRIS): `dead_host`, `throughput_drop`, `elevated_error_rate`, `growing_queue_wait`,
+   `slow_processing`, `queue_buildup`. Each with real numbers, each cleared by `Reset()`.
+
+   Two do not fully meet the criterion, and both are recorded where someone will hit them:
+
+   - **`stalled_host` cannot be induced by any toggle this class has.** The rule declines for
+     any host already in `DEAD_STATUSES` — one condition, one finding — and both mechanisms for
+     stopping a host consuming its queue (disable the item; point it at a closed port) land in
+     that set as `Disabled`/`Error`. Measured: 11 minutes at 320+ queued and 690s idle produced
+     none, and probing the rule with those exact values returns null. `StalledHost()` now says
+     so instead of promising it after ~300s. A gap in the demo's coverage, not a defect in the
+     rule.
+   - **`system_alert` outlives `Reset()`**, because the alert sits in the proxy's in-memory
+     buffer on `:3001`, which IRIS cannot reach. Documented in the class and the README.
 4. `/api/monitor/alerts` forwarded as JSON at `/proxy/alerts`.

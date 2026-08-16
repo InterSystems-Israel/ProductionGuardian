@@ -252,7 +252,12 @@ Per §3 of `contracts/healthscan-api.md`:
 - `findings` sorted `detectedAt` desc, severity tiebreak. `hosts` sorted by name.
 - **Filter framework hosts.** `Ens.MonitorService`, `Ens.Alarm`, `Ens.ScheduleHandler`,
   `Ens.Actor`, `EnsLib.Testing.*`, `Ens.Activity.Operation.Local` and friends never reach the API.
-  For LABDEMO exactly four hosts are returned.
+  **The count is in `contracts/healthscan-api.md` §2 and is not restated here** — this line said
+  "exactly four" until 2026-08-14, contradicting the ratified contract's "exactly three", while
+  naming `Ens.Activity.Operation.Local` as filtered *in the same sentence*. `Production.cls` has
+  four `<Item>` entries and the fourth is that framework host, so three are returned; every live
+  run confirms three. Almost certainly correct when written and staled when the item set changed
+  underneath it (@tanifgit, #84).
 
 Prefer stale-but-labelled over an error: a blanked dashboard is worse on stage than slightly old
 data.

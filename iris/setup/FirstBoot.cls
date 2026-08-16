@@ -66,6 +66,7 @@ ClassMethod Run(pSourceDir As %String = "", pStartGenerator As %Boolean = 1) As 
 
     do ..MakeDirectories()
     do ..RegisterWebApps()
+    do ..ClearPasswordChangeFlag()
     do ..CreateCredential()
 
     set sc = ..EnableMetrics()
@@ -123,6 +124,19 @@ ClassMethod LoadClasses(pSourceDir As %String) As %Status
 
 /// The two HL7 directories. EMR Source is an EnsLib.HL7.Service.FileService and goes to
 /// Error without them -- the first thing that broke on the #53 deploy.
+///
+/// THESE ARE UNDER /tmp, WHICH IS CONTAINER-LOCAL, NOT on the durable volume. So they report
+/// "created" rather than "exists" on every new container even though the namespace, the
+/// production and the PatientRecord table all survive -- which is correct, and is one of the
+/// reasons this whole class must run on every start rather than only the first. A reader
+/// seeing "created" on a warm start has not lost their data; verified across a
+/// `compose down` + `up`: 324 patients before, 324 after, while the HL7 archive was empty
+/// again (#78).
+///
+/// Deliberately not moved onto the durable volume: the drop directory is a queue the
+/// generator fills and the service drains, and the archive is a record of files already
+/// processed into messages. Neither is state the demo needs to survive a restart, and putting
+/// a drop directory on a shared volume invites two containers draining the same queue.
 ClassMethod MakeDirectories()
 {
     for dir = ..#DROPDIR, ..#ARCHIVEDIR {
@@ -169,6 +183,55 @@ ClassMethod RegisterWebApps()
     }
 }
 
+/// Clear the "must change password on next login" flag on the account the proxy polls with.
+///
+/// A FRESH container ships `superuser` with ChangePassword=1, and IRIS then refuses REST
+/// authentication until the password has been changed interactively -- so every request to
+/// /labdemo/monitor/hoststatus comes back 401 no matter which credential is presented, even
+/// the correct one. The verified demo instance has ChangePassword=0 only because somebody
+/// changed it by hand months ago, which is exactly the kind of undocumented manual step this
+/// class exists to capture (#73).
+///
+/// WHY IT LOOKS LIKE SOMETHING ELSE. The failure is partial in a very misleading way:
+/// /api/monitor/metrics answers 200 UNAUTHENTICATED (it is served at the web server root,
+/// where the %All-less monitor role suffices), so metrics flow, the proxy reports healthy,
+/// the dashboard shows three hosts -- and only `queued` and `errored` are null, because
+/// those two come from the one endpoint that needs a login. The visible symptom is a missing
+/// FIELD, which reads as a parser or contract problem rather than an auth one. Found on the
+/// first clean compose run; the 401 is in the proxy log, but the proxy correctly degrades
+/// instead of failing, so nothing upstream goes red.
+///
+/// Do not misread this as an AutheEnabled problem. Both web applications are 96
+/// (unauthenticated OR password) and that is correct; an unauthenticated GET through an
+/// external gateway is refused regardless, which is why the credential exists at all. I
+/// changed /labdemo/monitor to 32 while diagnosing this and it made no difference -- the
+/// working instance returns 401 without auth too. The password flag was the whole story.
+ClassMethod ClearPasswordChangeFlag()
+{
+    set user = $get(^ProductionGuardian.Setup("CredUser"), "superuser")
+    set pass = $get(^ProductionGuardian.Setup("CredPass"), "SYS")
+
+    new $namespace
+    set $namespace = "%SYS"
+
+    if '##class(Security.Users).Exists(user) {
+        write "4b. user ", user, ": DOES NOT EXIST -- cannot clear password flag", !
+        quit
+    }
+    do ##class(Security.Users).Get(user, .props)
+    if +$get(props("ChangePassword")) = 0 {
+        write "4b. user ", user, ": password flag already clear", !
+        quit
+    }
+    // Setting Password alongside ChangePassword=0 is required: clearing the flag on its own
+    // leaves the account in a state IRIS still treats as needing a change.
+    kill p
+    set p("Password") = pass
+    set p("ChangePassword") = 0
+    set sc = ##class(Security.Users).Modify(user, .p)
+    write "4b. user ", user, ": ", $select(sc: "password flag cleared", 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
+}
+
 /// The credential Cloud API POSTs with. Through an external gateway the REST app answers
 /// 403 without it -- verified both ways on #53: 403 without, 200 {"count":0} with.
 ///
@@ -191,7 +254,11 @@ ClassMethod CreateCredential()
 ClassMethod EnableMetrics() As %Status
 {
     write "6. interop metrics:", !
-    quit ##class(ProductionGuardian.Setup.EnableMetrics).Run()
+    // Pass OUR production name explicitly. This runs before StartProduction, so the active
+    // production is still the image's own LABDEMOPKG.FoundationProduction -- letting the
+    // check default to "whatever is running" made it inspect that one and print an ACTION
+    // REQUIRED for an item Production.cls already contains (@tanifgit, #78).
+    quit ##class(ProductionGuardian.Setup.EnableMetrics).Run(..#PRODUCTION)
 }
 
 /// Apply the three settings that depend on the deployment, from overridable globals.
@@ -259,6 +326,27 @@ ClassMethod StartProduction() As %Status
         quit $$$ERROR($$$GeneralError, "a different production is running: " _ running)
     }
     set sc = ##class(Ens.Director).StartProduction(..#PRODUCTION)
+
+    // A CONTAINER STOP IS NOT A CLEAN SHUTDOWN. `docker stop` / `compose stop` / a host
+    // reboot kills IRIS with the production still running, and the next start then refuses:
+    //
+    //   ERROR <Ens>ErrProductionNotShutdownCleanly: Production '...' was not shutdown cleanly
+    //
+    // CleanProduction() clears that state and is the documented recovery. Retrying once here
+    // rather than reporting the error is deliberate: for a containerised demo an unclean stop
+    // is the NORMAL case, not an exception worth a human decision, and the alternative is a
+    // stack that comes up dead every second time it is started with no hosts and no findings.
+    // Only reached on that specific failure -- any other error still surfaces.
+    if $$$ISERR(sc), $system.Status.GetErrorText(sc) [ "NotShutdownCleanly" {
+        write "7. production: previous run did not shut down cleanly, cleaning...", !
+        set clean = ##class(Ens.Director).CleanProduction()
+        if $$$ISERR(clean) {
+            write "7. CleanProduction FAILED: ", $system.Status.GetErrorText(clean), !
+            quit clean
+        }
+        set sc = ##class(Ens.Director).StartProduction(..#PRODUCTION)
+    }
+
     write "7. production ", ..#PRODUCTION, ": ", $select(sc: "started", 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
     quit sc
 }

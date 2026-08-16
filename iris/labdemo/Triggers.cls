@@ -64,8 +64,36 @@ ClassMethod DeadHost() As %Status
     quit $$$OK
 }
 
-/// stalled_host -- needs a queue AND no activity for inactiveSeconds. Disabling the
-/// operation gives both, but the wait is real: 300s by default.
+/// stalled_host -- CANNOT BE INDUCED BY EITHER TOGGLE THIS CLASS HAS. Measured, not assumed:
+/// this method arms the closest available state and says plainly that the finding will not
+/// arrive, because the previous version promised it after ~300s and that was impossible.
+///
+/// WHY. The rule declines for any host whose status is in DEAD_STATUSES -- "a dead host is
+/// reported as dead, not stalled: one condition, one finding"
+/// (detection-engine/src/detect/rules/index.ts). And every mechanism here for stopping a host
+/// consuming its queue puts it in exactly that set:
+///
+///   DeadHost()  -> disable the item      -> status Disabled -> in DEAD_STATUSES
+///   ErrorRate() -> point at a shut port  -> status Error    -> in DEAD_STATUSES
+///
+/// So the first guard in the rule returns null on the very first poll and on every poll after.
+/// Verified live on the containerised stack: 11 minutes at 320+ queued with
+/// lastActivityElapsedSeconds at 690s -- every documented gate satisfied except that one --
+/// and no stalled_host, ever. Probing the rule directly with those exact values returns null.
+///
+/// WHAT WOULD ACTUALLY PRODUCE IT. A host that is NOT dead, has a queue, and is not consuming.
+/// `Retry` is deliberately excluded from DEAD_STATUSES ("a retrying host is degraded but not
+/// dead"), so a host stuck retrying with a backlog is the intended shape -- but a retry loop
+/// against a closed port escalates to Error here rather than settling in Retry, so LABDEMO has
+/// no toggle that parks a host there. Getting one means either a host whose adapter retries
+/// slowly enough to stay in Retry across two polls, or suspending the queue's consumer without
+/// changing the item's status. Neither exists today.
+///
+/// This is a gap in the DEMO's coverage, not a defect in the rule -- the rule's precedence
+/// choice is right, and `dead_host` fires for exactly the state an operator cares about. It is
+/// recorded here rather than in the acceptance table because "each of the 8 finding types can
+/// be induced on demand" is what this class exists to satisfy, and for this one type it does
+/// not.
 ClassMethod StalledHost() As %Status
 {
     set sc = ..DeadHost()
@@ -73,10 +101,14 @@ ClassMethod StalledHost() As %Status
         quit sc
     }
     set wait = ..InactiveSeconds()
-    write !, "ARMED  stalled_host", !
-    write "  Same toggle as dead_host -- the queue builds while nothing consumes it.", !
-    write "  stalled_host needs ", wait, "s of inactivity, so expect it after ~", wait, "s.", !
-    write "  dead_host appears immediately; that is correct, not a duplicate.", !
+    write !, "ARMED  dead_host -- and stalled_host will NOT follow", !
+    write "  The queue builds while nothing consumes it, which is half of what", !
+    write "  stalled_host needs (", wait, "s idle WITH a queue). The other half is a status", !
+    write "  that is not already dead, and disabling the item makes it Disabled.", !
+    write "  The rule reports a dead host as dead, not stalled -- one condition, one", !
+    write "  finding -- so it declines on the first poll and every poll after.", !
+    write "  Measured: 11 min at 320+ queued and 690s idle produced no stalled_host.", !
+    write "  See the class comment for what would actually induce it.", !
     quit $$$OK
 }
 

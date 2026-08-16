@@ -1,0 +1,53 @@
+; Web gateway -> IRIS binding, TEMPLATE.
+;
+; Copy to CSP.ini and set the password, or run generate-csp-ini.sh.
+;
+; NOT PART OF docker-compose.yml. The compose stack has no gateway service -- the EAP image
+; serves HTTP on 52773 itself (#78). This file describes the DEMO INSTANCE's external
+; gateway, which is a separate deployment we still need to reproduce.
+;
+; THE RENDERED CSP.ini IS NOT COMMITTED -- this template is, and generate-csp-ini.sh holds a
+; default. Stated that way because the previous wording here ("NOT COMMITTED WITH A
+; PASSWORD") was not true once the script carried the value: the secret was still in the
+; repo, one file to the left (@tanifgit, #78).
+;
+; The value is IRIS's obfuscation of the CSPSystem account password -- a built-in gateway
+; account on a default install rather than a user credential -- and PG_CSP_PASSWORD
+; overrides it. The reasoning that still applies: "it is only the default" is exactly what
+; leaks a real one later when someone changes the password and updates a file in place, so
+; if you change it, change it via the environment variable and not by editing this.
+;
+; Ip_Address=iris is the compose SERVICE NAME and is already correct -- this config was
+; compose-ready before there was a compose file. Do not change it to an IP.
+[SYSTEM]
+IRISCONNECT_LIBRARY_PATH=/opt/webgateway/bin
+System_Manager=*.*.*.*
+SM_Timeout=28800
+Server_Response_Timeout=60
+No_Activity_Timeout=86400
+Queued_Request_Timeout=60
+Default_Server=LOCAL
+
+[SYSTEM_INDEX]
+LOCAL=Enabled
+
+[LOCAL]
+Ip_Address=iris
+TCP_Port=1972
+Minimum_Server_Connections=1
+Maximum_Session_Connections=6
+Username=CSPSystem
+Password=<set by docker/webgateway/generate-csp-ini.sh>
+
+
+[APP_PATH_INDEX]
+/=Enabled
+/csp=Enabled
+
+[APP_PATH:/]
+Default_Server=LOCAL
+Alternative_Server_0=1~~~~~~LOCAL
+
+[APP_PATH:/csp]
+Default_Server=LOCAL
+Alternative_Server_0=1~~~~~~LOCAL
