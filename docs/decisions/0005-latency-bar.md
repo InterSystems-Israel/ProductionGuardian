@@ -1,6 +1,6 @@
 # ADR 0005 — The "updates within 10 s" acceptance criterion is not met, and what we state instead
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-08-13
 - **Deciders:** Dev B, Dev C
 - **Drafted by:** Dev C
@@ -62,9 +62,55 @@ So the sweep was demonstrated in one restart rather than over hours, and the two
 that change came out at **10.18 s and 11.32 s** — worse than the mean above, because the proxy
 improvement (−0.66 s) was smaller than the debounce re-phasing (+1.5 to +3.2 s). The 5.64–5.71 s
 cluster was an artifact, as this section already argued; #75 is the evidence rather than the
-argument. It also means **8.86 s is the first sample from the upper half of `[5, 10)`**, so the
+argument. It also means **8.86 s was the first sample from the upper half of `[5, 10)`**, so the
 arithmetic bound below is not a hypothetical worst case being defended against measurements —
-the measurements have started walking into it.
+the measurements have started walking into it. ("The highest recorded on this project", as the
+table above said when written; the n=12 run below has since exceeded it, which is the point that
+section makes.)
+
+### Confirmed against the containerised stack, n=12 — the prediction above held
+
+The measurements above were taken on the demo instance: IRIS behind an external web gateway,
+with the proxy and engine as host processes. The compose stack (#72, #78) is the reference
+environment now — four containers, no gateway hop, `Cloud API` posting to `127.0.0.1:52773`
+in-container. Re-measured there with `tools/measure-latency.mjs`, which arms the trigger and
+reads the findings API **inside one process**, so no agent round trip enters the sample (the
+mistake that invalidated the first figure on #44):
+
+| | to findings API | on screen, +1.0 s expected | over the 10 s bar |
+|---|---|---|---|
+| n=12, proxy 2500 ms, engine 5000 ms | min 6.09, median 9.75, mean 9.04, max 10.73 | min 7.09, median 10.75, mean 10.04, max 11.73 | **9 of 12** |
+
+**This is worse than the 2 of 7 above, and it is the section above being proved right rather
+than a regression.** That earlier figure came from very nearly phase-locked timers; this section
+predicted that drift would sweep the debounce across `[5, 10)` and make the unfavourable case
+"not merely possible but eventually certain". With the phase-lock removed — consecutive runs
+inject at decorrelated offsets in the proxy's cycle — the samples do exactly that, and the
+majority land above the bar.
+
+**So the measured typical is now above 10 s, not below it.** The median is 10.75 s. The 9.8 s
+"typical" quoted elsewhere in this ADR is the *arithmetic* figure derived from the intervals, and
+it is no longer what the samples show — which is why the Decision below no longer states a
+typical at all. Naming that explicitly because the first version of this section said the typical
+case "sits just under" the bar, directly beneath a table showing the opposite; the arithmetic and
+the measurement had diverged and only one of them was in front of me.
+
+Two notes on the method, because both were mistakes I made first:
+
+- **A linear phase ramp is not a stagger.** Sweeping the offset 0 → interval in equal increments
+  produced a monotonic sequence (10.67 → 9.25 s) that reads as a trend in the product and is
+  really the ramp walking toward the next poll boundary in step with the run counter. The offsets
+  are bit-reversed now, and the correlation disappears.
+- **Worst case and expected case are not comparable.** Adding a full dashboard interval to every
+  sample and comparing against figures that used a measured mean would manufacture a regression
+  out of a change of convention. The harness reports both; the table above uses the expected
+  case, matching how the n=7 row was built.
+
+The containerised topology did **not** make this faster, which is worth stating because the
+opposite was the reasonable expectation from removing a network hop. The gateway hop was never a
+significant term — it was inside the proxy staleness window either way — and the budget is
+dominated by the debounce, which is unchanged. Removing a service simplified the deployment; it
+did not buy latency.
 
 So the honest bound is the arithmetic one, stated for the **shipped** intervals — proxy 2500 ms
 (#75), engine 5000 ms, dashboard 2000 ms (#68):
@@ -79,9 +125,15 @@ arithmetic gave `5.0 + 10.0 + 2.0 ≈ 17 s` worst and `~11 s` typical. **The dec
 move**: 20 s covered 17 s and covers 14.5 s with more margin. What changes is that a reader
 comparing the bound against the shipped configuration now gets the same answer the ADR gives.
 
-Note the typical figure has dropped below 10 s while the **bound has not**, and the bound is what
-a criterion is. That gap — a system that usually meets a bar it cannot guarantee — is the whole
-reason this ADR exists rather than a one-line change to a number.
+Note the **arithmetic** typical has dropped below 10 s while the **bound has not**, and the bound
+is what a criterion is. That gap is the whole reason this ADR exists rather than a one-line change
+to a number.
+
+This paragraph used to add "a system that usually meets a bar it cannot guarantee". The n=12
+measurement below retires that phrasing: the *arithmetic* typical is 9.8 s, but the *measured*
+median is 10.75 s with 9 of 12 runs over, so "usually meets" describes the arithmetic and not the
+system. The gap is real either way — it is now between the bound and the measurement rather than
+between the bound and a comfortable typical.
 
 ## Why 10 s is not reachable
 
@@ -108,23 +160,34 @@ The two other terms were examined and are not where the budget is:
 
 ## Decision
 
-**State the criterion as: findings appear on screen within 20 s of a change, typically ~10 s,
-measured 8.8–11.6 s — for the seven metric-derived finding types.**
+**State the criterion as: findings appear on screen within 20 s of a change, measured
+7.1–11.7 s with a median of 10.8 s — for the seven metric-derived finding types.**
 
-Three numbers, each true, rather than one that needs a footnote:
+Two numbers, each true, rather than one that needs a footnote:
 
 - **20 s** is the bound we can defend without qualification, because it covers the swept worst
   case (14.5 s on the shipped intervals) rather than the phase alignment we happened to measure
-- **~10 s** is the typical figure on the shipped intervals with the phase-lock artifact removed
-  (9.8 s arithmetic). It was ~11 s before the proxy poll was halved
-- **8.8–11.6 s** is what was actually observed, with `n` and whose machine, per #70 — n=7 at the
-  5000 ms proxy poll, plus n=2 at 2500 ms which came out at 10.2 s and 11.3 s
+- **7.1–11.7 s, median 10.8 s** is what was actually observed, with `n` and whose machine per
+  #70 — n=12 on the containerised reference stack with injection staggered across the proxy's
+  poll cycle. **9 of those 12 were over 10 s.** Earlier samples, superseded because their timers
+  were near phase-locked: n=7 at a 5000 ms proxy poll gave 8.8–11.6 s with 2 over, and n=2 after
+  #75 gave 10.2 s and 11.3 s
 
-**Do not collapse these into one number.** The typical figure sits below 10 s and the bound does
-not, which is exactly the situation the criterion has to describe: a system that usually meets a
-bar it cannot guarantee. Quoting only the typical would re-create the claim this ADR exists to
-retract, and quoting only the bound would understate a product that is normally twice as good as
-its guarantee.
+**A "typically ~10 s" figure used to be the third number here and it has been removed.** It read
+as a claim about observed behaviour, and the n=12 measurement contradicts it: the measured median
+is 10.75 s, i.e. *above* the bar, and three quarters of runs miss it. The 9.8 s arithmetic
+*typical* is still computable from the intervals and still appears above in the bound derivation,
+but it is not what a reader gets when they see "typically" next to a measured range, so quoting
+it in the criterion overstated the product. Caught by Dev C on the review of the n=12 change,
+which is the review catching exactly what it is for: the confirming measurement falsified the
+sentence it was appended beneath, and appending without re-reading the Decision left the ADR
+contradicting itself.
+
+**Do not collapse the two remaining numbers into one.** The bound is what a criterion *is*, and
+the measured range is what someone will see; a system that misses a self-imposed bar in most runs
+while never approaching its stated bound is precisely the situation this ADR exists to describe.
+Quoting only the measurement would suggest a guarantee we do not have, and quoting only the bound
+would understate a product that is normally well inside it.
 
 `system_alert` is stated **separately** and is not covered by the above. Until #69 it came down a
 different path — a blind 30 s poll of the consume-on-read alerts endpoint — so its worst case was
@@ -139,14 +202,39 @@ for it here.**
 - `sustainedSeconds` must not be lowered to chase this number without revisiting this ADR; #46's
   own comment and #64's floor are the reasons
 - any figure in this ADR that is a mean is situational until the services are launched in a
-  randomised phase relationship. The bound is not
+  randomised phase relationship. The bound is not. The n=12 run is the closest thing here to a
+  non-situational sample, because it staggers injection across the proxy's poll cycle rather
+  than launching the services and hoping — and it is the worse number of the two
+- **re-measuring is now one command**: `node tools/measure-latency.mjs [runs]` against a running
+  stack. Anyone disputing a figure here can produce their own rather than arguing from the
+  arithmetic, and the harness owns both ends of the clock so an agent round trip cannot leak in
 - the criterion in the source document is unchanged and still says 10 s. This ADR is the
   deviation record, and the numbers quoted in `apps/dashboard/CLAUDE.md` §8 and
   `apps/dashboard/README.md` point here rather than restating a duration
 
 ## Status
 
-`proposed`. Drafted by Dev C from the #44 thread; the measurements are Dev B's and are theirs to
-confirm or correct. It should be `accepted` before anyone describes MVP 1 as complete, because
-this is the single place where MVP 1 does not meet the spec as written and it needs to be
+**`accepted`** — 2026-08-13, drafted by Dev C, measurements by Dev B, reviewed and approved by
+Dev C at `c584a8f` (#83).
+
+How it got here, because the field is recording the process as much as the conclusion:
+
+- Dev C drafted this from the #44 thread and deliberately left Status at `proposed`, because the
+  measurements were Dev B's and *"flipping the field myself would defeat the point of having it"*
+- the measurements were **confirmed by re-measuring, not by re-reading** — n=12 against the
+  containerised reference stack with the phase-lock removed, which is exactly what the "any figure
+  that is a mean is situational" caveat was waiting for
+- the correction went in the direction that makes the product look **worse**: from "misses the bar
+  occasionally" (2 of 7) to "misses it more often than not" (9 of 12). The decision did not move —
+  20 s still covers the 14.5 s bound with margin — but the sentence describing it did
+- Dev B declined to flip this on the strength of their own measurement, and Dev C's approval
+  reviewed the n=12 section rather than rubber-stamping it, catching that the appended section had
+  left the Decision contradicting its own evidence
+
+The prerequisite is also satisfied: #82 merged, so the Consequences bullet claiming
+`apps/dashboard/CLAUDE.md` §8 and `apps/dashboard/README.md` point here rather than restating a
+duration is now true on `main`. It was not when this ADR was drafted, and an ADR cannot be
+`accepted` while its Consequences describe a state of the world that is not real.
+
+This is the single place where MVP 1 knowingly does not meet the spec as written, and it is
 findable by someone who has only read the spec.
