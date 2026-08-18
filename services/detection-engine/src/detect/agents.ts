@@ -9,6 +9,7 @@
  */
 
 import type { InvestigateDeps } from './investigate.ts';
+import type { ResolveDeps } from './resolve.ts';
 
 /**
  * Live agent, over HTTP to the IRIS instance.
@@ -18,16 +19,26 @@ import type { InvestigateDeps } from './investigate.ts';
  * request and validate what comes back. That separation is why a bug in this file cannot leak a
  * credential or call a model directly.
  */
-export function liveAgent(baseUrl: string, log?: (m: string) => void): InvestigateDeps['callAgent'] {
+export function liveAgent(
+  baseUrl: string,
+  user: string,
+  pass: string,
+  log?: (m: string) => void,
+): InvestigateDeps['callAgent'] {
+  const auth = `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
   return async (request, timeoutMs) => {
     // AbortSignal rather than a Promise.race: race leaves the fetch running and its socket open, so
     // a slow agent would accumulate connections across polls. Aborting actually cancels it.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(`${baseUrl}/labdemo/investigate`, {
+      // /labdemo/agent/investigate -- the web application is /labdemo/agent and the ROUTE is
+      // /investigate. I first wrote /labdemo/investigate, which is the dispatcher's route without
+      // its application prefix: it would have 404'd against the patients dispatcher rather than
+      // failing to resolve, so the error would have named the wrong component.
+      const res = await fetch(`${baseUrl}/labdemo/agent/investigate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: auth },
         body: JSON.stringify(request),
         signal: controller.signal,
       });
@@ -120,5 +131,79 @@ export function mockAgent(): InvestigateDeps['callAgent'] {
       model: null,
       toolCalls: null,
     };
+  };
+}
+
+/**
+ * Live write tool caller, over HTTP to the dispatcher in IRIS.
+ *
+ * Requires credentials, because the tool is RBAC-gated and an unauthenticated request is refused by
+ * the web application before the policy is even consulted. The credentials are the ENGINE's, not a
+ * human's -- which is why `resolve-api.md` §13.1 flags "which actor lands in the audit record" as
+ * the thing to settle: right now it is a service account, so the audit attributes the change to the
+ * engine rather than to the person who approved it. That is a real limitation, not a detail.
+ */
+export function liveResolveTool(
+  baseUrl: string,
+  user: string,
+  pass: string,
+  log?: (m: string) => void,
+): ResolveDeps['callTool'] {
+  const auth = `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
+  return async (action, dryRun, timeoutMs) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${baseUrl}/labdemo/agent/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: auth },
+        body: JSON.stringify({ host: action.host, size: action.size, dryRun }),
+        signal: controller.signal,
+      });
+      // A refusal comes back as HTTP 200 with outcome:"refused" -- it is a normal response, not an
+      // error. Only a transport or server fault is thrown here, so a policy refusal reaches the
+      // caller as data and can be rendered rather than surfaced as a stack trace.
+      if (!res.ok) throw new Error(`write tool returned HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        log?.(`write tool timed out after ${timeoutMs}ms`);
+        throw new Error(`write tool timed out after ${timeoutMs}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
+/**
+ * Mock write tool: reports what would happen without an IRIS instance.
+ *
+ * Tracks a pool size in memory so `apply` then `apply` gives `applied` then `no_change`, matching
+ * the real tool's idempotency. A mock that returned `applied` twice would let Dev C build an
+ * approve button that never exercises the double-click path -- which a demo WILL hit.
+ */
+export function mockResolveTool(initialPoolSize = 1): ResolveDeps['callTool'] {
+  let pool = initialPoolSize;
+  return async (action, dryRun) => {
+    const before = pool;
+    const reversal = { host: action.host, size: before, capturedFrom: 'mock' };
+    if (action.size < 2 || action.size > 8) {
+      return {
+        outcome: 'refused',
+        before: { poolSize: before },
+        after: null,
+        refusal: { code: 'out_of_bounds', detail: 'size must be an integer between 2 and 8' },
+      };
+    }
+    if (before === action.size) {
+      return { outcome: 'no_change', before: { poolSize: before }, after: { poolSize: before }, reversal };
+    }
+    if (dryRun) {
+      return { outcome: 'previewed', before: { poolSize: before }, after: { poolSize: action.size }, reversal };
+    }
+    pool = action.size;
+    return { outcome: 'applied', before: { poolSize: before }, after: { poolSize: pool }, reversal };
   };
 }

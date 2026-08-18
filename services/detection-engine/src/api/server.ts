@@ -30,9 +30,14 @@ export interface ServerOptions {
 }
 
 /**
- * The GET routes, as a set, so the POST branch can tell "wrong method on a real endpoint" from
- * "no such endpoint". Kept adjacent to the switch below -- a second list is a thing that goes
- * stale, and this one going stale would turn a 405 back into a misleading 404.
+ * The routes, split by method, so each branch can tell "wrong method on a real endpoint" from "no
+ * such endpoint". Kept adjacent to the switch below -- a second list is a thing that goes stale,
+ * and either one going stale would turn a 405 back into a misleading 404.
+ *
+ * BOTH sets are needed, not just the GET one. With only GET_PATHS, `GET /api/resolve` answered 404
+ * -- the same defect as the `POST /api/healthscan/findings` regression, mirrored: the endpoint is
+ * real and only the method is wrong, and 404 tells a caller it does not exist. Found by asking for
+ * the symmetric case rather than by a failing test, because no test covered a GET to a POST route.
  */
 const GET_PATHS = new Set([
   '/api/healthscan/hosts',
@@ -40,6 +45,8 @@ const GET_PATHS = new Set([
   '/api/healthscan/health',
   '/api/earlywarning',
 ]);
+
+const POST_PATHS = new Set(['/api/investigate', '/api/resolve']);
 
 export function createFindingsServer(options: ServerOptions): Server {
   const log = options.log ?? console.error;
@@ -59,14 +66,13 @@ export function createFindingsServer(options: ServerOptions): Server {
     if (req.method === 'POST') {
       // The two MVP 2 write-ish endpoints. Handled before the GET guard because they are the only
       // non-GET routes and they are async, which the GET path deliberately is not.
-      const handler =
-        path === '/api/investigate'
+      const handler = !POST_PATHS.has(path)
+        ? null
+        : path === '/api/investigate'
           ? options.investigate === undefined
             ? undefined
             : async (body: unknown) => options.investigate!(readFindingId(body))
-          : path === '/api/resolve'
-            ? options.resolve
-            : null;
+          : options.resolve;
 
       if (handler === null) {
         // A POST to a path that exists as a GET route is 405, not 404 -- the endpoint is real, the
@@ -153,9 +159,19 @@ export function createFindingsServer(options: ServerOptions): Server {
             snapshot.state,
           );
           return;
-        default:
-          sendJson(res, 404, { error: `no such endpoint: ${path}` }, snapshot.state);
+        default: {
+          // Symmetric with the POST branch: a GET to a POST-only route is 405, not 404.
+          const isKnownPostPath = POST_PATHS.has(path);
+          sendJson(
+            res,
+            isKnownPostPath ? 405 : 404,
+            isKnownPostPath
+              ? { error: `method GET not allowed on ${path}` }
+              : { error: `no such endpoint: ${path}` },
+            snapshot.state,
+          );
           return;
+        }
       }
     } catch (err) {
       // A genuine fault is the one case that gets a 5xx (contract §3).

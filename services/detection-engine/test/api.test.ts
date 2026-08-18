@@ -191,6 +191,30 @@ describe('routing', () => {
     const res = await fetch(`${base}/api/healthscan/findings`, { method: 'POST' });
     assert.equal(res.status, 405);
   });
+
+  it('405s a GET to a POST-only route, in BOTH directions', async () => {
+    // The mirror of the test above, and it was missing -- which is how `GET /api/resolve` answered
+    // 404 for a real endpoint. Same defect as the POST-to-a-GET-route regression, in the other
+    // direction, and no test covered it because the suite only ever asked one way round.
+    //
+    // Asserted for both POST routes, not just one: the two are wired through different branches
+    // (investigate builds a handler, resolve passes one through), so covering one proves nothing
+    // about the other.
+    for (const path of ['/api/resolve', '/api/investigate']) {
+      const res = await fetch(`${base}${path}`);
+      assert.equal(res.status, 405, `GET ${path} should be 405`);
+      const body = (await res.json()) as { error: string };
+      // The message must name the METHOD as the problem. "no such endpoint" would send a reader
+      // looking for a missing route that is in fact present.
+      assert.match(body.error, /method GET not allowed/);
+    }
+  });
+
+  it('still 404s a GET to a path that is neither', async () => {
+    // The 405 above is only meaningful if a genuinely absent path is distinguishable.
+    const res = await fetch(`${base}/api/investigation`);
+    assert.equal(res.status, 404);
+  });
 });
 
 describe('faults', () => {

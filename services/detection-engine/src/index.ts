@@ -29,7 +29,11 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFindingsServer } from './api/server.ts';
 import { investigate } from './detect/investigate.ts';
-import { liveAgent, mockAgent } from './detect/agents.ts';
+import { liveAgent, mockAgent, liveResolveTool, mockResolveTool } from './detect/agents.ts';
+// Aliased: `resolve` is already node:path's, used for every path in this file. Importing ours
+// under the same name compiles as a duplicate-identifier error rather than shadowing -- but had it
+// shadowed, `resolve(serviceRoot, 'thresholds.json')` would have called the write orchestrator.
+import { parseResolveRequest, resolve as runResolve } from './detect/resolve.ts';
 import { DEFAULT_POLL_INTERVAL_MS, ThresholdStore } from './config/thresholds.ts';
 import { DetectionEngine } from './detect/engine.ts';
 import { HttpProxyClient } from './proxy/client.ts';
@@ -95,9 +99,22 @@ async function poll(): Promise<void> {
 const AGENT_MODE = process.env['AGENT_MODE'] ?? 'mock';
 const IRIS_BASE_URL = process.env['IRIS_BASE_URL'] ?? 'http://localhost:52773';
 
+// The engine's own IRIS credentials, for the dispatcher's web application. The engine holds these
+// because the tool is RBAC-gated; it holds NO LLM key, which stays in the AI Hub wallet.
+const IRIS_USER = process.env['IRIS_USER'] ?? 'superuser';
+const IRIS_PASS = process.env['IRIS_PASS'] ?? 'SYS';
+
 const agentSource = AGENT_MODE === 'live' ? 'agent' : 'canned';
 const callAgent =
-  AGENT_MODE === 'live' ? liveAgent(IRIS_BASE_URL, (m) => console.error(m)) : mockAgent();
+  AGENT_MODE === 'live'
+    ? liveAgent(IRIS_BASE_URL, IRIS_USER, IRIS_PASS, (m: string) => console.error(m))
+    : mockAgent();
+// Same switch, separate caller: with AGENT_MODE=mock the resolve endpoint previews and applies
+// against an in-memory pool size, so Dev C can build the approve flow with no IRIS at all.
+const callTool =
+  AGENT_MODE === 'live'
+    ? liveResolveTool(IRIS_BASE_URL, IRIS_USER, IRIS_PASS, (m: string) => console.error(m))
+    : mockResolveTool();
 
 const server = createFindingsServer({
   port: PORT,
@@ -126,6 +143,11 @@ const server = createFindingsServer({
       log: (m) => console.error(m),
     });
   },
+  resolve: async (body) =>
+    // parseResolveRequest throws `bad request: ...` for anything malformed, which the server maps
+    // to 400. Validated here rather than inside resolve() so the endpoint answers a bad body
+    // without ever reaching the write tool.
+    runResolve(parseResolveRequest(body), { callTool, log: (m) => console.error(m) }),
 });
 
 server.listen(PORT, () => {
