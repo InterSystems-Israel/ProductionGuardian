@@ -247,35 +247,66 @@ jobs:
       # Flat copy on purpose: iris/ does not mirror the package layout, and LoadDir reads
       # each class's declared name from the file rather than from its path.
       #
-      # EXCLUDES iris/labdemo/Tools/, and this is the day the comment above predicted. Those
-      # classes extend %AI.Tool, which does not exist in this image -- verified by starting
-      # `intersystems/irishealth-community:latest-em` and asking it:
+      # EXCLUDES the AI-Hub-dependent classes, and this is the day the comment above predicted.
+      # They reference %AI.Tool / %AI.Agent, which do not exist in this image -- verified by
+      # starting `intersystems/irishealth-community:latest-em` and asking it:
       #
       #     %AI.Tool exists: 0
       #     %AI.Agent exists: 0
       #
       # So compiling them here would fail on CORRECT code. Taking option 1 of the three ranked
       # above -- exclude and SAY WHICH -- rather than dropping the job, which is the cheapest
-      # response and the worst one: the other 11 classes stay covered, and this comment plus the
+      # response and the worst one: every other class stays covered, and this comment plus the
       # step output below name the gap so it is not silently assumed.
       #
-      # WHAT THAT COSTS, stated plainly: the AI Hub tool classes get NO compile check in CI. They
-      # are verified only against the EAP image on a developer machine, which is #70's
+      # SELECTED BY CONTENT, NOT BY PATH. This was `-not -path 'iris/labdemo/Tools/*'` until
+      # AgentDispatcher.cls landed in iris/labdemo/REST/ and failed the job on correct code
+      # (#92). The path rule encoded "AI Hub classes live in Tools/", which was true when
+      # written and false as soon as the HTTP entry point was added -- and a third hardcoded
+      # path in three places is a rule that goes stale again the next time. Grepping for the
+      # dependency itself cannot: a new class that touches %AI. is excluded automatically, and
+      # one that stops touching it is picked back up.
+      #
+      # iris/test/ stays a path exclusion because StubPolicy.cls names no %AI. class itself --
+      # it EXTENDS one that does, so it is transitively dependent and a content grep misses it.
+      # Following Extends chains properly is a compiler's job, not a shell one-liner's; the
+      # directory is the honest boundary for test doubles.
+      #
+      # WHAT THAT COSTS, stated plainly: the AI Hub classes get NO compile check in CI. They are
+      # verified only against the EAP image on a developer machine, which is #70's
       # single-machine problem returning in a narrower form. Option 2 (a self-hosted runner with
       # the EAP image) fixes both and is the real answer when someone has the time.
       - name: Copy classes into the container
         if: steps.guard.outputs.present == 'true'
         run: |
           docker exec pg-iris bash -c 'mkdir -p /tmp/pg-iris-src'
-          find iris -name '*.cls' -not -path 'iris/labdemo/Tools/*' -not -path 'iris/test/*' -exec docker cp {} pg-iris:/tmp/pg-iris-src/ \;
+          # ONE list, computed once, used for both the copy and the count -- so the notice can
+          # never disagree with what was actually compiled. Deriving the two separately is how a
+          # report drifts from the thing it reports on.
+          #
+          # Two rules, unioned: any class that NAMES an %AI. class, plus everything under
+          # iris/test/. See the comment above for why the second one cannot also be a grep.
+          skip_list=$({ grep -rl '%AI\.' --include='*.cls' iris/; find iris/test -name '*.cls'; } | sed '/^$/d' | sort -u)
+          all_list=$(find iris -name '*.cls' | sort)
+          copy_list=$(comm -23 <(echo "$all_list") <(echo "$skip_list"))
+          # `while read` in a PIPELINE runs in a subshell, so an `exit 1` inside it would not fail
+          # this step -- a copy that silently did not happen would show up as a class not compiled
+          # rather than as an error. Fed by a here-string instead, so the shell is the same one.
+          while read -r f; do
+            [ -n "$f" ] || continue
+            docker cp "$f" pg-iris:/tmp/pg-iris-src/ || { echo "::error::failed to copy $f"; exit 1; }
+          done <<< "$copy_list"
           docker cp tools/ci-compile-iris.txt pg-iris:/tmp/ci-compile-iris.txt
-          copied=$(find iris -name '*.cls' -not -path 'iris/labdemo/Tools/*' -not -path 'iris/test/*' | wc -l)
-          skipped=$(find iris -name '*.cls' \( -path 'iris/labdemo/Tools/*' -o -path 'iris/test/*' \) | wc -l)
+          copied=$(echo "$copy_list" | sed '/^$/d' | wc -l)
+          skipped=$(echo "$skip_list" | sed '/^$/d' | wc -l)
           echo "copied $copied classes"
-          echo "::notice::skipped $skipped AI-Hub-dependent class(es) under iris/labdemo/Tools/ and iris/test/ — %AI.Tool is absent from this image, so they are compile-checked only against the EAP image (see the comment on this step and #77)"
-      # Greps for the marker rather than trusting the exit status: `iris session` exits 0
-      # even when the script inside reported a compile error, which would make this job
-      # exactly the kind of check that passes while verifying nothing.
+          # Names the files, not just the count. "skipped 4" tells a reader nothing about WHICH
+          # coverage they lack, and this list is the gap -- so it should be readable without
+          # re-deriving the find expression.
+          echo "$skip_list" | sed 's/^/  skipped: /'
+          # `paste -sd' '` rather than `tr` for the one-line form: a literal newline inside a
+          # YAML block scalar is what a `tr` argument would need, and it breaks the block.
+          echo "::notice::skipped $skipped AI-Hub-dependent class(es) — %AI.Tool and %AI.Agent are absent from this image, so they are compile-checked only against the EAP image (see the comment on this step and #77): $(echo "$skip_list" | paste -sd ' ' -)"
       - name: Compile
         if: steps.guard.outputs.present == 'true'
         run: |
