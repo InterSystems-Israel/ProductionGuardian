@@ -111,6 +111,50 @@ describe('headers', () => {
     assert.equal(res.status, 204);
     assert.equal(res.headers.get('access-control-allow-origin'), '*');
   });
+
+  it('preflight permits a cross-origin JSON POST (MVP 2)', async () => {
+    // The MVP 2 endpoints are POSTs with `Content-Type: application/json`, which is NOT a
+    // CORS-simple request -- so a browser preflights it, and a reply missing either POST or
+    // Allow-Headers fails the preflight. Every existing GET keeps working regardless, because
+    // those ARE simple and are never preflighted.
+    //
+    // That asymmetry is why this test exists: the symptom of getting it wrong is a dashboard
+    // that renders live data perfectly and silently cannot submit an approval, with nothing in
+    // the engine log because the request never arrives. Not observable from any GET, so no
+    // existing test would have caught it.
+    const res = await fetch(`${base}/api/healthscan/findings`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'http://localhost:5173',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type',
+      },
+    });
+    assert.equal(res.status, 204);
+
+    const methods = res.headers.get('access-control-allow-methods') ?? '';
+    assert.ok(methods.includes('POST'), `Allow-Methods must advertise POST, got "${methods}"`);
+
+    const headers = (res.headers.get('access-control-allow-headers') ?? '').toLowerCase();
+    assert.ok(
+      headers.includes('content-type'),
+      `Allow-Headers must permit content-type or a JSON POST cannot be sent, got "${headers}"`,
+    );
+  });
+
+  it('advertised-but-unrouted POST answers 405, not a CORS failure', async () => {
+    // POST is advertised before /api/investigate and /api/resolve exist. Pinning the
+    // consequence: the request REACHES the engine and gets a clear 405. A reader seeing 405
+    // knows the route is missing; a reader seeing a preflight failure learns nothing and looks
+    // in the wrong place. This is the deliberate half of advertising a method early.
+    const res = await fetch(`${base}/api/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'dry_run' }),
+    });
+    assert.equal(res.status, 405);
+    assert.equal(res.headers.get('access-control-allow-origin'), '*');
+  });
 });
 
 describe('routing', () => {

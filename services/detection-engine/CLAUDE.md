@@ -159,7 +159,43 @@ Non-negotiable behaviours:
 - **Rules are pure functions** of `(sample, window, config)`. No I/O, no clock reads inside a
   rule — pass time in. This is what makes them testable against fixtures.
 
-### 5.1 Baseline self-inflation — known, deliberate, pinned by a test
+### 5.1 Baseline self-inflation — and the one metric now exempt from it
+
+**A reference baseline exempts a host+metric.** `thresholds.json` `referenceBaselines` states a
+normal that does not move; where one exists it wins over the rolling mean, and self-inflation
+cannot occur for that pair. Currently only `Cloud API` / `queued`, set to `0`. Everything else
+still behaves exactly as described below, which is most metrics on most hosts.
+
+Why it was needed, with the arithmetic rather than the anecdote. §5.1 as originally written
+describes a **step**: queue jumps 0 → 486, fires, then clears as the mean climbs. A **ramp** is
+worse and was not covered. For a linear rise of `k` per sample over `n` samples the mean is
+`k(n+1)/2`, so:
+
+```
+ratio = nk / (k(n+1)/2) = 2n/(n+1)     ->  approaches 2.0, never reaches it
+```
+
+`k` cancels, so the inflow rate is irrelevant — a faster ramp does not help. Against the 5.0
+multiplier the rule is **structurally unable to fire on a rising queue**, at any depth and any
+duration. Measured on the live stack: ratio pinned at exactly 2.00 while the queue climbed past
+1200, with no finding at any point.
+
+That matters for MVP 2 specifically. MVP 1's scenarios were all steps — disable a host, break its
+target — so `queue_buildup` always fired, and `dead_host` is absolute anyway. MVP 2's scenario is
+a **ramp on a host whose status stays OK**: throughput-bound but healthy, which is precisely the
+case that needs explaining rather than being self-evident. No absolute rule backs it up.
+
+A longer window was considered and rejected: it fixes the arithmetic but not a demo, because a
+fresh `compose up` has no history to put in it, `minBaselineSamples` is satisfied after 12
+samples, and a multi-day window holding only the last minute would claim evidence it does not
+have. A stated reference says "assumed"; a long window implies "measured".
+
+`test/silence.test.ts` now pins the **new** behaviour — that the finding persists while the queue
+does. The previous test pinned the opposite and carried the note *"if this now fails,
+self-inflation has been addressed and CLAUDE.md §5.1 needs updating"*. It failed, and this is that
+update. Inverted rather than deleted, so it keeps noticing.
+
+#### The original behaviour, which still applies everywhere without a reference
 
 A rolling mean includes the breaching samples, so **a sustained problem becomes the new normal
 and its comparative finding clears while the bad value persists.** With `queued` going 0 → 486,

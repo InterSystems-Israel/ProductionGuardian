@@ -95,7 +95,21 @@ function writeHead(res: ServerResponse, status: number, state: string, length?: 
     'Content-Type': 'application/json; charset=utf-8',
     // Contract Q9: sent unconditionally, so the dev proxy is optional not required.
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    // POST is advertised for the MVP 2 endpoints (`/api/investigate`, `/api/resolve`), and
+    // Allow-Headers is what a JSON POST actually needs: a cross-origin request carrying
+    // `Content-Type: application/json` is NOT a CORS-simple request, so the browser sends a
+    // preflight, and a preflight with no `Access-Control-Allow-Headers` in the reply fails --
+    // while every existing GET keeps working, because those ARE simple requests and are never
+    // preflighted. That asymmetry is the whole problem: the symptom is a dashboard that renders
+    // live data perfectly and silently cannot submit an approval, with nothing in the engine log
+    // (the request never arrives). Named in contracts/resolve-api.md before either endpoint
+    // existed, so it would not be diagnosed from the UI.
+    //
+    // Advertised BEFORE the routes exist on purpose. A method in Allow-Methods with no route
+    // behind it answers 405, which is a clear, correct answer to "can I POST here yet". The
+    // reverse -- a route with the header missing -- is the invisible failure.
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
     'X-Healthscan-State': state,
     // Findings change every poll; a cached response would defeat the 10s bar.
     'Cache-Control': 'no-store',

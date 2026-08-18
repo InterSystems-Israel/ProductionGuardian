@@ -243,6 +243,175 @@ ClassMethod SystemAlert(pHost As %String = {..#OPERATION}) As %Status
     quit $$$OK
 }
 
+/// THE MVP 2 SCENARIO. Arms the throughput bottleneck the whole WHAT -> WHY -> FIX loop is built
+/// on, and the only one whose correct fix is a pool-size change.
+///
+///   do ##class(ProductionGuardian.LabDemo.Triggers).PoolBottleneck()
+///
+/// WHAT IT DOES, and why each half is needed:
+///
+///   1. throttles the DOWNSTREAM dispatcher to ~1s per call. Cloud API is PoolSize 1, so with a
+///      1s downstream it clears ~1 msg/sec no matter how much arrives.
+///   2. raises HL7 inflow above that ceiling. Inflow > drain rate is what builds the queue.
+///
+/// Neither alone produces the scenario: a throttle with normal inflow just makes a slow-but-
+/// keeping-up pipeline, and fast inflow without the throttle is absorbed. It is the RATIO that
+/// matters, which is why this is one method rather than two toggles a presenter must combine
+/// correctly under pressure.
+///
+/// WHY THIS IS THE RIGHT DEMO. The fix is unambiguous and it is a configuration change, not a
+/// code change: with 4 workers the 1s downstream waits OVERLAP, so effective throughput rises to
+/// ~4/sec and the queue drains. And Cloud API genuinely IS PoolSize 1 in Production.cls -- the
+/// bottleneck is real, not arranged for the camera. The only thing this method adds is a slow
+/// downstream, which is the most common real cause of exactly this shape.
+///
+/// STASHES THE PRIOR POOL SIZE so Reset() can restore it, by the same rule as the port stash in
+/// ErrorRate(): capture what was actually there, never a literal. Smart Resolve is going to change
+/// this value, and #66 established that restoring to a hardcoded number destroys a deployment that
+/// legitimately differs.
+///
+/// THE BASELINE MUST WARM AT ZERO, WITH NO QUEUE, BEFORE ANYTHING IS ARMED. `pWarmSeconds`
+/// (default 75) waits with both halves OFF so the engine records a genuinely empty queue, and only
+/// then applies the throttle and the rate together.
+///
+/// WHY, and this comes from the rule rather than from tuning. `queue_buildup` computes:
+///
+///     ratio = baseline > 0 ? depth / baseline : POSITIVE_INFINITY
+///
+/// So a baseline of exactly **0** makes the ratio infinite and the absolute floor (50) becomes the
+/// whole test -- the finding fires as soon as depth clears 50. A baseline of anything above zero
+/// makes the ratio finite, and then #43 applies: a queue ramping upward inflates its own rolling
+/// mean, and the ratio asymptotes to ~2x against a 5x gate. Modelled over the 30-minute window:
+///
+///   after  2 min   queued  120   mean   62   ratio 1.92x
+///   after 10 min   queued  600   mean  302   ratio 1.98x
+///   after 30 min   queued 1800   mean  902   ratio 1.99x     <- never reaches 5.0
+///
+/// MEASURED BOTH WAYS, and the first way was my mistake. Warming for 90s with the THROTTLE
+/// ALREADY ON let a queue form during warm-up, so the baseline learned a nonzero value: queue
+/// climbed 70, 135, 196, 254 across four minutes with the floor long since cleared, and the rule
+/// stayed silent -- ratio peaked near 3.3x and then DECAYED, so waiting made it worse rather than
+/// better. Warming with nothing armed keeps the baseline at 0 and the finding arrives once depth
+/// passes 50.
+///
+/// Cloud API idles at queued=0, so an empty warm-up is the natural state rather than something to
+/// engineer. 75s covers minBaselineSamples (12) x the 5s engine poll with margin.
+///
+/// This is the same mechanism that makes ErrorRate() work where a plain disable does not (#43),
+/// stated as a requirement instead of relied on as luck.
+///
+/// HONEST STATUS: THE MECHANICS ALL WORK, THE FINDING IS NOT YET RELIABLE. Measured on the
+/// containerised stack, each independently:
+///
+///   the dispatcher throttle        avgProcessingTime 0.01s -> 1.01s
+///   the inflow rate override       archive rate 0.53/sec -> 4.13/sec
+///   the bottleneck itself          queue grows steadily while status stays OK, not dead
+///   SetPoolSize (the FIX)          pool 1 -> 4, throughput rose to exactly 4/sec
+///   Reset()                        pool restored 4 -> 1 from the stash, both globals cleared
+///   queue_buildup                  FIRED ONCE: "Queue depth 198 is 9.0x baseline"
+///
+/// What is NOT yet nailed down is an arming sequence that makes `queue_buildup` fire EVERY time.
+/// It fired on the first run and not on three subsequent ones, and the difference is the state of
+/// the rolling baseline when the ramp begins -- which depends on what the instance was doing
+/// beforehand, i.e. on history rather than on this method. Two things are established about why:
+/// the rule's `baseline > 0 ? depth / baseline : INFINITY` means a genuinely zero baseline reduces
+/// the test to the floor alone, and a nonzero one caps the achievable ratio near 2x against a 5x
+/// gate (#43). Getting the baseline to zero requires the queue to be *empty* for the whole warm-up,
+/// and with the HL7 generator running it intermittently is not.
+///
+/// So do not build the demo script on `queue_buildup` alone yet. `throughput_drop` fires reliably
+/// on this scenario and is a true statement about it. The remaining work is either a warm-up that
+/// guarantees an empty queue (pause the generator during it) or accepting that #25's threshold
+/// rework is the real fix -- and #25 is open precisely because these floors are tuned to LABDEMO's
+/// scale. Recorded here rather than left as a surprise for whoever writes the demo script.
+///
+/// EXPECT: queue_buildup within ~2 min of the rate rising. dead_host does NOT fire -- the host is
+/// healthy, just outnumbered, which is the point: this is the scenario where the finding needs an
+/// explanation rather than being self-evident.
+///
+/// THE GENERATOR MUST BE RUNNING THE CURRENT ROUTINE. `RunContinuous` re-reads the rate global per
+/// iteration, but a long-lived `job`-ed process keeps executing the routine it started with, so a
+/// generator jobbed before that change ignores the override silently -- measured 0.53/sec when 4/sec
+/// was requested, with the global correctly set. Restart it after any recompile of HL7Generator.
+///
+/// THE DEFAULT RATE IS 0.5s, NOT 0.25s, AND THAT CHOICE IS THE DEMO. Measured live:
+///
+///   inflow      drain at pool 1     drain at pool 4      after the fix
+///   4/sec       1/sec               4/sec                PLATEAU at ~1215 -- no drain
+///   2/sec       1/sec               4/sec                net -2/sec -- visibly drains
+///
+/// At 0.25s the arithmetic is exactly balanced once the pool reaches 4, so the queue stops
+/// growing and then just sits there. Verified: queue held 1211, 1213, 1215, 1215 across four
+/// minutes after the fix, with throughput at exactly 4/sec. The fix WORKED -- throughput
+/// quadrupled -- and on screen it looks like nothing happened, because the number an operator
+/// watches never comes down. MVP 2 §6 lists "pool change does not drain fast enough on stage" as
+/// a named risk; a balanced default is the version of that risk you ship without noticing.
+///
+/// So the default leaves headroom: 2/sec in against 4/sec out drains ~2/sec, and the backlog the
+/// demo built visibly disappears. Raise pRateSecs to make the drain faster and more dramatic;
+/// lower it toward 0.25 only if you want to demonstrate that a pool of 4 is NOT enough.
+ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Double = 0.5, pWarmSeconds As %Integer = 75) As %Status
+{
+    set sc = ..CheckProduction()
+    if $$$ISERR(sc) {
+        quit sc
+    }
+    if pDispatcherMs < 1 {
+        write "REFUSED  a dispatcher throttle under 1ms induces nothing", !
+        quit $$$ERROR($$$GeneralError, "pDispatcherMs must be >= 1")
+    }
+    if pRateSecs <= 0 {
+        // Guarded rather than trusted: a zero interval spins the generator loop as fast as the
+        // filesystem allows, which takes the instance down instead of demonstrating a queue.
+        write "REFUSED  an inflow interval of ", pRateSecs, "s would spin the generator", !
+        quit $$$ERROR($$$GeneralError, "pRateSecs must be > 0")
+    }
+
+    // Stash before changing anything, and only if not already stashed -- arming twice must not
+    // overwrite the real prior value with the armed one.
+    if '$data(^ProductionGuardian.Trigger("PoolWas")) {
+        set ^ProductionGuardian.Trigger("PoolWas") = ..GetPoolSize(..#OPERATION)
+    }
+
+    // WARM AT ZERO, with nothing armed. Applying the throttle before this wait was the defect:
+    // a queue forms during warm-up, the baseline learns a nonzero value, and the ratio can then
+    // never reach 5x (see the class comment). Both halves go on together AFTER the wait.
+    if pWarmSeconds > 0 {
+        write "  warming the baseline for ", pWarmSeconds, "s with NOTHING armed", !
+        write "    (queue must read 0 so the baseline is 0 -- otherwise the ratio caps near 2x)", !
+        hang pWarmSeconds
+    }
+    set ^ProductionGuardian.Trigger("DispatcherMs") = pDispatcherMs
+    set ^ProductionGuardian.Trigger("RateSecs") = pRateSecs
+
+    set pool = ..GetPoolSize(..#OPERATION)
+    set drainPerSec = 1000 / pDispatcherMs * $select(+pool > 0: +pool, 1: 1)
+    set inflowPerSec = 1 / pRateSecs
+
+    write "ARMED  queue_buildup  (the MVP 2 pool-bottleneck scenario)", !
+    write "  ", ..#OPERATION, " PoolSize ", pool, " x ~", pDispatcherMs, "ms downstream", !
+    write "    -> drains ~", $fnumber(drainPerSec, "", 1), "/sec", !
+    write "  HL7 inflow every ", pRateSecs, "s -> ~", $fnumber(inflowPerSec, "", 1), "/sec", !
+    write "  net ~+", $fnumber(inflowPerSec - drainPerSec, "", 1), "/sec into the queue", !
+    write "  Expect queue_buildup once depth clears the absolute floor (50).", !
+    write "  dead_host will NOT fire: the host is healthy, just outnumbered.", !
+    write "  The fix is more workers, not a restart -- pool ", pool, " -> 4 makes the", !
+    write "    downstream waits overlap. Reset() restores pool ", pool, ".", !
+    // State the POST-FIX arithmetic at arming time. A presenter needs to know the queue will
+    // actually come down before they are on stage, not discover a plateau in front of an
+    // audience -- and a fix that quadruples throughput while the watched number holds steady
+    // reads as a fix that did nothing.
+    set drainAt4 = 1000 / pDispatcherMs * 4
+    write "  AFTER the fix: drains ~", $fnumber(drainAt4, "", 1), "/sec vs ~", $fnumber(inflowPerSec, "", 1), "/sec in", !
+    if drainAt4 > inflowPerSec {
+        write "    -> net -", $fnumber(drainAt4 - inflowPerSec, "", 1), "/sec, the queue DRAINS visibly.", !
+    } else {
+        write "    -> WARNING: net ", $fnumber(drainAt4 - inflowPerSec, "", 1), "/sec. Pool 4 will NOT drain this", !
+        write "       backlog -- it only stops it growing. Raise pRateSecs for a visible drain.", !
+    }
+    quit $$$OK
+}
+
 /// Undo every trigger. Safe to call at any time, including when nothing is armed.
 ///
 /// This is the method that matters most: four of the manual procedures it replaces had to
@@ -259,6 +428,32 @@ ClassMethod Reset() As %Status
     if $data(^ProductionGuardian.Trigger("SlowMs")) {
         kill ^ProductionGuardian.Trigger("SlowMs")
         write "  cleared the injected processing delay", !
+    }
+
+    // MVP 2 scenario globals. The RATE goes first and the THROTTLE second, deliberately: with
+    // the throttle cleared first the queue would drain at full speed while inflow was still
+    // elevated, which is a different (and less honest) recovery than the one Smart Resolve
+    // demonstrates. Slow the inflow, then remove the bottleneck.
+    if $data(^ProductionGuardian.Trigger("RateSecs")) {
+        kill ^ProductionGuardian.Trigger("RateSecs")
+        write "  restored the HL7 inflow rate to the generator's own interval", !
+    }
+    if $data(^ProductionGuardian.Trigger("DispatcherMs")) {
+        kill ^ProductionGuardian.Trigger("DispatcherMs")
+        write "  cleared the downstream dispatcher throttle", !
+    }
+
+    // Pool size back to what it WAS, by the same rule as the port above: restore the stashed
+    // value, never a literal. Smart Resolve's whole point is changing this, so Reset() has to be
+    // able to undo it -- and #66 established that restoring to a hardcoded number destroys a
+    // deployment that legitimately differs.
+    if $data(^ProductionGuardian.Trigger("PoolWas")) {
+        set poolWas = ^ProductionGuardian.Trigger("PoolWas")
+        if poolWas '= "" {
+            do ..SetPoolSize(..#OPERATION, poolWas)
+            write "  ", ..#OPERATION, " pool restored to ", poolWas, !
+        }
+        kill ^ProductionGuardian.Trigger("PoolWas")
     }
 
     // Restore the operation's real target and its shipped timeouts. Removing the four
@@ -320,6 +515,17 @@ ClassMethod Status() As %Status
     set slow = +$get(^ProductionGuardian.Trigger("SlowMs"), 0)
     write "  injected delay : ", $select(slow > 0: slow _ "ms  <- slow_processing armed", 1: "none"), !
 
+    // The MVP 2 scenario globals. Reported for the same reason #66 added the closed-port check
+    // below: a Status() that omits armed state lies by omission, and these two are invisible
+    // otherwise -- neither shows up as a disabled host or a changed setting.
+    set thr = +$get(^ProductionGuardian.Trigger("DispatcherMs"), 0)
+    write "  dispatcher     : ", $select(thr > 0: thr _ "ms per POST  <- downstream throttled", 1: "no throttle"), !
+    set rate = +$get(^ProductionGuardian.Trigger("RateSecs"), 0)
+    write "  HL7 inflow     : ", $select(rate > 0: rate _ "s per message  <- rate overridden", 1: "generator default"), !
+    if $data(^ProductionGuardian.Trigger("PoolWas")) {
+        write "  pool stashed   : ", ^ProductionGuardian.Trigger("PoolWas"), "  <- Reset() will restore this", !
+    }
+
     for i = 1:1:def.Items.Count() {
         set item = def.Items.GetAt(i)
         if $extract(item.Name, 1, 4) = "Ens." {
@@ -339,7 +545,7 @@ ClassMethod Status() As %Status
         if port = ..#CLOSEDPORT {
             set note = "  <- pointed at a closed port"
         }
-        write "  ", $justify(item.Name, 16), " enabled=", item.Enabled, note, !
+        write "  ", $justify(item.Name, 16), " enabled=", item.Enabled, " pool=", item.PoolSize, note, !
     }
     quit $$$OK
 }
@@ -377,6 +583,72 @@ ClassMethod SetEnabled(pItem As %String, pEnabled As %Boolean) As %Status
         set item = def.Items.GetAt(i)
         if item.Name = pItem {
             set item.Enabled = pEnabled
+            set found = 1
+        }
+    }
+    if 'found {
+        quit $$$ERROR($$$GeneralError, "no such config item: " _ pItem)
+    }
+    set sc = def.%Save()
+    if $$$ISERR(sc) {
+        quit sc
+    }
+    quit ..UpdateProduction()
+}
+
+/// Read a config item's pool size. Returns "" when the item does not exist, so a caller can
+/// tell "not found" from a real value -- an unmeasurable value is not a small one (#33).
+ClassMethod GetPoolSize(pItem As %String) As %String
+{
+    set def = ##class(Ens.Config.Production).%OpenId(..#PRODUCTION)
+    if '$IsObject(def) {
+        quit ""
+    }
+    // Explicit result variable rather than inspecting the loop variable afterwards. A bare
+    // `quit` breaks the FOR, so the loop variable holds the last item examined whether or not it
+    // matched -- which would return some other host's pool size for an unknown item name. That is
+    // the confidently-wrong answer, and it is worse here than "" because a caller stashing it for
+    // Reset() would restore the wrong host's value.
+    set result = ""
+    for i = 1:1:def.Items.Count() {
+        set item = def.Items.GetAt(i)
+        if item.Name = pItem {
+            set result = item.PoolSize
+            quit
+        }
+    }
+    quit result
+}
+
+/// Set a config item's pool size -- the MVP 2 action, and the one Smart Resolve wraps.
+///
+/// PoolSize IS A PROPERTY of Ens.Config.Item, not a row in its Settings collection. That
+/// distinction is the whole reason this method exists rather than callers using SetSetting():
+/// SetSetting writes the Settings collection, and for PoolSize that would store a setting nobody
+/// reads -- the production would report success and behave identically, a silent no-op in the one
+/// action MVP 2 exists to perform. Verified by introspection: Ens.Config.Item.PoolSize is a
+/// %Library.Integer property (contracts/mcp-tools.md, docs/mvp2-aihub-verified-api.md).
+///
+/// So this follows SetEnabled's shape, which writes a property, and NOT SetSetting's.
+///
+/// Bounds are deliberately NOT enforced here. This is the mechanism; the policy -- the 2..8 range,
+/// the single whitelisted host -- belongs to the governed MCP write tool, where it is RBAC-gated
+/// and audited (contracts/resolve-api.md §3). Putting a second, quieter bounds check here would
+/// mean two places to keep in agreement and a reader unsure which one is authoritative.
+ClassMethod SetPoolSize(pItem As %String, pSize As %Integer) As %Status
+{
+    if (pSize '= (pSize \ 1)) || (pSize < 1) {
+        quit $$$ERROR($$$GeneralError, "pool size must be a positive integer, got: " _ pSize)
+    }
+    set def = ##class(Ens.Config.Production).%OpenId(..#PRODUCTION)
+    if '$IsObject(def) {
+        quit $$$ERROR($$$GeneralError, "cannot open " _ ..#PRODUCTION)
+    }
+    set found = 0
+    for i = 1:1:def.Items.Count() {
+        set item = def.Items.GetAt(i)
+        if item.Name = pItem {
+            set item.PoolSize = pSize
             set found = 1
         }
     }
