@@ -17,7 +17,12 @@ export type MetricName =
   | 'avgProcessingTime'
   | 'avgQueueingTime';
 
-interface Sample {
+/**
+ * One observation. Exported because `recent()` returns these and Early Warning fits a slope
+ * over them — a public method returning an unexported type compiles, but leaves a consumer
+ * unable to name what it received.
+ */
+export interface Sample {
   /** Epoch milliseconds. Passed in, never read from the clock here. */
   at: number;
   value: number;
@@ -71,6 +76,36 @@ class MetricWindow {
     return prior === undefined ? null : prior.value;
   }
 
+  /**
+   * Samples within `spanMs` of `now`, oldest first — for fitting a slope.
+   *
+   * Returns pairs rather than values because a least-squares fit needs the TIMESTAMPS: the
+   * poll interval is nominal, not guaranteed (a slow fetch stretches it, a missed poll leaves
+   * a gap), so treating samples as evenly spaced would compute a slope per *sample* and
+   * report it as a slope per *minute*. At the shipped 2500ms proxy poll against a 5000ms
+   * engine poll that error is not small.
+   *
+   * A COPY, deliberately. Handing out the internal array would let a caller mutate the
+   * baseline while iterating it, and the only consumer is Early Warning, which reads at most
+   * a few dozen samples once per poll — the copy is not worth avoiding.
+   *
+   * Independent of `minSamples`: this returns what exists, and the caller decides whether
+   * that is enough to fit. Early Warning has its own `minFitSamples`, which is a different
+   * question from "is there a usable baseline".
+   */
+  recent(now: number, spanMs: number): readonly Sample[] {
+    const cutoff = now - spanMs;
+    const out: Sample[] = [];
+    // Walk backwards and stop at the first sample outside the span: samples are time-ordered,
+    // so there is nothing older worth checking.
+    for (let i = this.#samples.length - 1; i >= 0; i -= 1) {
+      const sample = this.#samples[i];
+      if (sample === undefined || sample.at < cutoff) break;
+      out.push(sample);
+    }
+    return out.reverse();
+  }
+
   #prune(now: number): void {
     const cutoff = now - this.#windowMs;
     // Samples arrive in time order, so drop from the front until inside the window.
@@ -111,6 +146,17 @@ export class BaselineStore {
   /** Rolling mean for a host+metric, or null while warming up. */
   baseline(host: string, metric: MetricName): number | null {
     return this.#windows.get(key(host, metric))?.mean() ?? null;
+  }
+
+  /**
+   * Timestamped samples for a host+metric within `spanMs` of `now`, oldest first.
+   *
+   * Empty when the host+metric has never been seen — an empty array, not null, because "no
+   * samples" and "not enough samples to fit" are the same answer to the caller and one of them
+   * being null would just move the check.
+   */
+  recent(host: string, metric: MetricName, now: number, spanMs: number): readonly Sample[] {
+    return this.#windows.get(key(host, metric))?.recent(now, spanMs) ?? [];
   }
 
   sampleCount(host: string, metric: MetricName): number {

@@ -35,7 +35,7 @@ const FINDING: Finding = {
   message: 'Queue depth 486 is 32x baseline',
 };
 
-let snapshot: EngineSnapshot = { hosts: [], findings: [], state: 'ok', lastPollAt: null };
+let snapshot: EngineSnapshot = { hosts: [], findings: [], projections: [], state: 'ok', lastPollAt: null };
 const server = createFindingsServer({ port: 0, snapshot: () => snapshot, log: () => {} });
 let base = '';
 
@@ -51,14 +51,14 @@ after(async () => {
 
 describe('empty states (contract §3)', () => {
   it('returns 200 and [] for zero findings, NOT 404', async () => {
-    snapshot = { hosts: [], findings: [], state: 'ok', lastPollAt: Date.now() };
+    snapshot = { hosts: [], findings: [], projections: [], state: 'ok', lastPollAt: Date.now() };
     const res = await fetch(`${base}/api/healthscan/findings`);
     assert.equal(res.status, 200, 'a 404 here would break Dev C error handling');
     assert.deepEqual(await res.json(), []);
   });
 
   it('returns 200 and [] for zero hosts', async () => {
-    snapshot = { hosts: [], findings: [], state: 'warming', lastPollAt: null };
+    snapshot = { hosts: [], findings: [], projections: [], state: 'warming', lastPollAt: null };
     const res = await fetch(`${base}/api/healthscan/hosts`);
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), []);
@@ -67,20 +67,20 @@ describe('empty states (contract §3)', () => {
 
 describe('payloads', () => {
   it('serves hosts verbatim', async () => {
-    snapshot = { hosts: [HOST], findings: [], state: 'ok', lastPollAt: Date.now() };
+    snapshot = { hosts: [HOST], findings: [], projections: [], state: 'ok', lastPollAt: Date.now() };
     const res = await fetch(`${base}/api/healthscan/hosts`);
     assert.deepEqual(await res.json(), [HOST]);
   });
 
   it('serves findings verbatim', async () => {
-    snapshot = { hosts: [HOST], findings: [FINDING], state: 'ok', lastPollAt: Date.now() };
+    snapshot = { hosts: [HOST], findings: [FINDING], projections: [], state: 'ok', lastPollAt: Date.now() };
     const res = await fetch(`${base}/api/healthscan/findings`);
     assert.deepEqual(await res.json(), [FINDING]);
   });
 
   it('preserves baselineValue null through serialization', async () => {
     const warming: Finding = { ...FINDING, baselineValue: null };
-    snapshot = { hosts: [], findings: [warming], state: 'warming', lastPollAt: Date.now() };
+    snapshot = { hosts: [], findings: [warming], projections: [], state: 'warming', lastPollAt: Date.now() };
     const body = (await (await fetch(`${base}/api/healthscan/findings`)).json()) as Finding[];
     assert.equal(body[0]?.baselineValue, null, 'must stay null, not become 0 or undefined');
   });
@@ -88,14 +88,14 @@ describe('payloads', () => {
 
 describe('headers', () => {
   it('sends CORS unconditionally (contract Q9)', async () => {
-    snapshot = { hosts: [], findings: [], state: 'ok', lastPollAt: Date.now() };
+    snapshot = { hosts: [], findings: [], projections: [], state: 'ok', lastPollAt: Date.now() };
     const res = await fetch(`${base}/api/healthscan/hosts`);
     assert.equal(res.headers.get('access-control-allow-origin'), '*');
   });
 
   it('reports the engine state', async () => {
     for (const state of ['ok', 'warming', 'stale'] as const) {
-      snapshot = { hosts: [], findings: [], state, lastPollAt: Date.now() };
+      snapshot = { hosts: [], findings: [], projections: [], state, lastPollAt: Date.now() };
       const res = await fetch(`${base}/api/healthscan/findings`);
       assert.equal(res.headers.get('x-healthscan-state'), state);
     }
@@ -159,7 +159,7 @@ describe('headers', () => {
 
 describe('routing', () => {
   it('tolerates a trailing slash', async () => {
-    snapshot = { hosts: [HOST], findings: [], state: 'ok', lastPollAt: Date.now() };
+    snapshot = { hosts: [HOST], findings: [], projections: [], state: 'ok', lastPollAt: Date.now() };
     const res = await fetch(`${base}/api/healthscan/hosts/`);
     assert.equal(res.status, 200);
   });
