@@ -127,9 +127,8 @@ execution.
 
 ## What is NOT yet verified
 
-- **No LLM provider is configured.** No `%AI.Provider` instance, no ConfigStore entry, no API
-  key. Nothing has called an external model from this instance. The provider/key path is real
-  work, not a checkbox.
+- ~~No LLM provider is configured.~~ **CLOSED** -- see the provider section at the end of this
+  file. A real OpenAI call and an agent tool call have both been made from this instance.
 - **What an audit record CONTAINS, and whether it is queryable.** Enforcement is confirmed (see
   above), but the written record has not been observed, and Dev C needs to display one. This is
   now the highest-value remaining unknown.
@@ -202,3 +201,70 @@ clean. They do look clean. That is not the same as being clean by construction.
 
 Related: the same reasoning is why `count` must be `null` rather than `0` when the log is
 unreadable — "no errors" is the worst wrong answer to give an agent diagnosing an error condition.
+
+## The LLM provider is configured, and an agent has used our tools
+
+Closed 2026-08-18. Previously listed here as "No LLM provider is configured ... real work, not a
+checkbox".
+
+**The key is in the AI Hub wallet, not in this repo and not in an env var.** Following the
+`aihub-eap` skill's production pattern -- Wallet holds the secret, ConfigStore references it:
+
+```objectscript
+Security.Resources.Create("AI.Secrets", ...)
+%Wallet.Collection.Create("PGSecrets", {"UseResource":"AI.Secrets","EditResource":"AI.Secrets"})
+%Wallet.KeyValue.Create("PGSecrets.openai", {"Usage":"CUSTOM","Secret":{"apikey":"<the key>"}})
+%ConfigStore.Configuration.Create("AI","LLM","","pgdetective", {
+    "model_provider": "openai",
+    "model":          "gpt-4o-mini",
+    "api_key":        "secret://PGSecrets.openai#apikey"
+})
+```
+
+`GetDetails("AI.LLM.pgdetective", .d, 0, 1)` -- the trailing `1` is `resolveSecrets` -- returns the
+real key. Verified it resolves rather than handing back the `secret://` string, because the failure
+mode is a provider that authenticates with a literal URI and reports an auth error rather than a
+config error.
+
+**A real call, from inside IRIS:**
+
+```
+provider created: %AI.Provider
+%Init: OK
+response: AIHUB LIVE
+```
+
+**And an agent using OUR MCP tools, which is the whole AI Detective mechanism:**
+
+```
+UseToolSet("ProductionGuardian.LabDemo.Tools.Read")  -> OK
+Run(session, "What is the pool size of the host named Cloud API? ...")
+answer: 1          <- the real configured value
+tool calls: 1
+```
+
+That is the loop MVP 2 needs: agent -> MCP read tool -> live production -> LLM -> structured answer.
+Nothing hardcoded, nothing mocked.
+
+### Pattern notes worth keeping
+
+- `%AI.Provider.Create(providerName, detailsObject)` takes the whole ConfigStore details object; it
+  reads `api_key` from it directly. No separate key argument.
+- `%Init()` before the first `Chat()` or `Run()`, as the skill says. Without it the provider and
+  tools are unwired.
+- `Run(session, goal, maxIterations)` rather than `Chat` for AI Detective: it is an agentic loop, so
+  the model can call several read tools before concluding. `Chat` is one turn.
+- `session.GetStats()."total_tool_calls"` is how to prove a tool was actually used rather than the
+  model answering from its own guess -- worth asserting, since a plausible wrong number looks
+  identical to a correct one in the response text.
+
+### Two security notes
+
+**The key must be rotated.** It was pasted into a chat transcript to reach me, so it should be
+treated as exposed regardless of where it now lives. MVP 2 §6 already lists "rotate after the demo"
+as the mitigation for credential exposure; this is that case.
+
+**`gpt-4o-mini` is a deliberate choice, not a default.** AI Detective sends metrics and
+configuration only -- no message content, no PHI (root `CLAUDE.md` §2.1) -- so the reasoning task is
+small and structured. A larger model would cost more per investigation and add latency to a loop
+that already sits inside the ADR 0005 budget.
