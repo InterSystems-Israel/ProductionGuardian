@@ -15,3 +15,8 @@ Thumbs.db
 # even though the default value is a well-known one -- root CLAUDE.md §5. The template is
 # committed; the rendered file never is.
 docker/webgateway/CSP.ini
+
+# Local MCP connection config for iris-agentic-dev. Carries a password, and the host/port are
+# machine-specific -- the compose stack's published port differs per developer. Same reasoning
+# as docker/webgateway/CSP.ini: the rendered file with a credential is never committed.
+.iris-agentic-dev.toml
