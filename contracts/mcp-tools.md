@@ -208,12 +208,12 @@ one field being absent.
 
 **Worked example.**
 
-```json
+```jsonc
 // -> get_queue_depth
 { "host": "Cloud API" }
 ```
 
-```json
+```jsonc
 // <- during the demo's queue_buildup
 {
   "host": "Cloud API",
@@ -224,7 +224,7 @@ one field being absent.
 }
 ```
 
-```json
+```jsonc
 // <- production stopped: NOT a drained queue
 {
   "host": "Cloud API",
@@ -373,12 +373,12 @@ Raw rows in `Ens_Util.Log` (what the tool reads, and what it must not publish):
   127.0.0.1:59999
 ```
 
-```json
+```jsonc
 // -> get_recent_errors
 { "host": "Cloud API", "sinceMinutes": 15, "limit": 20 }
 ```
 
-```json
+```jsonc
 // <- what the agent, and therefore the external LLM, sees
 {
   "host": "Cloud API",
@@ -553,12 +553,12 @@ the fifth is somebody else's.
 
 **Worked example — applied.**
 
-```json
+```jsonc
 // -> set_pool_size
 { "host": "Cloud API", "size": 4 }
 ```
 
-```json
+```jsonc
 // <-
 {
   "host": "Cloud API",
@@ -575,12 +575,12 @@ the fifth is somebody else's.
 
 **Worked example — the reversal**, which is why the tool's lower bound is `1`:
 
-```json
+```jsonc
 // -> set_pool_size   (the `reversal` object from the response above, replayed)
 { "host": "Cloud API", "size": 1 }
 ```
 
-```json
+```jsonc
 // <-
 {
   "host": "Cloud API",
@@ -599,12 +599,12 @@ the fifth is somebody else's.
 `PG_Resolve`. There is **no result object at all**: the runtime refuses before `%Invoke` runs
 (§5.2), so this is an error response and not a `set_pool_size` payload with `applied: false`.
 
-```json
+```jsonc
 // -> set_pool_size
 { "host": "Cloud API", "size": 4 }
 ```
 
-```json
+```jsonc
 // <-
 {
   "error": "tool_access_denied",
