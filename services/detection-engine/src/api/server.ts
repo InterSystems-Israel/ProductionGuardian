@@ -19,7 +19,27 @@ export interface ServerOptions {
   /** Reads the engine's current state. Called per request, never cached. */
   snapshot: () => EngineSnapshot;
   log?: (msg: string) => void;
+  /**
+   * Handles `POST /api/investigate`. Absent means the endpoint answers 503 rather than 404 --
+   * "not configured here" and "no such endpoint" are different facts, and a dashboard that gets
+   * 404 will conclude the feature does not exist rather than that this deployment lacks an agent.
+   */
+  investigate?: (findingId: string) => Promise<unknown>;
+  /** Handles `POST /api/resolve`. Same 503-not-404 reasoning. */
+  resolve?: (body: unknown) => Promise<unknown>;
 }
+
+/**
+ * The GET routes, as a set, so the POST branch can tell "wrong method on a real endpoint" from
+ * "no such endpoint". Kept adjacent to the switch below -- a second list is a thing that goes
+ * stale, and this one going stale would turn a 405 back into a misleading 404.
+ */
+const GET_PATHS = new Set([
+  '/api/healthscan/hosts',
+  '/api/healthscan/findings',
+  '/api/healthscan/health',
+  '/api/earlywarning',
+]);
 
 export function createFindingsServer(options: ServerOptions): Server {
   const log = options.log ?? console.error;
@@ -33,6 +53,62 @@ export function createFindingsServer(options: ServerOptions): Server {
       // Preflight, in case Dev C points at us without the Vite proxy.
       writeHead(res, 204, 'ok');
       res.end();
+      return;
+    }
+
+    if (req.method === 'POST') {
+      // The two MVP 2 write-ish endpoints. Handled before the GET guard because they are the only
+      // non-GET routes and they are async, which the GET path deliberately is not.
+      const handler =
+        path === '/api/investigate'
+          ? options.investigate === undefined
+            ? undefined
+            : async (body: unknown) => options.investigate!(readFindingId(body))
+          : path === '/api/resolve'
+            ? options.resolve
+            : null;
+
+      if (handler === null) {
+        // A POST to a path that exists as a GET route is 405, not 404 -- the endpoint is real, the
+        // method is not allowed on it. Returning 404 here was a regression I introduced by putting
+        // the POST branch ahead of the method guard, and the existing "405s a non-GET method" test
+        // caught it. Worth the extra branch: 404 tells a caller the endpoint does not exist, which
+        // for /api/healthscan/findings is simply false.
+        const isKnownGetPath = GET_PATHS.has(path);
+        sendJson(
+          res,
+          isKnownGetPath ? 405 : 404,
+          isKnownGetPath
+            ? { error: `method POST not allowed on ${path}` }
+            : { error: `no such endpoint: ${path}` },
+          'ok',
+        );
+        return;
+      }
+      if (handler === undefined) {
+        // 503, not 404: the route exists in this build but this deployment has no agent wired.
+        sendJson(
+          res,
+          503,
+          { error: `${path} is not configured on this deployment` },
+          options.snapshot().state,
+        );
+        return;
+      }
+
+      readJsonBody(req)
+        .then(async (body) => {
+          const result = await handler(body);
+          sendJson(res, 200, result, options.snapshot().state);
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          log(`POST ${path} failed: ${message}`);
+          // 400 for a body we could not read, 500 for a genuine fault. Distinguished because one is
+          // the caller's problem and the other is ours.
+          const status = message.startsWith('bad request') ? 400 : 500;
+          sendJson(res, status, { error: message }, 'stale');
+        });
       return;
     }
 
@@ -99,6 +175,57 @@ function sendJson(
   const payload = JSON.stringify(body);
   writeHead(res, status, state, Buffer.byteLength(payload));
   res.end(payload);
+}
+
+/**
+ * Read and parse a JSON request body, with a size cap.
+ *
+ * CAPPED at 64 KB. Every legitimate body here is a findingId or a small action object, so anything
+ * larger is a mistake or an attack, and an uncapped read is an unbounded allocation on a public
+ * port. Rejecting is the honest response rather than buffering whatever arrives.
+ */
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const MAX = 64 * 1024;
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buf = chunk as Buffer;
+    size += buf.length;
+    if (size > MAX) throw new Error('bad request: body exceeds 64 KB');
+    chunks.push(buf);
+  }
+  const raw = Buffer.concat(chunks).toString('utf8');
+  if (raw.trim() === '') throw new Error('bad request: empty body');
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error('bad request: body is not valid JSON');
+  }
+}
+
+/**
+ * Extract `findingId` from an investigate body.
+ *
+ * The contract makes the body EXACTLY `{"findingId": "..."}` with `additionalProperties: false`, and
+ * that is the structural half of the data boundary: because the body is one id, every value the
+ * model sees was engine-measured or tool-read. Extra keys are rejected rather than ignored -- a
+ * tolerated `prompt` field would be a text-injection path into an LLM prompt.
+ */
+function readFindingId(body: unknown): string {
+  if (typeof body !== 'object' || body === null) {
+    throw new Error('bad request: body must be an object');
+  }
+  const keys = Object.keys(body);
+  if (keys.length !== 1 || keys[0] !== 'findingId') {
+    throw new Error(
+      `bad request: body must contain exactly findingId, got [${keys.join(', ')}]`,
+    );
+  }
+  const id = (body as Record<string, unknown>)['findingId'];
+  if (typeof id !== 'string' || id.trim() === '') {
+    throw new Error('bad request: findingId must be a non-empty string');
+  }
+  return id;
 }
 
 function writeHead(res: ServerResponse, status: number, state: string, length?: number): void {

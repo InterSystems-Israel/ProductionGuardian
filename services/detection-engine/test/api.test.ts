@@ -142,18 +142,31 @@ describe('headers', () => {
     );
   });
 
-  it('advertised-but-unrouted POST answers 405, not a CORS failure', async () => {
-    // POST is advertised before /api/investigate and /api/resolve exist. Pinning the
-    // consequence: the request REACHES the engine and gets a clear 405. A reader seeing 405
-    // knows the route is missing; a reader seeing a preflight failure learns nothing and looks
-    // in the wrong place. This is the deliberate half of advertising a method early.
+  it('a real POST route with no handler answers 503, not 404 or 405', async () => {
+    // SUPERSEDES an earlier version of this test that asserted 405, from when POST was advertised
+    // in Allow-Methods before any POST route existed. /api/resolve is now a real route, so 405
+    // would be wrong -- and this suite caught the change rather than passing through it.
+    //
+    // 503 rather than 404 is the deliberate part: "this deployment has no agent wired" and "no
+    // such endpoint" are different facts. A dashboard seeing 404 concludes the feature does not
+    // exist and stops asking; 503 says try a deployment that has it.
     const res = await fetch(`${base}/api/resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: 'dry_run' }),
     });
-    assert.equal(res.status, 405);
+    assert.equal(res.status, 503);
     assert.equal(res.headers.get('access-control-allow-origin'), '*');
+  });
+
+  it('an unknown POST path still answers 404', async () => {
+    // The distinction above is only meaningful if a genuinely unknown path behaves differently.
+    const res = await fetch(`${base}/api/nope`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 404);
   });
 });
 
