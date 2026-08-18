@@ -142,7 +142,7 @@ renders from one type rather than from a status code.
   "audit": {
     "auditId": "aihub-audit-44812",
     "actor": "guardian_resolve",
-    "role": "%Guardian_Resolve",
+    "role": "Guardian_Resolve",
     "requestedBy": "presenter@laptop",
     "tool": "set_pool_size",
     "recordedAt": "2026-08-18T14:06:43Z",
@@ -609,7 +609,7 @@ that leaves no trace is not reviewable.
 "audit": {
   "auditId": "aihub-audit-44812",
   "actor": "guardian_resolve",
-  "role": "%Guardian_Resolve",
+  "role": "Guardian_Resolve",
   "requestedBy": "presenter@laptop",
   "tool": "set_pool_size",
   "recordedAt": "2026-08-18T14:06:43Z",
@@ -767,9 +767,9 @@ proven path is proven for a different job.
   | | `mcp-tools.md` calls it | appears in this contract as |
   |---|---|---|
   | IRIS **resource** — what is gated | `PG_Resolve` (write), `PG_Read` (read) | not published; internal to the gate |
-  | IRIS **role** — what a caller holds | `%Guardian_Resolve`, `%Guardian_Read` | `audit.role` |
+  | IRIS **role** — what a caller holds | `Guardian_Resolve`, `Guardian_Read` | `audit.role` |
 
-  So `audit.role: "%Guardian_Resolve"` in §11 and "executable by `PG_Resolve`" in the catalogue are
+  So `audit.role: "Guardian_Resolve"` in §11 and "executable by `PG_Resolve`" in the catalogue are
   the same rule stated from two ends, not two names for one thing. A reader grepping for one string
   and finding the other should not "fix" it. The resource is the thing `%CanExecute` tests; the role
   is the thing an audit record can attribute an action to, which is why only the latter is in this
@@ -909,7 +909,7 @@ Response `200`, `X-Resolve-Outcome: previewed`:
   "audit": {
     "auditId": "aihub-audit-44810",
     "actor": "guardian_resolve",
-    "role": "%Guardian_Resolve",
+    "role": "Guardian_Resolve",
     "requestedBy": null,
     "tool": "get_pool_size",
     "recordedAt": "2026-08-18T14:06:12Z",
@@ -985,7 +985,7 @@ Same request as §11.2, from a caller without the write role. Response `200`,
   "audit": {
     "auditId": "aihub-audit-44813",
     "actor": "guardian_readonly",
-    "role": "%Guardian_Resolve",
+    "role": "Guardian_Resolve",
     "requestedBy": "presenter@laptop",
     "tool": "set_pool_size",
     "recordedAt": "2026-08-18T14:07:02Z",
@@ -1038,7 +1038,7 @@ Response `200`, `X-Resolve-Outcome: refused`:
   "audit": {
     "auditId": "aihub-audit-44814",
     "actor": "guardian_resolve",
-    "role": "%Guardian_Resolve",
+    "role": "Guardian_Resolve",
     "requestedBy": null,
     "tool": "set_pool_size",
     "recordedAt": "2026-08-18T14:07:20Z",
