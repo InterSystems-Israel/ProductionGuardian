@@ -48,12 +48,27 @@ ClassMethod Run(count As %Integer = 20, delaySecs As %Double = 2) As %Status
 }
 
 /// Run continuously, generating one message every delaySecs until interrupted.
+///
+/// THE INTERVAL IS RE-READ EVERY ITERATION, from `^ProductionGuardian.Trigger("RateSecs")` when
+/// that global is set, falling back to the `delaySecs` argument. `delaySecs` is therefore the
+/// starting rate, not a fixed one.
+///
+/// Why: MVP 2's scenario needs inbound volume raised above the ~1 msg/sec Cloud API ceiling
+/// mid-demo ("bombard"). This method is normally `job`-ed by FirstBoot, so an argument-only rate
+/// would mean killing that background process and starting another to change it -- on stage, with
+/// the audience watching, and with a gap in the traffic that shows up as a throughput dip right
+/// before the demo wants to show a queue building. A global read per iteration costs nothing and
+/// takes effect within one interval.
+///
+/// Same pattern as the injected delay in PatientDemographicsOperation: a global read at runtime,
+/// so nothing is edited or recompiled mid-demo, and Triggers.Reset() clears it.
 ClassMethod RunContinuous(delaySecs As %Double = 2)
 {
     set sc = ..EnsureDropDir()
     quit:$$$ISERR(sc)
 
     write "Continuous HL7 generation started (Ctrl-C to stop). Interval: ", delaySecs, "s",!
+    write "  Rate is re-read from ^ProductionGuardian.Trigger(""RateSecs"") each message.",!
     set i = 1
     for {
         set msg = ..BuildADTA01(i)
@@ -61,7 +76,12 @@ ClassMethod RunContinuous(delaySecs As %Double = 2)
         set filename = ..#DropDir _ msgType _ "_" _ $translate($horolog, ",", "_") _ "_" _ i _ ".hl7"
         do ..WriteFile(filename, msg)  // errors are silent in continuous mode
         write $zdatetime($ztimestamp, 3, 1), "  ", msgType, !
-        hang delaySecs
+        // Re-read per iteration. Guarded: a zero or negative override would spin this loop as
+        // fast as the filesystem allows, which is a way to take the instance down rather than a
+        // way to demonstrate a queue -- so anything not strictly positive falls back to the
+        // argument.
+        set override = +$get(^ProductionGuardian.Trigger("RateSecs"), 0)
+        hang $select(override > 0: override, 1: delaySecs)
         set i = i + 1
     }
 }

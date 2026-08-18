@@ -53,6 +53,31 @@ ClassMethod UpsertPatient() As %Status
 {
     set sc = $$$OK
     try {
+        // DOWNSTREAM THROTTLE -- this is what makes MVP 2's scenario a real bottleneck rather
+        // than a staged one.
+        //
+        // The spec's scenario is: Cloud API runs at PoolSize 1, each message it sends is a POST
+        // to this dispatcher, and this dispatcher takes ~1s per call -- so the pipeline is capped
+        // at ~1 msg/sec regardless of inbound volume. Raise inbound above that and a queue builds
+        // in front of Cloud API. The only correct fix is more workers (pool 1 -> 4), because with
+        // several workers the 1s waits OVERLAP and effective throughput rises to ~4/sec.
+        //
+        // That is why the delay belongs HERE and not in the operation. A `hang` inside
+        // PatientDemographicsOperation would serialise per worker and enlarging the pool would
+        // still help -- but the story would be "our own code is slow", which is not a bottleneck
+        // an operator diagnoses or a pool size fixes in a way that generalises. A slow DOWNSTREAM
+        // dependency with a single worker in front of it is the real, common shape.
+        //
+        // Read from a global at RUNTIME, same as the injected delay in
+        // PatientDemographicsOperation (#78): the scenario can be armed and cleared without
+        // editing or recompiling this class mid-demo, and Triggers.Reset() clears it. A `hang 1`
+        // left in source would throttle every later measurement and poison every baseline
+        // captured after it -- and would be invisible in the one place nobody re-reads.
+        //
+        // Zero by default, so an unarmed instance behaves exactly as it did in MVP 1.
+        set throttle = +$get(^ProductionGuardian.Trigger("DispatcherMs"), 0)
+        if throttle > 0 { hang (throttle / 1000) }
+
         // Read and parse the JSON body.
         set body = %request.Content.Read(1000000)
         set dyn = ##class(%DynamicObject).%FromJSON(body)
