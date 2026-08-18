@@ -246,13 +246,33 @@ jobs:
           docker logs pg-iris | tail -40; exit 1
       # Flat copy on purpose: iris/ does not mirror the package layout, and LoadDir reads
       # each class's declared name from the file rather than from its path.
+      #
+      # EXCLUDES iris/labdemo/Tools/, and this is the day the comment above predicted. Those
+      # classes extend %AI.Tool, which does not exist in this image -- verified by starting
+      # `intersystems/irishealth-community:latest-em` and asking it:
+      #
+      #     %AI.Tool exists: 0
+      #     %AI.Agent exists: 0
+      #
+      # So compiling them here would fail on CORRECT code. Taking option 1 of the three ranked
+      # above -- exclude and SAY WHICH -- rather than dropping the job, which is the cheapest
+      # response and the worst one: the other 11 classes stay covered, and this comment plus the
+      # step output below name the gap so it is not silently assumed.
+      #
+      # WHAT THAT COSTS, stated plainly: the AI Hub tool classes get NO compile check in CI. They
+      # are verified only against the EAP image on a developer machine, which is #70's
+      # single-machine problem returning in a narrower form. Option 2 (a self-hosted runner with
+      # the EAP image) fixes both and is the real answer when someone has the time.
       - name: Copy classes into the container
         if: steps.guard.outputs.present == 'true'
         run: |
           docker exec pg-iris bash -c 'mkdir -p /tmp/pg-iris-src'
-          find iris -name '*.cls' -exec docker cp {} pg-iris:/tmp/pg-iris-src/ \;
+          find iris -name '*.cls' -not -path 'iris/labdemo/Tools/*'             -exec docker cp {} pg-iris:/tmp/pg-iris-src/ \;
           docker cp tools/ci-compile-iris.txt pg-iris:/tmp/ci-compile-iris.txt
-          echo "copied $(find iris -name '*.cls' | wc -l) classes"
+          copied=$(find iris -name '*.cls' -not -path 'iris/labdemo/Tools/*' | wc -l)
+          skipped=$(find iris -name '*.cls' -path 'iris/labdemo/Tools/*' | wc -l)
+          echo "copied $copied classes"
+          echo "::notice::skipped $skipped AI-Hub-dependent class(es) under iris/labdemo/Tools/ — %AI.Tool is absent from this image, so they are compile-checked only against the EAP image (see the comment on this step and #77)"
       # Greps for the marker rather than trusting the exit status: `iris session` exits 0
       # even when the script inside reported a compile error, which would make this job
       # exactly the kind of check that passes while verifying nothing.
