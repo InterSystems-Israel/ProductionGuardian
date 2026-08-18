@@ -267,12 +267,12 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         run: |
           docker exec pg-iris bash -c 'mkdir -p /tmp/pg-iris-src'
-          find iris -name '*.cls' -not -path 'iris/labdemo/Tools/*'             -exec docker cp {} pg-iris:/tmp/pg-iris-src/ \;
+          find iris -name '*.cls' -not -path 'iris/labdemo/Tools/*' -not -path 'iris/test/*' -exec docker cp {} pg-iris:/tmp/pg-iris-src/ \;
           docker cp tools/ci-compile-iris.txt pg-iris:/tmp/ci-compile-iris.txt
-          copied=$(find iris -name '*.cls' -not -path 'iris/labdemo/Tools/*' | wc -l)
-          skipped=$(find iris -name '*.cls' -path 'iris/labdemo/Tools/*' | wc -l)
+          copied=$(find iris -name '*.cls' -not -path 'iris/labdemo/Tools/*' -not -path 'iris/test/*' | wc -l)
+          skipped=$(find iris -name '*.cls' \( -path 'iris/labdemo/Tools/*' -o -path 'iris/test/*' \) | wc -l)
           echo "copied $copied classes"
-          echo "::notice::skipped $skipped AI-Hub-dependent class(es) under iris/labdemo/Tools/ — %AI.Tool is absent from this image, so they are compile-checked only against the EAP image (see the comment on this step and #77)"
+          echo "::notice::skipped $skipped AI-Hub-dependent class(es) under iris/labdemo/Tools/ and iris/test/ — %AI.Tool is absent from this image, so they are compile-checked only against the EAP image (see the comment on this step and #77)"
       # Greps for the marker rather than trusting the exit status: `iris session` exits 0
       # even when the script inside reported a compile error, which would make this job
       # exactly the kind of check that passes while verifying nothing.
