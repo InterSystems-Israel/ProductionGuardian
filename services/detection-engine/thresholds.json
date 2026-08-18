@@ -6,6 +6,13 @@
   "sustainedSeconds": 4,
   "minBaselineSamples": 12,
   "baselineWindowSeconds": 1800,
+  "earlyWarning": {
+    "enabled": true,
+    "fitWindowSeconds": 300,
+    "horizonSeconds": 1800,
+    "minFitSamples": 12
+  },
+  "_comment_earlyWarning": "MVP 2. Projects a rising metric forward to its threshold; see contracts/earlywarning-api.md. fitWindowSeconds 300 rather than the full baselineWindowSeconds: a least-squares fit over 1800s systematically UNDERSTATES a rise that started two minutes ago, which is exactly the case Early Warning exists to catch -- the older half of the window is flat and drags the slope toward zero. horizonSeconds equals baselineWindowSeconds deliberately: do not project further forward than the span of history the fit is grounded in, because a 90-minute ETA off a 5-minute fit is arithmetic rather than information. minFitSamples reuses minBaselineSamples (12) and is not independently chosen -- below 12 the baseline is null, so max(baseline x multiplier, absoluteFloor) has no baseline arm and there is no target to project toward; a projection with no threshold is meaningless rather than merely imprecise. REACHABILITY, the same invariant sustainedSeconds has: fitWindowSeconds / (POLL_INTERVAL_MS/1000) must exceed minFitSamples with margin. At the shipped 5000ms poll that is 60 samples available against 12 required, so 5x headroom, and first projection ~60s after engine start. Shortening fitWindowSeconds below 60s at that poll rate makes a projection structurally impossible and the module would go silent with no error -- the #64 failure mode in a new place.",
   "rules": {
     "dead_host": {
       "enabled": true,

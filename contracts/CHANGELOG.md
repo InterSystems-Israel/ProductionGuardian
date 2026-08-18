@@ -5,6 +5,106 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-18 — four new MVP 2 contracts (Dev B)
+
+**Additive only. The two MVP 1 contracts are untouched** — `healthscan-api.md` and
+`proxy-api.md` are byte-identical, no field added, removed or retyped, no sample changed.
+`validate.mjs` unchanged at 15 accept / 19 reject / 7 capture claims, and still passing: the new
+shapes have **no schema and no samples yet**, so CI does not know these endpoints exist. That gap
+is named in each file rather than left to be discovered.
+
+| New | Owner | Consumers |
+|---|---|---|
+| `earlywarning-api.md` | Dev B | Dev C |
+| `investigation-api.md` | Dev B | Dev C |
+| `resolve-api.md` | Dev B (spec says Dev A + Dev B; Dev A left 2026-08-12 and Dev B inherited `iris/**`) | Dev C |
+| `mcp-tools.md` | Dev B (spec says Dev A; same reason) | Dev B, the AI Hub agent |
+
+Status on all four is **`proposed`**, not published. Each names what is missing before that
+changes: a `.schema.json`, a `.d.ts`, and a sample **captured from a live run**. The worked
+examples in all four are hand-constructed and arithmetically consistent, which is not the same
+bar as `contracts/samples/`, and every file says so at the top.
+
+### The three design rules worth reading before the schemas
+
+**A projection is not a measurement** (`earlywarning-api.md` §1.4). Every computed number is
+nested inside `projection` with `kind: "projection"`; every observed number sits outside it, so a
+consumer cannot hold a forecast without also holding the label. There is deliberately no
+`secondsToThreshold: 0` for an already-crossed queue, because zero reads as a measurement of now.
+This is #58's defect class — a derived value published in a slot promising an observed one — and
+"queue crosses threshold in 4 minutes" is a far more attractive version of it, because an operator
+will act on the sentence.
+
+**The data boundary is structural, not a footnote** (`investigation-api.md` §2.3, `mcp-tools.md`
+§6). The browser sends `{"findingId": "..."}` and nothing else, `additionalProperties: false` — so
+every value the external model sees was engine-measured or tool-read, and a browser cannot inject
+text into an LLM prompt. Tool *return values* are the only place instance data crosses the
+boundary by design, so the permitted and forbidden lists are per-tool. `get_recent_errors` is the
+live risk rather than a formality: it returns an IRIS error code mapped through an allowlist to a
+catalogue string, `unclassified` with no text for anything unrecognised. Two edges named because
+they are the ones that get missed — refusal *reason strings* cross the boundary too, and a count of
+one can itself be content, which is why the windows are bounded.
+
+**A recommended action is a structured object, never prose** (`investigation-api.md` §3.3). It is
+the input to a live production write that a human approves, and free text cannot be bounds-checked
+or matched against a whitelist. `recommendedAction.action` is `{type, host, size}` and is a
+field-for-field match with what `resolve-api.md` accepts — verified across both files, so there is
+no translation layer for Dev C to write.
+
+### Three cross-contract conflicts found and resolved while drafting
+
+Recorded because they were caught by writing the contracts *together* rather than in sequence, and
+each would have been a live integration bug:
+
+1. **`recommendedAction` shape.** `resolve-api.md` refuses unknown keys *inside* `action`, so a
+   flat action object carrying advisory fields would have been rejected as `malformed_request`.
+   Advisory fields (`currentValue`, `bounds`, `reversible`, `requiresApproval`, `summary`) are now
+   siblings of `action`, not members of it.
+2. **Bounds disagreed** — `1`–`4` versus `2`–`8`. Settled at `2`–`8`: the lower bound excludes `1`
+   because `1` is the *shipped* value, so recommending it is a no-op dressed as a fix.
+3. **Reusing Early Warning's `projection` inside an investigation would have been `null` every
+   time.** Early Warning publishes `projection: null` with reason `already_crossed` exactly when a
+   queue has crossed its threshold — which is the state that made `queue_buildup` fire, i.e. the
+   only condition an investigation is ever requested for. Renamed to `trend`, keeping the field
+   names and units but dropping the forecast framing, with `thresholdCrossed: true` and
+   `secondsToThreshold: null` as the normal case. Without it the "queue slope positive" evidence
+   bullet was unobtainable.
+
+### `resource` vs `role` is a distinction, not a disagreement
+
+`mcp-tools.md` gates on IRIS **resources** (`PG_Read`, `PG_Resolve`); `resolve-api.md` publishes
+the **role** that holds one (`%Guardian_Read`, `%Guardian_Resolve`) in `audit.role`. Reconciled
+after both landed, with a table in `resolve-api.md` §9.3, because grepping for one string and
+finding the other looks exactly like the #84 stale-copy pattern and invites a "fix" that would
+break it.
+
+### What is asserted about the runtime, and how it was established
+
+Authorization and audit are stated as a **guarantee** rather than a convention: they are performed
+by the runtime around every tool execution, in that order, so a tool author cannot forget them or
+bypass them via a careless `%Invoke` — and because the check precedes execution, a denied call
+cannot have partially mutated the production. Read from the shipped body of
+`%AI.ToolMgr.ExecuteTool` in the running `pg-iris` container, not inferred from the class list,
+because "the classes exist" and "the classes are enforced" are different claims and only the second
+is worth anything on a live production. Working notes in `docs/mvp2-aihub-verified-api.md`.
+
+Two things are **explicitly unverified** and flagged in the files rather than assumed: what an
+audit record contains once written (Dev C has to display one), and whether the default policy
+actually denies — `%AI.Policy.ConsoleAuth`/`ConsoleAudit` are wired out of the box, and "enforced
+by the runtime" is only a safety property if the configured policy refuses. `resolve-api.md` makes
+registering our own policy and testing a denial acceptance criteria rather than assumptions.
+
+### One change outside `contracts/` that these depend on
+
+`POST /api/resolve` cannot work as the engine stands: it sends `Access-Control-Allow-Methods: GET,
+OPTIONS` and no `Access-Control-Allow-Headers`, so a browser preflight for a JSON POST fails while
+every existing GET keeps working. Verified against the live engine. Not fixed here — it is engine
+code, not a contract — but named so it is not discovered from a dashboard that silently cannot
+submit an approval.
+
+---
+
+
 ## 2026-08-13 — `system_alert` scope stated in `healthscan-api.md` (Dev B)
 
 **Documentation only.** No field added, removed or retyped; no schema change; no sample
