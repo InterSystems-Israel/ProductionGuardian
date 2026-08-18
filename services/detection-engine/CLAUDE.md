@@ -19,20 +19,36 @@ You consume Dev A's proxy JSON from `:3001`. You produce the contract in
 You are the *detection* layer. You read metrics, compare to baseline, emit findings. **You compute
 nothing else and act on nothing.**
 
-### 1.1 Hard scope boundary
+### 1.1 Scope boundary — MOVED for MVP 2
 
-| Do NOT build | Belongs to |
+**Three rows moved from "do NOT build" to "build" when MVP 2 opened.** Root `CLAUDE.md` §2.1 is
+authoritative; this section says what it means *here*, because two of the three land in this
+service:
+
+| Now in scope for this service | What it is |
 |---|---|
-| Restarting hosts, clearing queues, any remediation | **Smart Resolve** |
-| Root-cause narratives, evidence chains, confidence scores | **AI Detective** |
-| Forecasts, "will breach in N minutes", trend extrapolation | **Early Warning** |
+| **Early Warning** | Project the queue-depth trend forward and estimate time-to-threshold. An extension of the existing rolling baseline, not a new component — this service already holds the time series in memory |
+| **AI Detective orchestration** | Call the AI Hub agent with a finding plus a metric snapshot; receive and serve `{rootCause, evidence[], confidence, recommendedAction}`. **We orchestrate; we do not reason** — the narrative comes from the agent, and the agent lives in IRIS |
+| **Smart Resolve endpoint** | `POST /api/resolve` proxies the governed MCP write tool. **We do not mutate the production ourselves** — the write happens in IRIS behind RBAC, and this service is a caller that records what it asked for and what came back |
+
+The distinction in those last two rows is the whole architecture. This service gained
+*orchestration* responsibilities, not *authority*: no LLM key reaches it, no write path lives in
+it, and it cannot change a production setting even if a bug tried to.
+
+| Still do NOT build here | Belongs to |
+|---|---|
 | A single 0–100 health score | **Health Score** |
 | Report or summary generation | **Health Summary** |
 | Natural-language endpoints | **Ask Guardian** |
-| Persisted baseline history, trend storage | Out of MVP 1 — see ADR 0002 |
+| Tuning advice | **Performance Coach** |
+| Direct mutation of the production from this service | `iris/**` — the governed write tool |
+| Root-cause narrative *generated here* rather than by the agent | AI Detective, in IRIS |
+| Persisted baseline history, trend storage | Still out — see ADR 0002 |
 
-**A finding states what is true now, compared to what was normal. Nothing more.** If a request
-implies a row above, say so instead of building it.
+**A finding still states what is true now, compared to what was normal.** Early Warning adds a
+*projection* alongside it, and it must be labelled as a projection rather than folded into the
+finding — a forecast presented as a measurement is the same defect class as the coerced
+`lastActivity` in #58.
 
 ## 2. Architecture, and the decisions behind it
 
