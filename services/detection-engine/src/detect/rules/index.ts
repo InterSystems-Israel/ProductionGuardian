@@ -10,6 +10,7 @@
 
 import { configFor } from '../../config/thresholds.ts';
 import { DEAD_STATUSES } from '../../types/healthscan.ts';
+import { effectiveBaseline } from '../../config/thresholds.ts';
 import type { Rule, RuleInput, RuleVerdict } from './types.ts';
 import {
   formatDuration,
@@ -121,7 +122,7 @@ const queueBuildup: Rule = {
     const rule = configFor(config, 'queue_buildup', host.host);
     if (!rule.enabled) return null;
 
-    const baseline = baselines.baseline(host.host, 'queued');
+    const baseline = effectiveBaseline(config, host.host, 'queued', baselines.baseline(host.host, 'queued'));
     if (baseline === null) return null;
 
     // raw, not host: an unmeasurable depth is not a small one. Reading the normalized
@@ -166,7 +167,7 @@ const elevatedErrorRate: Rule = {
     if (errorsPerMinute === null) return null;
     if (errorsPerMinute < rule.errorsPerMinuteFloor) return null;
 
-    const baseline = baselines.baseline(host.host, 'errorsPerMinute');
+    const baseline = effectiveBaseline(config, host.host, 'errorsPerMinute', baselines.baseline(host.host, 'errorsPerMinute'));
     if (baseline === null) return null;
 
     const ratio = baseline > 0 ? errorsPerMinute / baseline : Number.POSITIVE_INFINITY;
@@ -204,7 +205,7 @@ function durationRule(
       if (!rule.enabled) return null;
 
       const current = host[metric];
-      const baseline = baselines.baseline(host.host, metric);
+      const baseline = effectiveBaseline(config, host.host, metric, baselines.baseline(host.host, metric));
       if (baseline === null) return null;
       if (current < rule.absoluteFloorSeconds) return null;
 
@@ -266,7 +267,7 @@ const throughputDrop: Rule = {
     // same poll.
     if (raw.messagesPerSec === null) return null;
 
-    const baseline = baselines.baseline(host.host, 'messagesPerSec');
+    const baseline = effectiveBaseline(config, host.host, 'messagesPerSec', baselines.baseline(host.host, 'messagesPerSec'));
     if (baseline === null) return null;
     if (baseline < rule.minBaselineRate) return null;
 

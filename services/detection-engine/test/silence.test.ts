@@ -144,12 +144,23 @@ describe('a depicted problem is actually reported', () => {
   });
 });
 
-describe('baseline self-inflation is visible, not silent (ADR 0002)', () => {
-  it('queue_buildup clears while the queue is still 486', async () => {
-    // Pinned deliberately. A rolling mean absorbs the breaching samples, so the ratio
-    // falls below the multiplier and the finding clears WHILE THE PROBLEM PERSISTS.
-    // CLAUDE.md §5.1 documents this; here it is measured, so nobody reads the demo going
-    // quiet as a bug — and so that if we ever fix it, this test says so.
+describe('a reference baseline defeats self-inflation for the metric it covers', () => {
+  it('queue_buildup does NOT clear while the queue is still 486', async () => {
+    // THIS TEST WAS INVERTED, and the previous version is why. It pinned the opposite
+    // assertion — "queue_buildup clears while the queue is still 486" — with the note:
+    //
+    //   "if this now fails, self-inflation has been addressed and CLAUDE.md §5.1 needs
+    //    updating"
+    //
+    // It failed. `thresholds.json` now states `referenceBaselines: { "Cloud API": { queued: 0 } }`,
+    // so the ratio for that host+metric no longer rises as the mean absorbs the breach, and the
+    // finding persists for as long as the queue does. The old test did exactly what it was
+    // written to do: it noticed a deliberate behaviour change and told the next reader what to
+    // update. Inverting it rather than deleting it keeps that property.
+    //
+    // Self-inflation is NOT fixed in general — it still applies to every host+metric without a
+    // reference, which is all of them by default. CLAUDE.md §5.1 is updated to say which case is
+    // which rather than removed.
     const series = await pollSeries([
       { fixture: 'healthy', polls: 14 },
       { fixture: 'queue-buildup', polls: 12 },
@@ -161,10 +172,11 @@ describe('baseline self-inflation is visible, not silent (ADR 0002)', () => {
     const clearedWhileStillBad = laterPolls.some(
       (findings) => !findings.some((f) => f.type === 'queue_buildup'),
     );
-    assert.ok(
+    assert.equal(
       clearedWhileStillBad,
-      'expected queue_buildup to clear as the mean absorbs 486 — if this now fails, ' +
-        'self-inflation has been addressed and CLAUDE.md §5.1 needs updating',
+      false,
+      'with a reference baseline of 0 the finding must persist while the queue does — ' +
+        'if this fails, the reference is not being honoured and a rising queue can go silent',
     );
   });
 

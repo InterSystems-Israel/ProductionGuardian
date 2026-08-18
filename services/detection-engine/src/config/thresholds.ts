@@ -109,6 +109,38 @@ export interface ThresholdConfig {
   /** ADR 0002: samples needed before a baseline is usable. */
   minBaselineSamples: number;
   baselineWindowSeconds: number;
+  /**
+   * Per-host, per-metric REFERENCE baselines — a stated "normal" that does not move.
+   *
+   * WHY THIS EXISTS. The rolling mean includes the samples being judged against it, so a
+   * gradually rising metric drags its own baseline up and the ratio saturates. For a linear
+   * ramp the closed form is `2n/(n+1)`: it approaches 2.0 and never crosses a 5.0 gate, at
+   * any depth, any duration, and — because the slope cancels out of the algebra — at any
+   * inflow rate. Measured on the live stack: the ratio pins at exactly 2.00 while the queue
+   * climbs past 1200. `queue_buildup` is structurally unable to fire on a ramp.
+   *
+   * That is §5.1's documented self-inflation, but the ramp case is worse than the step case
+   * it describes: a step fires for ~12 minutes and then clears while the problem persists,
+   * whereas a ramp never fires at all. MVP 1 shipped that knowingly because its scenarios
+   * were all steps (disable a host, break its target) and `dead_host` is absolute anyway.
+   * MVP 2's scenario is a ramp on a *healthy* host — throughput-bound, status OK — so no
+   * absolute rule backs it up.
+   *
+   * WHY NOT JUST A LONGER WINDOW. A multi-day window fixes the arithmetic (a 10-minute
+   * bombardment cannot move a mean with days behind it) but not the demo: a fresh
+   * `compose up` has no days of history. `minBaselineSamples` is satisfied after 12 samples,
+   * so the window goes "warm" holding only the last minute, and a 3-day *configured* window
+   * on a 5-minute-old instance would claim evidence it does not have. A stated reference is
+   * the more honest artifact of the two — it says "this is an assumed normal" rather than
+   * implying a measurement.
+   *
+   * PRECEDENCE: a reference here WINS over the rolling mean when present. Absent, behaviour
+   * is exactly as before. So this is opt-in per host+metric and changes nothing it is not
+   * configured for.
+   *
+   * Shape: `{ "<host>": { "<metric>": <number> } }`.
+   */
+  referenceBaselines: Record<string, Record<string, number>>;
   rules: RuleConfigs;
   /** Per-host partial overrides, merged over the rule defaults. */
   hostOverrides: Record<string, Partial<Record<keyof RuleConfigs, unknown>>>;
@@ -136,6 +168,9 @@ export const DEFAULT_CONFIG: ThresholdConfig = {
   sustainedSeconds: 4,
   minBaselineSamples: 12,
   baselineWindowSeconds: 1800,
+  // Empty by default: no host gets a reference baseline unless thresholds.json states one, so
+  // the shipped behaviour is unchanged and this cannot surprise anyone who has not opted in.
+  referenceBaselines: {},
   rules: {
     dead_host: { enabled: true, severity: 'critical' },
     stalled_host: {
@@ -271,8 +306,64 @@ export function validateConfig(raw: unknown): ThresholdConfig {
     }
   }
 
+  const rawReferences = input['referenceBaselines'];
+  if (rawReferences !== undefined) {
+    if (typeof rawReferences !== 'object' || rawReferences === null) {
+      problems.push('referenceBaselines must be an object');
+    } else {
+      for (const [host, metrics] of Object.entries(rawReferences as Record<string, unknown>)) {
+        if (host.startsWith('_')) continue;
+        if (typeof metrics !== 'object' || metrics === null) {
+          problems.push(`referenceBaselines.${host} must be an object of metric: number`);
+          continue;
+        }
+        const perHost: Record<string, number> = {};
+        for (const [metric, value] of Object.entries(metrics as Record<string, unknown>)) {
+          if (metric.startsWith('_')) continue;
+          // ZERO IS LEGAL HERE, unlike everywhere else in this file. A reference of 0 states
+          // "this metric is normally zero", which is true of `queued` on a healthy host and is
+          // the most useful reference we have. The rule's own
+          // `baseline > 0 ? depth/baseline : INFINITY` branch then reduces the test to the
+          // absolute floor, which is the correct reading: any queue at all is abnormal, and the
+          // floor decides whether it is worth reporting. Rejecting 0 as "not positive" would
+          // reject the only value most hosts want.
+          if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+            problems.push(
+              `referenceBaselines.${host}.${metric} must be a finite number >= 0, got ${JSON.stringify(value)}`,
+            );
+            continue;
+          }
+          perHost[metric] = value;
+        }
+        merged.referenceBaselines[host] = perHost;
+      }
+    }
+  }
+
   if (problems.length > 0) throw new ConfigValidationError(problems);
   return merged;
+}
+
+/**
+ * The baseline a comparative rule should compare against: a configured reference if one
+ * exists for this host+metric, otherwise the rolling mean.
+ *
+ * Single function rather than four inline checks, because the four comparative rules must
+ * agree on precedence — one rule honouring a reference while another ignores it would produce
+ * findings that contradict each other about what normal is.
+ *
+ * Returns null exactly when the rolling mean would have: no reference AND not enough samples.
+ * A reference therefore also removes the warm-up wait for the metric it covers, which is a
+ * side effect worth knowing rather than a separate feature.
+ */
+export function effectiveBaseline(
+  config: ThresholdConfig,
+  host: string,
+  metric: string,
+  rollingMean: number | null,
+): number | null {
+  const reference = config.referenceBaselines[host]?.[metric];
+  return reference === undefined ? rollingMean : reference;
 }
 
 /** Every numeric field in a rule must be positive; booleans and severities pass through. */
