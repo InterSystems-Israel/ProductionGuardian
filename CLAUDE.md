@@ -15,32 +15,80 @@ Rules that apply to **every developer**. Deep, area-specific instructions live i
 
 ## 1. What this project is
 
-**Production Guardian** is an AI-powered production health and optimization layer for InterSystems Health Connect. Eight modules are planned; **MVP 1 is Health Scan only**.
+**Production Guardian** is an AI-powered production health and optimization layer for InterSystems Health Connect. Eight modules are planned. **MVP 1 (Health Scan) is shipped; MVP 2 adds Early Warning, AI Detective and Smart Resolve.**
 
-Health Scan reads production metrics from the built-in IRIS `/api/monitor/` API, compares them to a rolling baseline, and surfaces findings — dead jobs, hung processes, queue buildup, elevated error rates, slow processing, system alerts.
+Health Scan reads production metrics from the built-in IRIS `/api/monitor/` API, compares them to a rolling baseline, and surfaces findings — dead jobs, hung processes, queue buildup, elevated error rates, slow processing, system alerts. MVP 2 turns one of those findings into a closed loop: **WHAT** (project it forward) → **WHY** (explain it) → **FIX** (apply a governed, approved action and confirm it clears).
 
-Spec: `docs/production-guardian-healthscan-mvp1.docx`.
+Specs: `docs/production-guardian-healthscan-mvp1.docx`, `docs/production-guardian-mvp2.docx`. Both are read-only source material (§3).
 
 ## 2. Hard scope boundary
 
-**Health Scan performs detection and surfacing only.** It reads, compares, and reports — nothing more.
+**MVP 1 (Health Scan) is complete and shipped.** We are now building **MVP 2**, which
+deliberately crosses three of the boundaries MVP 1 held. This section is the record of what is
+in and out *now*; the MVP 1 boundary is kept below it because the reasoning still governs the
+five modules that remain out.
 
-Out of scope for MVP 1 because each belongs to a later module:
+Spec: `docs/production-guardian-mvp2.docx`.
 
-| Not in MVP 1 | Belongs to |
+### 2.1 In scope for MVP 2 — three modules, one scenario
+
+| Now in scope | What it does | Owner |
+|---|---|---|
+| **Early Warning** | Projects a building condition forward: "queue rising ~N/min, crosses threshold in ~M minutes" | Dev B (detection-engine) |
+| **AI Detective** | An AI Hub agent that explains root cause with evidence and a confidence score, and recommends an action | Dev B (orchestration) + `iris/**` (agent, MCP tools) |
+| **Smart Resolve** | Applies one governed, human-approved, reversible action to the live production and confirms the condition clears | `iris/**` (write tool) + Dev B (endpoint) + Dev C (approval UI) |
+
+**MVP 2 is one scenario, end to end, not a general capability.** `Cloud API` runs at
+`PoolSize 1` against a ~1s-per-message downstream dispatcher, so it clears ~1 msg/sec; inbound
+load above that builds a queue; the fix is enlarging the pool (1 → 4). One finding type, one
+recommended action, one write tool. A generalised action catalogue is later work.
+
+**Smart Resolve writes to a live production, so the safety model is part of the scope
+boundary, not an implementation detail:**
+
+- **human approval by default** — nothing applies unattended
+- **exactly one whitelisted action**, `set_pool_size` on `Cloud API`, within a bounded range
+- **dry-run / preview** before apply, and the action is **reversible**
+- **RBAC-gated** — a dedicated IRIS role, so AI Detective can investigate without being able to act
+- **every tool call audited**, read and write, so "the AI changed a production setting" is
+  attributable
+- **metrics and configuration only ever leave the instance.** Never message content, never PHI.
+  This is a rule, not a preference: the LLM is external.
+
+`ADR 0001` anticipated this — it records that the detection engine runs outside IRIS for MVP 1
+while noting Smart Resolve "must act on the production and will need in-IRIS presence anyway",
+and lists "Smart Resolve begins" under *Revisit when*. MVP 2 is that revisit.
+
+### 2.2 Still out of scope
+
+| Not in MVP 2 | Belongs to |
 |---|---|
-| Fixing, remediation, restarting, tuning | Smart Resolve |
-| Root-cause analysis, evidence chains, confidence | AI Detective |
-| Forecasting, "will breach in N minutes" | Early Warning |
 | A single 0–100 health score | Health Score |
 | Report / summary generation | Health Summary |
 | Natural-language chat | Ask Guardian |
+| Tuning advice | Performance Coach |
 
-Also out: historical trend charts, multi-production support (single production only), persisted baseline history.
+Also still out: **autonomous remediation without approval**, more than one scenario or action
+type, multi-production support (single production only), historical trend of interventions,
+historical trend charts, persisted baseline history.
 
-`docs/production-guardian-demo.html` is a **concept** demo of all eight modules with scripted fake data. It is a visual reference only — never a source of implementation, never edited.
+`docs/production-guardian-demo.html` is a **concept** demo of all eight modules with scripted
+fake data. It is a visual reference only — never a source of implementation, never edited.
 
-**If a request would add a capability from the table above, say so instead of building it.** Scope creep is the biggest risk to the 5-day timeline.
+**If a request would add a capability from the §2.2 table, say so instead of building it.**
+Scope creep is still the biggest risk to the timeline — which is why MVP 2 is one scenario
+rather than three.
+
+### 2.3 What MVP 1 held, and why it is worth keeping written down
+
+The MVP 1 boundary was: **Health Scan performs detection and surfacing only — it reads,
+compares, and reports, nothing more.** Fixing, root-cause analysis and forecasting were all
+out, each because it belonged to a later module.
+
+That boundary is what made a 5-day MVP 1 land, and the three modules it deferred are exactly
+the three MVP 2 now adds. Keeping the record visible matters for two reasons: it shows the
+deferral was deliberate rather than an oversight, and it is the reason `queue_buildup` detection
+already exists for MVP 2's scenario to build on.
 
 ## 3. Ownership — stay in your own directory
 
