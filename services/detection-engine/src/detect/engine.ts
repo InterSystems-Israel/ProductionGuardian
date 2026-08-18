@@ -23,6 +23,7 @@ import type { ProxyAlert, ProxyHost, ProxyResponse } from '../types/proxy.ts';
 import { isFrameworkHost } from '../types/proxy.ts';
 import { FindingRegistry } from './registry.ts';
 import { HOST_RULES } from './rules/index.ts';
+import { projectHost, type HostProjection } from './earlywarning.ts';
 import type { RuleVerdict } from './rules/types.ts';
 
 /** Metrics that must be warm before a host counts as fully baselined. */
@@ -37,6 +38,17 @@ const BASELINED_METRICS = [
 export interface EngineSnapshot {
   hosts: Host[];
   findings: Finding[];
+  /**
+   * Early Warning projections, one per reported host — `contracts/earlywarning-api.md`.
+   *
+   * Computed DURING the poll, not on request. Two reasons: the raw nullable metrics are in
+   * hand there and are not retained afterwards (so computing at request time would have to
+   * read the normalized host, where an unmeasurable value has already become 0 — the #49
+   * defect), and `measuredAt` must be the sample's clock rather than the request clock
+   * (contract EW-Q3). A projection recomputed per request would also drift between two
+   * requests in the same poll interval, which reads as instability in the product.
+   */
+  projections: HostProjection[];
   state: HealthScanState;
   /** When the engine last successfully applied a poll. null before the first. */
   lastPollAt: number | null;
@@ -46,6 +58,8 @@ export class DetectionEngine {
   #baselines: BaselineStore;
   #registry: FindingRegistry;
   #hosts = new Map<string, Host>();
+  /** Latest projection per host, computed at poll time. Cleared with the host. */
+  #projections = new Map<string, HostProjection>();
   /** Cumulative errored counts from the previous poll, for the per-minute rate. */
   #priorErrored = new Map<string, { errored: number; at: number }>();
   /** Alert timestamps already reported, so system_alert only fires on new ones. */
@@ -169,12 +183,34 @@ export class DetectionEngine {
       if (alertVerdict !== null) verdicts.push(alertVerdict);
 
       this.#registry.update(host.host, verdicts, now);
+
+      // AFTER recordIfMeasured above, so the fit window includes this poll's sample. Before
+      // it, every projection would be one poll stale and `measuredAt` would disagree with
+      // `currentValue`.
+      this.#projections.set(
+        host.host,
+        projectHost(
+          host.host,
+          {
+            queued: proxyHost.queued,
+            messagesPerSec: proxyHost.messagesPerSec,
+            errored: proxyHost.errored,
+            avgProcessingTime: proxyHost.avgProcessingTime,
+            avgQueueingTime: proxyHost.avgQueueingTime,
+            lastActivityElapsedSeconds: proxyHost.lastActivityElapsedSeconds,
+          },
+          this.#baselines,
+          this.#config,
+          now,
+        ),
+      );
     }
 
     // A host that left the production should not linger with stale findings.
     for (const known of [...this.#hosts.keys()]) {
       if (seenHosts.has(known)) continue;
       this.#hosts.delete(known);
+      this.#projections.delete(known);
       this.#registry.forget(known);
       this.#baselines.forget(known);
       this.#priorErrored.delete(known);
@@ -225,6 +261,8 @@ export class DetectionEngine {
     return {
       hosts,
       findings: this.#registry.findings(),
+      // Sorted by host, matching `hosts`, so a consumer can zip the two without a lookup.
+      projections: [...this.#projections.values()].sort((a, b) => a.host.localeCompare(b.host)),
       state: this.#state(hosts),
       lastPollAt: this.#lastPollAt,
     };

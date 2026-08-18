@@ -141,6 +141,30 @@ export interface ThresholdConfig {
    * Shape: `{ "<host>": { "<metric>": <number> } }`.
    */
   referenceBaselines: Record<string, Record<string, number>>;
+  /**
+   * Early Warning projection settings — `contracts/earlywarning-api.md`.
+   *
+   * `fitWindowSeconds` is deliberately shorter than `baselineWindowSeconds`: a least-squares fit
+   * over the full 30 minutes systematically UNDERSTATES a rise that started two minutes ago,
+   * because the older, flatter half of the window drags the slope toward zero — and that is
+   * precisely the case Early Warning exists to catch.
+   *
+   * `horizonSeconds` equals `baselineWindowSeconds` on purpose: do not project further forward
+   * than the span of history the fit is grounded in. A 90-minute ETA off a 5-minute fit is
+   * arithmetic, not information.
+   *
+   * REACHABILITY, the same invariant `sustainedSeconds` carries:
+   * `fitWindowSeconds / (POLL_INTERVAL_MS / 1000)` must exceed `minFitSamples` with margin. At
+   * the shipped 5000ms engine poll that is 60 samples available against 12 required. Shortening
+   * the window below 60s at that rate makes a projection structurally impossible and the module
+   * goes silent with no error — #64's failure mode in a new place.
+   */
+  earlyWarning: {
+    enabled: boolean;
+    fitWindowSeconds: number;
+    horizonSeconds: number;
+    minFitSamples: number;
+  };
   rules: RuleConfigs;
   /** Per-host partial overrides, merged over the rule defaults. */
   hostOverrides: Record<string, Partial<Record<keyof RuleConfigs, unknown>>>;
@@ -171,6 +195,14 @@ export const DEFAULT_CONFIG: ThresholdConfig = {
   // Empty by default: no host gets a reference baseline unless thresholds.json states one, so
   // the shipped behaviour is unchanged and this cannot surprise anyone who has not opted in.
   referenceBaselines: {},
+  // Defaults duplicated from thresholds.json deliberately: DEFAULT_CONFIG is the last-good
+  // fallback when that file is missing or invalid (ADR 0003), so it has to stand alone.
+  earlyWarning: {
+    enabled: true,
+    fitWindowSeconds: 300,
+    horizonSeconds: 1800,
+    minFitSamples: 12,
+  },
   rules: {
     dead_host: { enabled: true, severity: 'critical' },
     stalled_host: {
@@ -302,6 +334,45 @@ export function validateConfig(raw: unknown): ThresholdConfig {
           continue;
         }
         merged.hostOverrides[host] = value as Partial<Record<keyof RuleConfigs, unknown>>;
+      }
+    }
+  }
+
+  const rawEarlyWarning = input['earlyWarning'];
+  if (rawEarlyWarning !== undefined) {
+    if (typeof rawEarlyWarning !== 'object' || rawEarlyWarning === null) {
+      problems.push('earlyWarning must be an object');
+    } else {
+      const ew = rawEarlyWarning as Record<string, unknown>;
+      if (ew['enabled'] !== undefined) {
+        if (typeof ew['enabled'] !== 'boolean') {
+          problems.push('earlyWarning.enabled must be a boolean');
+        } else {
+          merged.earlyWarning.enabled = ew['enabled'];
+        }
+      }
+      for (const field of ['fitWindowSeconds', 'horizonSeconds', 'minFitSamples'] as const) {
+        const value = ew[field];
+        if (value === undefined) continue;
+        if (!isPositiveNumber(value)) {
+          problems.push(`earlyWarning.${field} must be a positive number`);
+          continue;
+        }
+        merged.earlyWarning[field] = value;
+      }
+      // REACHABILITY, checked rather than trusted. A fit window too short to hold minFitSamples
+      // at the shipped poll rate makes every projection structurally impossible, and the module
+      // would go silent with no error — the #64 failure mode, which cost a measurement cycle to
+      // find the first time. Checked against DEFAULT_POLL_INTERVAL_MS because the poll rate lives
+      // in this module too; a deployment overriding POLL_INTERVAL_MS has to re-check this.
+      const capacity = merged.earlyWarning.fitWindowSeconds / (DEFAULT_POLL_INTERVAL_MS / 1000);
+      if (capacity <= merged.earlyWarning.minFitSamples) {
+        problems.push(
+          `earlyWarning.fitWindowSeconds ${merged.earlyWarning.fitWindowSeconds}s holds only ` +
+            `${Math.floor(capacity)} samples at a ${DEFAULT_POLL_INTERVAL_MS}ms poll, but ` +
+            `minFitSamples is ${merged.earlyWarning.minFitSamples} — no projection could ever ` +
+            `be produced`,
+        );
       }
     }
   }

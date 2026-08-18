@@ -51,6 +51,17 @@ export function createFindingsServer(options: ServerOptions): Server {
         case '/api/healthscan/findings':
           sendJson(res, 200, snapshot.findings, snapshot.state);
           return;
+        case '/api/earlywarning':
+          // NOT under /api/healthscan/: Early Warning is a separate MVP 2 module, and nesting it
+          // there would imply it is part of the ratified Health Scan contract. Flagged as EW-Q1
+          // in contracts/earlywarning-api.md rather than renamed silently.
+          //
+          // Reuses the same X-Healthscan-State value rather than adding its own header. A second
+          // state header could disagree with the first, and a consumer would have no rule for
+          // which to believe -- the projections come from the same poll as the findings, so they
+          // share its freshness by construction.
+          sendJson(res, 200, snapshot.projections, snapshot.state);
+          return;
         case '/api/healthscan/health':
           // Not in the contract — operational only, for "is the engine up".
           sendJson(
