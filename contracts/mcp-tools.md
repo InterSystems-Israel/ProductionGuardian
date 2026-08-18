@@ -325,7 +325,17 @@ ERROR <Ens>ErrProductionSettingInvalid: Production setting 'PollInterval' for it
 ```
 
 None of those three contains PHI. That is not the argument for returning them — **it is the argument
-for not deciding case by case.** The tool cannot know which case it is in, so:
+for not deciding case by case.**
+
+**And the case-by-case reading is now measured to be a trap.** Counted on the running instance
+(`docs/mvp2-aihub-verified-api.md`): `Ens_Util.Log` holds **61,772 `Type=4` info rows, every one
+carrying a `PatientID`**, against **66 `Type=2` error rows, none of which do**. So filtering to
+`Type >= 2` and returning the text would pass any test written against today's log — and be wrong
+anyway, because that separation is a property of how `$$$LOGINFO` and `$$$LOGERROR` happen to be
+used in `PatientDemographicsOperation`, not of the log. One `$$$LOGERROR` interpolating a patient
+id puts PHI into the error rows, and that operation already builds `PatientID` strings for its info
+path. A ratio of 61,772 to 66 makes the unsafe case rare rather than absent, which is the worst
+shape a defect can have: it survives review, survives the demo, and shows up in production. The tool cannot know which case it is in, so:
 
 **Sanitisation is an allowlist, never a denylist.** The tool extracts the leading IRIS error token
 and nothing else from the raw text, then looks `summary` up in a fixed in-code catalogue of known

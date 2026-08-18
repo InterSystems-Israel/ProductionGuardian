@@ -158,3 +158,47 @@ target does not fail; it answers plausibly about the wrong production. That is w
 named explicitly rather than relying on `container =` port discovery.
 
 The config hot-reloads on the next tool call — no restart needed.
+
+## `Ens_Util.Log` carries PHI right now — measured, not hypothesised
+
+`get_recent_errors` reads `Ens_Util.Log`, and on the running instance that table contains patient
+identifiers in plain text. Counted 2026-08-18 on `pg-iris`:
+
+| `Type` | Meaning | Rows | Contains `PatientID` |
+|---|---|---|---|
+| 4 | info | 61,772 | **yes — every one** |
+| 2 | error | 66 | no |
+
+A sample of the info rows:
+
+```
+PatientDemographicsOperation: upserted PatientID=309191
+PatientDemographicsOperation: upserted PatientID=145662
+```
+
+and of the error rows:
+
+```
+ERROR #6059: Unable to open TCP/IP socket to server 127.0.0.1:59999
+ERROR <Ens>ErrFailureTimeout: FailureTimeout of 1 seconds exceeded
+ERROR <Ens>ErrProductionSettingInvalid: Production setting 'PollInterval' for item 'EMR Source' is invalid
+```
+
+**This is the strongest possible argument for `mcp-tools.md`'s allowlist, and it is also a trap.**
+Filtering to `Type >= 2` happens to exclude every `PatientID` today, so a naive implementation
+would pass any test written against the current log and look correct. It is wrong anyway:
+
+- the separation is a property of what `$$$LOGINFO` and `$$$LOGERROR` are *currently used for* in
+  `PatientDemographicsOperation`, not a property of the log. One `$$$LOGERROR` that interpolates a
+  patient id — and the operation already builds strings containing `PatientID` for its info path —
+  puts PHI straight into the error rows.
+- 61,772 to 66 is a ratio that makes the unsafe case rare rather than absent, which is the worst
+  shape for a defect: it survives review, survives the demo, and appears in production.
+
+So the rule has to be "extract an allowlisted error token, never return log text" rather than
+"filter to error rows and return the text". `mcp-tools.md` §3.4 specifies the former, and this
+measurement is why it should not be relaxed to the latter on the grounds that the error rows look
+clean. They do look clean. That is not the same as being clean by construction.
+
+Related: the same reasoning is why `count` must be `null` rather than `0` when the log is
+unreadable — "no errors" is the worst wrong answer to give an agent diagnosing an error condition.
