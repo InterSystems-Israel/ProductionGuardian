@@ -5,6 +5,83 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-19 — audit and RBAC: four corrections from implementing them (Dev A raised, Dev B wrote)
+
+**Two files, no shape change.** `mcp-tools.md` §4/§5/§5.5 and `resolve-api.md` §8. No field added,
+removed or retyped; `validate.mjs` unchanged and passing. Raised by @kskubach as #95 rather than as a
+PR, because a contract change needs the other developer's review anyway and three of the four touch
+Dev B's area. Every claim below was verified against the running build-126 instance, twice —
+independently by each of us.
+
+### 1. `not_authorized` refusals are not audited by the runtime — and cannot be
+
+`%AI.ToolMgr.ExecuteTool` checks authorization, then executes, then audits. An authorization denial
+throws at the first step, so the audit hook never runs: **0 rows written** with a deny-all policy
+registered.
+
+`mcp-tools.md` §5.5 and `resolve-api.md` §8 both attributed the whole guarantee to the runtime. The
+guarantee is now real but it takes **two mechanisms**: the runtime audits executions, and
+`Tools.AuthPolicy` writes its own row for denials. That distinction is the correction — the previous
+wording made the one security-relevant gap invisible by pointing at the wrong component.
+
+Note which half was broken. A **tool-level** refusal — our `2`–`8` bounds guard — *is* audited,
+because the tool ran. Only the **authorization** denial was not, i.e. exactly the event a security
+review asks about.
+
+### 2. `auditId` implied an AI Hub audit store that does not exist
+
+Example values were `aihub-audit-*`; they are now `pg-audit-*`. `%AI.Policy.ConsoleAudit` — the only
+shipped implementation — writes a coloured box to the current device and returns. There is no
+`%AI.Audit.*` persistent class in the image; verified by enumerating compiled classes. The record is
+`ProductionGuardian.LabDemo.Audit.Entry` and the handle is ours.
+
+The value was always opaque (§9.3 tells Dev C never to compare it to a literal), but the
+*provenance* was not: `aihub-audit-*` claimed a system of record that would not survive someone
+looking for it — the defect this document already names as "inventing an id that resolves to
+nothing".
+
+Also documented: `duration` is integer milliseconds and reads `0` for every read tool, against
+`ExecuteTool`'s own timing of `0.0071 s` for the same call. A reader comparing §5.5's promise to a
+column of zeroes should find the explanation in the contract.
+
+### 3. The role definitions were unusable as specified
+
+`Guardian_Read` / `Guardian_Resolve` grant only `PG_*`, and a principal holding one dies with
+`<PROTECT>` on the tool routine **before any policy is consulted**. Both need `%DB_%DEFAULT:RW` as
+well, granted from the invocation path rather than added to the roles.
+
+`RW` and not `R`: the denial audit row is written **as the refused principal**, so a read-only grant
+produces a denial that cannot be recorded — which would defeat item 1.
+
+And a limitation now stated instead of implied: LABDEMO's database resource is `%DB_%DEFAULT`, the
+*default* resource, so the grant is broad. **The least-privilege story is real at the tool boundary
+and is not a database-isolation story.** A demo showing "AI Detective can look but not act" invites
+the stronger reading, and the stronger reading is false.
+
+### 4. An out-of-bounds argument is a REFUSAL, not a thrown failure
+
+§4's table classified it under *Call failed — thrown `%Status`*. `Tools.Resolve` has returned a
+structured `outcome: "refused"` payload since the tools landed. **The code was right and the
+classification was wrong**, and §4 gains a `Refused` row.
+
+Two reasons it matters beyond tidiness. `resolve-api.md` §5 requires `outcome: "refused"` with
+`refusal.reason: "out_of_bounds"`, and reaching those from a thrown `%Status` would mean parsing
+error *text* into a contract field. And `%LogExecution` receives the tool's *return value*: a throw
+records a status and no payload, so the structured return is why `Audit.Entry.Result` can show what
+was refused and why.
+
+The existing warning — do not invent an error envelope, do not return `{"error": ...}` from a
+successful `%Invoke` — still stands for genuine failures. The line is §5.2's: `refused` means the
+system decided not to act and nothing was written; `failed` means it tried and did not complete.
+
+### What all four have in common
+
+**Each was found by implementing the promise, not by reviewing the text**, and three of the four are
+a correct premise carried to a conclusion it does not support — the same shape as the `%`-prefix
+paragraph corrected the day before. On this contract set the confident, well-argued passage is the
+one to check first: it survives review precisely because it reads as already considered.
+
+
 ## 2026-08-18 — role names corrected: no `%` prefix (Dev B)
 
 **Two files, values only, no shape change.** `mcp-tools.md` and `resolve-api.md`:

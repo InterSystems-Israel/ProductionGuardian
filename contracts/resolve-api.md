@@ -140,7 +140,7 @@ renders from one type rather than from a status code.
     "directEvidence": "hosts[host=\"Cloud API\"].queued falling"
   },
   "audit": {
-    "auditId": "aihub-audit-44812",
+    "auditId": "pg-audit-44812",
     "actor": "guardian_resolve",
     "role": "Guardian_Resolve",
     "requestedBy": "presenter@laptop",
@@ -597,17 +597,37 @@ convincing than a badge.
 **Every call produces exactly one attributable audit event: applies, refusals, and dry-runs
 alike.** `audit` is present in every response.
 
-**This is a property of the runtime, not of our discipline.** `%AI.Policy.Audit`'s
-`%LogExecution(call, metadata, result, duration, status)` is called by the tool-invocation path
-after every execution (§9.4), and it takes `status` and `duration` as parameters — so a refusal, a
-dry-run, and a failure are all first-class auditable events, not just a successful write.
-**"We audit attempts" is a stronger claim than "we audit changes",** and it is the one the
-signature supports: a `status` field only earns its place if non-success is recorded. A preview
-that leaves no trace is not reviewable.
+**It is a property of the runtime for executions, and of OUR authorization policy for denials.**
+Corrected 2026-08-19 (#95). This paragraph previously said "a property of the runtime, not of our
+discipline" — which is true of everything the runtime sees and false of the one event it does not.
+
+`%AI.Policy.Audit`'s `%LogExecution(call, metadata, result, duration, status)` is called after every
+*execution*, and taking `status` and `duration` does make a refusal, a dry-run and a failure
+first-class auditable events. But `%AI.ToolMgr.ExecuteTool` checks authorization *before* executing,
+so an authorization denial throws and never reaches that hook: measured, **0 rows written** with a
+deny-all policy registered. `Tools.AuthPolicy` writes that row itself, which is why §11.3's
+RBAC-denied example can carry a populated `audit` block naming the refused identity.
+
+So "we audit attempts" holds, and it holds because two components cooperate. Anything that adds a
+new deny path must write its own row or the refusal leaves no trace. A preview that leaves no trace
+is not reviewable; a *denial* that leaves none is worse.
+
+**THERE IS NO AI HUB AUDIT STORE.** `auditId` values in this document were written as
+`aihub-audit-*` and are now `pg-audit-*`. `%AI.Policy.ConsoleAudit` — the only shipped
+implementation — writes a coloured box to the current device and returns; there is no `%AI.Audit.*`
+persistent class in the image (verified: `%AI.Policy.Audit` is the abstract base and
+`%AI.Policy.ConsoleAudit` its only concrete subclass, and no `%AI.Audit*` class exists at all). The
+record is `ProductionGuardian.LabDemo.Audit.Entry` and the handle is ours.
+
+The value is opaque either way — §9.3 already tells Dev C to render it as a string and never compare
+it to a literal — but the *provenance* it implied was not. `aihub-audit-*` claims a system of record
+that would not survive someone going to look for it, which is the same defect this document names in
+the mock's own words: "inventing an id that resolves to nothing is worse than admitting there is
+none."
 
 ```json
 "audit": {
-  "auditId": "aihub-audit-44812",
+  "auditId": "pg-audit-44812",
   "actor": "guardian_resolve",
   "role": "Guardian_Resolve",
   "requestedBy": "presenter@laptop",
@@ -619,13 +639,18 @@ that leaves no trace is not reviewable.
 
 | Field | Notes |
 |---|---|
-| `auditId` | Handle for the AI Hub audit entry, so the UI can link to the record MVP 2 §3's last demo step shows. `null` when the record could not be written — and if it could not be written for an `apply`, that is `failed` / `verify`, not a silent success. **Whether an entry is retrievable by this handle is unverified — §13.4.** |
+| `auditId` | Handle into the **Production Guardian** audit trail (`Audit.Entry`), so the UI can link to the record MVP 2 §3's last demo step shows. AI Hub persists nothing itself — see above. `null` when the record could not be written, and if it could not be written for an `apply`, that is `failed` / `verify`, not a silent success. Retrievable: `Audit.Entry.Describe(handle)` returns the block below. |
 | `actor` | **The authenticated IRIS principal, resolved server-side.** The identity the RBAC decision was made about. |
 | `role` | The role that authorized (or, on `not_authorized`, the role that was required). Lets the UI say *what* is missing. |
 | `requestedBy` | The request's advisory label, echoed. Recorded **next to** `actor`, never in place of it. |
 | `tool` | `set_pool_size` on an apply, `get_pool_size` on a dry-run. Which privileged tool was actually invoked, per §2. |
 | `recordedAt` | ISO 8601 UTC. |
 | `source` | `"live"` \| `"mock"`. |
+
+`duration` is not in this block, and where the runtime does report it (`%LogExecution`) it is integer
+milliseconds and reads **0** for every read tool — `ExecuteTool` timed the same call at `0.0071 s`.
+Noted so a reader comparing a duration column of zeroes against §5.5 of `mcp-tools.md` does not
+conclude the field is broken.
 
 **`actor` is not a request field, and a caller cannot name itself.** `requestedBy` is a string a
 browser typed; treating it as identity would make the audit log a record of what the client
@@ -907,7 +932,7 @@ Response `200`, `X-Resolve-Outcome: previewed`:
     "directEvidence": "hosts[host=\"Cloud API\"].queued falling"
   },
   "audit": {
-    "auditId": "aihub-audit-44810",
+    "auditId": "pg-audit-44810",
     "actor": "guardian_resolve",
     "role": "Guardian_Resolve",
     "requestedBy": null,
@@ -953,7 +978,7 @@ load-bearing parts:
     "automatic": false
   },
   "confirmation": { "status": "pending", "findingId": "f-1042" },
-  "audit": { "actor": "guardian_resolve", "auditId": "aihub-audit-44812", "source": "live" }
+  "audit": { "actor": "guardian_resolve", "auditId": "pg-audit-44812", "source": "live" }
 }
 ```
 
@@ -983,7 +1008,7 @@ Same request as §11.2, from a caller without the write role. Response `200`,
   "failure": null,
   "confirmation": { "status": "not_applicable", "findingId": "f-1042" },
   "audit": {
-    "auditId": "aihub-audit-44813",
+    "auditId": "pg-audit-44813",
     "actor": "guardian_readonly",
     "role": "Guardian_Resolve",
     "requestedBy": "presenter@laptop",
@@ -1036,7 +1061,7 @@ Response `200`, `X-Resolve-Outcome: refused`:
   "failure": null,
   "confirmation": { "status": "not_applicable", "findingId": "f-1042" },
   "audit": {
-    "auditId": "aihub-audit-44814",
+    "auditId": "pg-audit-44814",
     "actor": "guardian_resolve",
     "role": "Guardian_Resolve",
     "requestedBy": null,

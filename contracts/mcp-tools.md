@@ -628,8 +628,29 @@ A caller must be able to tell these apart, and only one of them is an error.
 | Outcome | Shape | Meaning |
 |---|---|---|
 | **Could not measure** | a normal, successful result with `null` in the field | The tool ran. The value does not exist on this instance right now. Not an error. |
-| **Call failed** | thrown `%Status`, surfaced as a tool error | The tool could not do its job: item not found, wrong production, out-of-bounds argument, query failure. |
+| **Call failed** | thrown `%Status`, surfaced as a tool error | The tool could not do its job: query failure, or an argument it cannot interpret at all. |
+| **Refused** | a normal, successful result carrying `outcome: "refused"` and a `refusal` object | The tool ran, understood the request, and declined it: out-of-bounds size, non-whitelisted host, wrong production, host not in the production. **The safety model working, not a fault.** |
 | **Not authorized** | `$$$AICoreToolAccessDenied` from the authorization policy | The tool **did not run at all**. |
+
+**A REFUSAL IS NOT A FAILURE, and the `Refused` row above is new — added 2026-08-19 (#95).**
+
+This table previously classified an "out-of-bounds argument" under *Call failed*, i.e. a thrown
+`%Status`. `Tools.Resolve` has instead returned a structured `outcome: "refused"` payload since the
+six tools landed, and after review (@kskubach) **the code is right and this classification was
+wrong.** Two reasons, both load-bearing rather than stylistic:
+
+1. **`resolve-api.md` §5 requires `outcome: "refused"` with `refusal.reason: "out_of_bounds"`.**
+   From a thrown `%Status` the engine would have to parse error *text* to reach those fields.
+   Text-parsing a refusal into a contract field is fragile in a way a structured return is not.
+2. **It is what makes the audit trail useful.** `%LogExecution` receives the tool's *return value*;
+   a throw records a status and no result payload. So a returned refusal is why `Audit.Entry.Result`
+   can show *what* was refused and *why*, rather than only that something failed. A denial and a
+   bounds refusal stay distinguishable through `Disposition`.
+
+The warning below still stands for genuine failures, and the distinction is exactly the one §5.2 of
+`resolve-api.md` draws: `refused` means the system decided not to act and nothing was written;
+`failed` means it tried and did not complete. Returning `refused` for something that actually broke
+is the defect this warning is about.
 
 **Failure mechanism: `%AI.Tool` provides `%ToolError`, and that is what a tool uses.** Do not invent
 an error envelope and do not return `{"error": ...}` from a successful `%Invoke`. Verified from the
@@ -718,6 +739,34 @@ Three consequences:
 | `PG_Read` | `Guardian_Read` | listing and executing the five read tools; **listing** `set_pool_size` |
 | `PG_Resolve` | `Guardian_Resolve` | **executing** `set_pool_size` |
 
+**BOTH ROLES ALSO NEED A DATABASE PRIVILEGE — `%DB_%DEFAULT:RW` on this image.** Added 2026-08-19
+(#95). The table above is correct and a role built from it alone *cannot be used*: a principal
+holding only `PG_Read:U` logs in successfully and then dies with
+
+```
+<PROTECT> ... |ProductionGuardian.LabDemo.Tools.Governance.1    Access Denied
+```
+
+**before any policy is consulted**, because it cannot read the routine. Verified — the observed
+denial in §5.6 only passes once the probe user also holds `%DB_%DEFAULT`.
+
+`RW`, not `R`, and this is the non-obvious part: the denial audit row is written **as the refused
+principal**, which is what makes it attributable rather than anonymous. A read-only grant produces a
+denial that cannot be recorded, defeating the guarantee in §5.5.
+
+Grant it **from the invocation path** — the web application, or the proof fixture — rather than
+adding it to `Guardian_*`. The roles stay minimal and mean one thing: "may use the Production
+Guardian tools". A role that also carried database access would make "holds `Guardian_Read`" an
+answer to two different questions.
+
+**And the limit of the least-privilege claim, stated rather than implied.** LABDEMO's database
+resource is `%DB_%DEFAULT` (read from `SYS.Database` for its directory), which is the *default*
+resource — so the grant is broad, and a principal permitted to run the tools can reach any database
+sharing it. The least-privilege story MVP 2 §2.2 tells is real at the **tool** boundary:
+`PG_Resolve` genuinely gates `set_pool_size`, with an observed denial to prove it. It is **not** a
+database-isolation story. Worth one sentence because a demo showing "AI Detective can look but not
+act" invites the stronger reading, and the stronger reading is false.
+
 **This file is where the names are ratified.** `resolve-api.md` §9.3 defers to it, calling the
 `Guardian_Resolve` in its own examples "illustrative and not ratified here" and instructing Dev C to
 render `audit.role` as an opaque string and never compare it to a literal. That instruction stands
@@ -783,13 +832,46 @@ protects the endpoint from an unauthenticated caller. Both are required; neither
 
 ### 5.5 Audit
 
-`%LogExecution` receives `status` and `duration`, so **a failed or refused call is audited too**.
-That is the difference between "we log actions" and "we log attempts" — and the second is what makes
-"the AI changed a production setting" reviewable, because the interesting security event is usually
-the one that was blocked.
+**Two mechanisms, not one — and the split is the runtime's, not a choice.** The runtime audits
+*executions*; our authorization policy audits *denials*. Every call is recorded, but by different
+code, and a reader who assumes one mechanism will look for denials in the wrong place.
+
+| Event | Recorded by |
+|---|---|
+| successful read | the runtime, via `%LogExecution` |
+| dry-run of the write tool | the runtime |
+| **tool-level** refusal — our `2`–`8` bounds guard returning `outcome: "refused"` | the runtime (the tool ran) |
+| unknown host | the runtime |
+| **authorization** denial — `%CanExecute` refuses | **`Tools.AuthPolicy`, writing its own row** |
+
+CORRECTED 2026-08-19 (#95, found by implementing it). This section previously read:
+
+> `%LogExecution` receives `status` and `duration`, so **a failed or refused call is audited too**.
+
+The premise is true and the conclusion does not follow. `%AI.ToolMgr.ExecuteTool` checks
+authorization, *then* executes, *then* audits — so an authorization denial throws
+`<%AICore>ToolAccessDenied` at the first step and the audit hook is never reached. Measured with a
+deny-all policy registered: `%LogExecution` not called, **0 rows written**. The one event a security
+review actually asks about was the one going unrecorded, and the wording made it invisible by
+attributing it to the runtime.
+
+The reasoning is still right and is why the gap was worth closing rather than documenting: "we log
+attempts" is the correct goal, and `status`/`duration` in the signature genuinely is suggestive. It
+is just not *sufficient*, because the denial path never reaches that signature. Same shape as the
+`%`-prefix paragraph corrected in the 2026-08-18 role-name entry — a sound premise carried to a
+conclusion it does not support, which is harder to doubt than a bare claim.
+
+**So the guarantee is real but it is ours.** Anything that adds a new deny path must write its own
+audit row, or that refusal leaves no trace. `Tools.AuthPolicy` is the only code that ever learns a
+denial happened.
+
+`duration` is integer milliseconds and reads **0** for every read tool here — `ExecuteTool` timed
+the same call at `0.0071 s`. Stated because a reader comparing §5.5's promise of a duration against
+a column of zeroes should find the explanation here rather than assume the field is broken.
 
 Every one of the six tools is audited on every call. Not a per-tool setting: it is where the audit
-hook sits in the execution path (§5.2).
+hook sits in the execution path (§5.2) — plus the policy's own row for the one case that path
+cannot see.
 
 The audit record must be sufficient to answer *who acted, what changed, when* — the demo's final
 step. For `set_pool_size` that means the caller identity, the tool name, the arguments including
