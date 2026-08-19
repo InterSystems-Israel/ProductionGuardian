@@ -95,11 +95,17 @@ ClassMethod Run(pSourceDir As %String = "", pStartGenerator As %Boolean = 1) As 
     // up because an MVP 2 role could not be created is worse than one that comes up and says so.
     do ..GovernanceSetup()
 
+    // LAST, and after StartProduction rather than next to ApplyDeploymentSettings. The point is to
+    // end a boot by confirming what the running production will actually send to -- a check placed
+    // beside the code that applies the setting would only ever agree with it.
+    do ..VerifyDeploymentSettings()
+
     write !, "==================================", !
     write "Done. Verify with:", !
     write "  do ##class(ProductionGuardian.LabDemo.Triggers).Status()", !
     write "  do ##class(ProductionGuardian.Setup.EnableMetrics).Verify()", !
     write "  do ##class(ProductionGuardian.Setup.AIHub).Status()", !
+    write "  do ##class(ProductionGuardian.Setup.FirstBoot).VerifyDeploymentSettings()", !
     quit $$$OK
 }
 
@@ -339,6 +345,96 @@ ClassMethod ApplyDeploymentSettings() As %Status
         write "6b. HTTPPort   -> ", port, !
     }
     quit $$$OK
+}
+
+/// Does the LIVE adapter target still match what the deployment asked for?
+///
+/// WHY THIS IS NEEDED AT ALL: RECOMPILING `Production.cls` REVERTS IT (#96, @Ari-Glikman, found
+/// while verifying #92). `ApplyDeploymentSettings()` writes into the production's stored config;
+/// a recompile regenerates that config from the class's XData and the deployment's values are gone.
+/// Measured: port 52773 before, 80 after `$system.OBJ.Compile(...,"ck-d")`.
+///
+/// A RECOMPILE IS ROUTINE -- `docker compose up --build`, any class edit, a `CompilePackage` while
+/// checking something. Nothing warns, and the failure is silent until the queue grows.
+///
+/// THE SYMPTOM DOES NOT LOOK LIKE THE CAUSE, which is what makes it worth a check rather than a
+/// comment. `Cloud API` goes to Retry and the queue climbs without bound:
+///
+///     ERROR #6059: Unable to open TCP/IP socket to server webgateway-webinar:80
+///
+/// and during MVP 2 that reads as Smart Resolve failing -- `queue_buildup` fires correctly,
+/// `set_pool_size` applies correctly, the pool really becomes 4, and the queue still does not drain,
+/// because nothing is being delivered at all. #96 lost real time to it in that order.
+///
+/// BOTH SETTINGS REVERT, and #96 says only the port does. Corrected here because the wrong version
+/// sends the next reader looking for adapter fallback behaviour that does not exist:
+/// `Production.cls` ships `HTTPServer` as `webgateway-webinar` (line 99), not `127.0.0.1`. So the
+/// hostname in that error is not a red herring and not a fallback -- it is exactly what a recompile
+/// restored. The error message was accurate; the configuration was wrong.
+///
+/// REPORTS, DOES NOT REPAIR. Re-applying silently would hide how often this happens, and a boot that
+/// quietly corrects a drift teaches nobody. `Run()` calls this last so a boot ends by confirming the
+/// target, and the fix is one line, named in the output.
+ClassMethod VerifyDeploymentSettings() As %Status
+{
+    set wantServer = $get(^ProductionGuardian.Setup("HTTPServer"), "")
+    set wantPort = $get(^ProductionGuardian.Setup("HTTPPort"), "")
+    if (wantServer = "") && (wantPort = "") {
+        write "10. deployment target: no globals set, nothing to verify", !
+        quit $$$OK
+    }
+
+    set item = ##class(ProductionGuardian.LabDemo.Triggers).#OPERATION
+    set gotServer = ..LiveSetting(item, "HTTPServer")
+    set gotPort = ..LiveSetting(item, "HTTPPort")
+
+    set drift = 0
+    if (wantServer '= "") && (gotServer '= wantServer) {
+        set drift = 1
+        write "10. HTTPServer DRIFTED: live '", gotServer, "' but deployment asked for '", wantServer, "'", !
+    }
+    if (wantPort '= "") && (gotPort '= wantPort) {
+        set drift = 1
+        write "10. HTTPPort DRIFTED: live '", gotPort, "' but deployment asked for '", wantPort, "'", !
+    }
+    if 'drift {
+        write "10. deployment target: ", gotServer, ":", gotPort, " matches the deployment globals", !
+        quit $$$OK
+    }
+
+    write "    A recompile of Production.cls reverts these to the shipped XData values (#96).", !
+    write "    ", ..#PRODUCTION, " will send to the wrong host and Cloud API will go to Retry", !
+    write "    with a growing queue. Fix with:", !
+    write "      do ##class(ProductionGuardian.Setup.FirstBoot).ApplyDeploymentSettings()", !
+    quit $$$ERROR($$$GeneralError, "deployment settings have drifted from the configured globals")
+}
+
+/// One live adapter setting for a config item, or "" when absent. Private.
+///
+/// Reads the STORED config rather than a running host's adapter, because that is what a recompile
+/// rewrites and therefore what has to be compared. A running host would also answer, but only until
+/// the next restart, which would make this check pass on a production that is about to come back
+/// wrong.
+ClassMethod LiveSetting(pItem As %String, pName As %String) As %String [ Private ]
+{
+    set def = ##class(Ens.Config.Production).%OpenId(..#PRODUCTION)
+    if '$isobject(def) {
+        quit ""
+    }
+    set result = ""
+    for i = 1:1:def.Items.Count() {
+        set item = def.Items.GetAt(i)
+        if item.Name '= pItem {
+            continue
+        }
+        for j = 1:1:item.Settings.Count() {
+            set s = item.Settings.GetAt(j)
+            if (s.Name = pName) && (s.Target = "Adapter") {
+                set result = s.Value
+            }
+        }
+    }
+    quit result
 }
 
 /// Start the production, or report it already running. Refuses to switch a DIFFERENT
