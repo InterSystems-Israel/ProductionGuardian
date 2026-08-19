@@ -144,13 +144,34 @@ returns PHI, it lands in `Audit.Entry.Result` in plain text.
 |---|---|
 | Read tools return real evidence | met — six tools discovered, live values |
 | `set_pool_size` changes the live pool and is reversible | **dry-run verified only**; `before`/`after`/`reversal` correct, an apply has not been run against a live queue |
-| An unauthorized role is refused | met — observed, `iris/test/GovernanceProof.cls` |
+| An unauthorized role is refused | met — observed, `iris/test/GovernanceProof.cls`. **Compile `test/` first — first boot does not** (see below) |
 | Every call appears in the audit log | met for executions and for authorization denials |
-| RBAC roles and resources exist from a clean boot | met — `Setup.AIHub`, called by `FirstBoot` |
+| RBAC roles and resources exist from a clean boot | met, and **verified from a real boot** rather than inferred: the four security objects were deleted and `docker compose restart iris` recreated them through step 9. `Audit/` compiled on the way through, including its SQL table, so the recursive load picks up a new subdirectory |
 | A principal can actually *use* the roles | needs `%DB_%DEFAULT` **as well**, from the invocation path — the `Guardian_*` roles stay minimal and grant only `PG_*`. Without it you get `<PROTECT>` before any policy is consulted |
 | LLM credential in the vault | **not met on the compose stack** — needs a key, and the current one must be rotated |
 
 ```objectscript
 do ##class(ProductionGuardian.Setup.AIHub).Status()          // what is and is not in place
 do ##class(ProductionGuardian.LabDemo.Audit.Entry).Purge()   // reset the log between rehearsals
+```
+
+### `iris/test/` is not deployed by first boot — compile it by hand
+
+`docker/iris-firstboot.sh` loads `/pg-src/setup/` and `/pg-src/labdemo/` and **nothing else**, so on a
+fresh instance `Test.GovernanceProof` and `Test.StubPolicy` do not exist and the acceptance proof
+fails with `<CLASS DOES NOT EXIST>`. Found by deleting the security objects, restarting the container,
+and looking for the classes in the boot log rather than in the namespace — they were present, but only
+as leftovers from an earlier manual compile, which is exactly the kind of thing that reads as "it
+works" until someone tries it on a second machine.
+
+Left out of the boot deliberately rather than fixed: `GovernanceProof` **creates and deletes an IRIS
+user**, and auto-compiling that onto every container start widens what the deploy ships for the
+benefit of a fixture. Compile it when you want to run the proof:
+
+```objectscript
+do $system.OBJ.LoadDir("/pg-src/test/", "ck", .errors, 1)
+set pw = ##class(ProductionGuardian.Test.GovernanceProof).Prove()
+// then, in a SEPARATE session, because the login cannot be undone:
+do ##class(ProductionGuardian.Test.GovernanceProof).AsReadOnlyUser(pw)
+do ##class(ProductionGuardian.Test.GovernanceProof).Cleanup()
 ```
