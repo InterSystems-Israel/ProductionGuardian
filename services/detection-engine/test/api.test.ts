@@ -236,3 +236,81 @@ describe('faults', () => {
     await new Promise<void>((resolve) => failing.close(() => resolve()));
   });
 });
+
+describe('write-origin allow-list (resolve-api.md §13.2)', () => {
+  it('a foreign origin cannot POST, and is told so with 403', async () => {
+    // The confused deputy, closed. Verified against the running stack before the fix that
+    // `Origin: https://evil.example.com` got HTTP 200 and a real preview -- because the engine
+    // holds a credential with the write role while the browser does not, and `*` let any page ask
+    // it to act. §13.2 names this and ranks the options.
+    const res = await fetch(`${base}/api/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example.com' },
+      body: JSON.stringify({ mode: 'dry_run', action: { type: 'set_pool_size', host: 'Cloud API', size: 8 } }),
+    });
+    // 403 is correct HERE and wrong for a policy refusal (§5.1). The difference is who is asking:
+    // a refused operator needs an informative 200 they can render; a page that should not have
+    // asked has no UI to show it, and there is nothing legitimate to render.
+    assert.equal(res.status, 403);
+    const body = (await res.json()) as { error: string };
+    assert.match(body.error, /not permitted to POST/);
+  });
+
+  it('the preflight AGREES with the POST branch rather than promising and refusing', async () => {
+    // If the preflight advertised POST to an origin the POST branch then rejects, the browser
+    // would pass the preflight and fail the real request -- surfacing as a bare 403 with no clue
+    // which check refused it.
+    const denied = await fetch(`${base}/api/resolve`, {
+      method: 'OPTIONS',
+      headers: { Origin: 'https://evil.example.com', 'Access-Control-Request-Method': 'POST' },
+    });
+    const deniedMethods = denied.headers.get('access-control-allow-methods') ?? '';
+    assert.ok(!deniedMethods.includes('POST'), `must not advertise POST, got "${deniedMethods}"`);
+    assert.ok(deniedMethods.includes('GET'), 'reads stay available');
+
+    const allowed = await fetch(`${base}/api/resolve`, {
+      method: 'OPTIONS',
+      headers: { Origin: 'http://localhost:5173', 'Access-Control-Request-Method': 'POST' },
+    });
+    assert.ok((allowed.headers.get('access-control-allow-methods') ?? '').includes('POST'));
+  });
+
+  it('the dashboard origin still works, both loopback forms', async () => {
+    // Dev C runs Vite directly on localhost:5173 and the compose stack serves the built bundle
+    // from nginx on the same port. Breaking either would be worse than the hole this closes.
+    for (const origin of ['http://localhost:5173', 'http://127.0.0.1:5173']) {
+      const res = await fetch(`${base}/api/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: origin },
+        body: JSON.stringify({ mode: 'dry_run', action: { type: 'set_pool_size', host: 'Cloud API', size: 4 } }),
+      });
+      // 503 because this test server wires no resolve handler -- the point is that it got PAST the
+      // origin check, which a 403 would not have.
+      assert.notEqual(res.status, 403, `${origin} must be allowed to POST`);
+    }
+  });
+
+  it('a request with NO Origin is allowed — it is not a browser', async () => {
+    // Deliberate, and the distinction that makes this fix meaningful rather than theatre. Browsers
+    // always send Origin on a cross-origin POST, so a request without one is curl, the dev proxy,
+    // or a health check. Rejecting those breaks every scripted verification while stopping nothing:
+    // anything that can omit the header can forge it. This closes the drive-by, not the network
+    // path -- the real fix is §13.1's pass-through credential.
+    const res = await fetch(`${base}/api/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'dry_run', action: { type: 'set_pool_size', host: 'Cloud API', size: 4 } }),
+    });
+    assert.notEqual(res.status, 403);
+  });
+
+  it('GETs are unaffected — Q9 keeps its unconditional CORS', async () => {
+    // Q9's reasoning (the dev proxy stays optional) applies to reads. Narrowing them would break
+    // the dashboard for no security gain, since a read is not the confused-deputy risk.
+    const res = await fetch(`${base}/api/healthscan/findings`, {
+      headers: { Origin: 'https://evil.example.com' },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('access-control-allow-origin'), '*');
+  });
+});

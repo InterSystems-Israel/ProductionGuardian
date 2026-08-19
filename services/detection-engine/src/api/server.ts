@@ -48,6 +48,76 @@ const GET_PATHS = new Set([
 
 const POST_PATHS = new Set(['/api/investigate', '/api/resolve']);
 
+/**
+ * Origins permitted to POST — the fix for `resolve-api.md` §13.2's confused deputy.
+ *
+ * THE PROBLEM, MEASURED rather than reasoned about. `Access-Control-Allow-Origin: *` on a write
+ * endpoint means any page open in the browser can POST to `:3002`. Verified against the running
+ * stack before changing anything:
+ *
+ *     POST /api/resolve   Origin: https://evil.example.com
+ *     -> HTTP 200  {"outcome":"previewed","after":{"poolSize":8}}
+ *     OPTIONS      -> Access-Control-Allow-Origin: *, Allow-Methods: GET, POST, OPTIONS
+ *
+ * §13.2 calls that "tolerable — not fine" partly because "the engine holds no authority of its
+ * own". Under §13.1's service-account model that is no longer true: the engine authenticates to
+ * IRIS with a credential that HOLDS the write role. So the browser cannot write, the engine can,
+ * and `*` lets any page ask it to. That is the confused deputy exactly.
+ *
+ * WHY AN ALLOW-LIST AND NOT THE OTHER TWO OPTIONS. §13.2 lists three. Binding `:3002` to localhost
+ * would break the compose network, where the dashboard reaches the engine by service name. The
+ * pass-through credential closes this properly and is the right long-term answer -- it removes the
+ * standing privilege rather than guarding it -- but it needs a login the dashboard does not have,
+ * so it is a decision (§13.1) rather than a patch. An origin allow-list is what can be done inside
+ * this service today without deciding that.
+ *
+ * WHAT IT DOES NOT DO, stated plainly so nobody reads it as more than it is. CORS is enforced by
+ * the BROWSER, so this stops a malicious PAGE and stops nothing else: curl, a script, or anything
+ * that does not honour CORS reaches the endpoint unchanged. It closes the drive-by, not the
+ * network path. The real fix is still §13.1.
+ *
+ * GETs keep `*`. They are reads, they are CORS-simple, and Q9's reason for `*` -- the dev proxy
+ * stays optional -- applies to them and not to a write.
+ */
+const DEFAULT_WRITE_ORIGINS = [
+  // The dashboard's dev server and its containerised form. Both, because Dev C runs Vite directly
+  // and the compose stack serves the built bundle from nginx on 5173.
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+];
+
+/**
+ * Resolve the permitted write origins. `PG_WRITE_ORIGINS` overrides, comma-separated.
+ *
+ * `*` is accepted as an explicit opt-out, and it is deliberately something you have to TYPE. A
+ * deployment that needs it can have it; nobody gets it by default, and it appears in the startup
+ * log so an operator can see the endpoint is open.
+ */
+function writeOrigins(): { list: string[]; open: boolean } {
+  const raw = process.env['PG_WRITE_ORIGINS'];
+  if (raw === undefined || raw.trim() === '') return { list: DEFAULT_WRITE_ORIGINS, open: false };
+  const list = raw.split(',').map((o) => o.trim()).filter((o) => o !== '');
+  return { list, open: list.includes('*') };
+}
+
+const WRITE_ORIGINS = writeOrigins();
+
+/**
+ * Is this origin allowed to POST?
+ *
+ * A MISSING Origin header is ALLOWED, and that is not a loophole being left open -- it is the
+ * distinction between the two threats. Browsers always send `Origin` on a cross-origin POST, so a
+ * request without one is not a page: it is curl, the dashboard's own server-side proxy, or a
+ * health check. Rejecting those would break the dev proxy and every scripted verification while
+ * stopping nothing, because anything that can omit the header can also forge it.
+ */
+function mayWrite(origin: string | undefined): boolean {
+  if (WRITE_ORIGINS.open) return true;
+  if (origin === undefined || origin === '') return true;
+  return WRITE_ORIGINS.list.includes(origin);
+}
+
+
 export function createFindingsServer(options: ServerOptions): Server {
   const log = options.log ?? console.error;
 
@@ -58,12 +128,35 @@ export function createFindingsServer(options: ServerOptions): Server {
 
     if (req.method === 'OPTIONS') {
       // Preflight, in case Dev C points at us without the Vite proxy.
-      writeHead(res, 204, 'ok');
+      //
+      // The preflight must AGREE with the POST branch. If it advertised POST to an origin the POST
+      // branch then rejects, the browser would pass the preflight and fail the real request -- and
+      // the visible symptom would be a 403 with no explanation of which check refused it. So a
+      // disallowed origin is told POST is unavailable here, which is the truth for it.
+      writeHead(res, 204, 'ok', undefined, mayWrite(req.headers.origin));
       res.end();
       return;
     }
 
     if (req.method === 'POST') {
+      // ORIGIN CHECK FIRST, before routing and before any handler. A rejected origin must not
+      // reach the write tool, and it must not even learn which routes exist -- so this precedes
+      // the 404/405 distinction below.
+      const origin = req.headers.origin;
+      if (!mayWrite(origin)) {
+        log(`refused POST ${path} from origin ${String(origin)}`);
+        // 403, and here it IS the right code -- unlike a policy refusal (resolve-api.md §5.1),
+        // which is a 200 because the CALLER is legitimate and the answer is informative. This is
+        // not a legitimate caller: no operator sees this response, only a page that should not
+        // have asked. There is nothing for a UI to render.
+        sendJson(
+          res,
+          403,
+          { error: `origin ${String(origin)} is not permitted to POST to this engine` },
+          'ok',
+        );
+        return;
+      }
       // The two MVP 2 write-ish endpoints. Handled before the GET guard because they are the only
       // non-GET routes and they are async, which the GET path deliberately is not.
       const handler = !POST_PATHS.has(path)
@@ -244,10 +337,18 @@ function readFindingId(body: unknown): string {
   return id;
 }
 
-function writeHead(res: ServerResponse, status: number, state: string, length?: number): void {
+function writeHead(
+  res: ServerResponse,
+  status: number,
+  state: string,
+  length?: number,
+  allowWrite = true,
+): void {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    // Contract Q9: sent unconditionally, so the dev proxy is optional not required.
+    // Contract Q9: sent unconditionally, so the dev proxy is optional not required. Still `*`:
+    // the GETs are reads and CORS-simple, and Q9's reasoning applies to them. Only the METHODS
+    // advertised below narrow for a disallowed origin -- which is what actually gates the write.
     'Access-Control-Allow-Origin': '*',
     // POST is advertised for the MVP 2 endpoints (`/api/investigate`, `/api/resolve`), and
     // Allow-Headers is what a JSON POST actually needs: a cross-origin request carrying
@@ -262,7 +363,11 @@ function writeHead(res: ServerResponse, status: number, state: string, length?: 
     // Advertised BEFORE the routes exist on purpose. A method in Allow-Methods with no route
     // behind it answers 405, which is a clear, correct answer to "can I POST here yet". The
     // reverse -- a route with the header missing -- is the invisible failure.
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    //
+    // POST is advertised only to an origin permitted to use it (§13.2 -- see WRITE_ORIGINS). A
+    // browser that is not on the list is told GET and OPTIONS, which is accurate for it rather
+    // than a refusal it has to discover by trying.
+    'Access-Control-Allow-Methods': allowWrite ? 'GET, POST, OPTIONS' : 'GET, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'X-Healthscan-State': state,
     // Findings change every poll; a cached response would defeat the 10s bar.
