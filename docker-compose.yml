@@ -227,6 +227,22 @@ services:
       # sustainedSeconds must be reachable within sustainedSamples polls with margin (#64).
       # Shortening this means retuning sustainedSeconds in the same change.
       POLL_INTERVAL_MS: "5000"
+      # AGENT_MODE is SEPARATE from PROXY_MODE, and defaults to mock even though the proxy is
+      # live. Two independent switches because the proxy and the LLM fail independently: a
+      # rate-limited or unreachable model must not take the findings API down with it, and the
+      # useful default for a fresh `compose up` is live metrics with a canned investigation.
+      #
+      # `live` needs the AI Hub provider configured in IRIS (docs/mvp2-aihub-verified-api.md)
+      # and an API key in the wallet. Neither the key nor the model name is here: the engine
+      # holds no LLM credential, and turning this to `live` without the provider gives a 503
+      # from the dispatcher rather than a broken investigation.
+      AGENT_MODE: ${PG_AGENT_MODE:-mock}
+      IRIS_BASE_URL: http://iris:52773
+      # The ENGINE's IRIS credentials, for the RBAC-gated dispatcher. Same variables as the
+      # proxy above, so one override moves both. These authenticate to IRIS; they carry no
+      # authority over what may be written -- Tools.Resolve's policy decides that.
+      IRIS_USER: ${PG_IRIS_USER:-superuser}
+      IRIS_PASS: ${PG_IRIS_PASS:-SYS}
     volumes:
       # Hot-reloaded (ADR 0003), so mounting it lets an operator tune thresholds without a
       # rebuild. Read-only: the engine only ever reads it.

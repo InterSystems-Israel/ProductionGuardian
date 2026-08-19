@@ -28,6 +28,12 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFindingsServer } from './api/server.ts';
+import { investigate } from './detect/investigate.ts';
+import { liveAgent, mockAgent, liveResolveTool, mockResolveTool } from './detect/agents.ts';
+// Aliased: `resolve` is already node:path's, used for every path in this file. Importing ours
+// under the same name compiles as a duplicate-identifier error rather than shadowing -- but had it
+// shadowed, `resolve(serviceRoot, 'thresholds.json')` would have called the write orchestrator.
+import { parseResolveRequest, resolve as runResolve } from './detect/resolve.ts';
 import { DEFAULT_POLL_INTERVAL_MS, ThresholdStore } from './config/thresholds.ts';
 import { DetectionEngine } from './detect/engine.ts';
 import { HttpProxyClient } from './proxy/client.ts';
@@ -79,12 +85,80 @@ async function poll(): Promise<void> {
   }
 }
 
-const server = createFindingsServer({ port: PORT, snapshot: () => engine.snapshot() });
+/**
+ * AGENT_MODE selects the AI Detective backend, separately from PROXY_MODE.
+ *
+ * Two independent switches on purpose: the proxy and the agent fail independently, and the useful
+ * combination during development is live metrics with a canned investigation. Folding them into one
+ * flag would force a choice nobody wants -- either mock the metrics you have, or block on an LLM you
+ * do not.
+ *
+ * Defaults to `mock`, matching PROXY_MODE and ADR 0004: the engine must stand up and serve with
+ * nothing else running.
+ */
+const AGENT_MODE = process.env['AGENT_MODE'] ?? 'mock';
+const IRIS_BASE_URL = process.env['IRIS_BASE_URL'] ?? 'http://localhost:52773';
+
+// The engine's own IRIS credentials, for the dispatcher's web application. The engine holds these
+// because the tool is RBAC-gated; it holds NO LLM key, which stays in the AI Hub wallet.
+const IRIS_USER = process.env['IRIS_USER'] ?? 'superuser';
+const IRIS_PASS = process.env['IRIS_PASS'] ?? 'SYS';
+
+const agentSource = AGENT_MODE === 'live' ? 'agent' : 'canned';
+const callAgent =
+  AGENT_MODE === 'live'
+    ? liveAgent(IRIS_BASE_URL, IRIS_USER, IRIS_PASS, (m: string) => console.error(m))
+    : mockAgent();
+// Same switch, separate caller: with AGENT_MODE=mock the resolve endpoint previews and applies
+// against an in-memory pool size, so Dev C can build the approve flow with no IRIS at all.
+const callTool =
+  AGENT_MODE === 'live'
+    ? liveResolveTool(IRIS_BASE_URL, IRIS_USER, IRIS_PASS, (m: string) => console.error(m))
+    : mockResolveTool();
+
+const server = createFindingsServer({
+  port: PORT,
+  snapshot: () => engine.snapshot(),
+  log: (m) => console.error(m),
+  investigate: async (findingId) => {
+    const snap = engine.snapshot();
+    const finding = snap.findings.find((f) => f.id === findingId);
+    if (finding === undefined) {
+      // Deliberately an error rather than an `unavailable` investigation: an unknown id is the
+      // CALLER being wrong, and dressing it as "we could not investigate" would hide a bug in
+      // whatever built the request.
+      throw new Error(`bad request: no current finding with id ${findingId}`);
+    }
+    const host = snap.hosts.find((h) => h.host === finding.host);
+    if (host === undefined) {
+      throw new Error(`no host state for ${finding.host}`);
+    }
+    const projection = snap.projections.find((p) => p.host === finding.host);
+    // Pool size comes from the projection's own threshold basis where available; the authoritative
+    // read is get_pool_size, which the AGENT calls. Passing null rather than guessing keeps this
+    // service out of the business of reading production config.
+    return investigate(finding, host, projection, null, {
+      callAgent,
+      source: agentSource,
+      log: (m) => console.error(m),
+    });
+  },
+  resolve: async (body) =>
+    // parseResolveRequest throws `bad request: ...` for anything malformed, which the server maps
+    // to 400. Validated here rather than inside resolve() so the endpoint answers a bad body
+    // without ever reaching the write tool.
+    runResolve(parseResolveRequest(body), { callTool, log: (m) => console.error(m) }),
+});
 
 server.listen(PORT, () => {
   console.error(
+    // agent=<mode> is in the startup line because a canned investigation is indistinguishable
+    // from a real one at a glance, and the operator most likely to be misled is the one reading
+    // logs during a demo. The response carries `source` for the same reason.
     `detection-engine listening on :${PORT} (proxy=${PROXY_MODE}` +
-      `${PROXY_MODE === 'live' ? ` ${PROXY_BASE_URL}` : ''}, poll=${POLL_INTERVAL_MS}ms)`,
+      `${PROXY_MODE === 'live' ? ` ${PROXY_BASE_URL}` : ''}` +
+      `, agent=${AGENT_MODE}${AGENT_MODE === 'live' ? ` ${IRIS_BASE_URL}` : ''}` +
+      `, poll=${POLL_INTERVAL_MS}ms)`,
   );
 });
 

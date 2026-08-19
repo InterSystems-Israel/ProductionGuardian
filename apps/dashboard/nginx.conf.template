@@ -31,7 +31,28 @@ server {
         try_files $uri /index.html;
     }
 
-    location /api/healthscan/ {
+    # /api/ AND NOT /api/healthscan/, which is what this was until 2026-08-19.
+    #
+    # The narrower prefix meant every MVP 2 endpoint fell through to `location /` and was served
+    # index.html: /api/earlywarning, /api/investigate and /api/resolve all returned the SPA. A GET
+    # answered 200 with an HTML body, so a curl check on the status code looked healthy -- measured:
+    #
+    #     GET  /api/healthscan/findings  -> 200 JSON
+    #     GET  /api/earlywarning         -> 200 <!doctype html>
+    #     POST /api/resolve              -> 405 from nginx, never reaching the engine
+    #
+    # The POST is the one that matters: `location /` is a static file handler, and nginx refuses
+    # POST to it before the request goes anywhere. So the approve button could not have worked in
+    # the containerised dashboard at all, and the failure would have surfaced as nginx's own 405
+    # page rather than as anything in the engine's log -- which is exactly the invisible-failure
+    # shape resolve-api.md warned about for the CORS preflight, arriving by a different route.
+    #
+    # Widened rather than adding three more blocks: the engine owns everything under /api and
+    # answers 404 for a path it does not have (verified -- GET /api/nope -> 404, not a fallthrough),
+    # so a per-endpoint list here would be a second copy of its routing table. That is the #84
+    # stale-copy pattern, and it is what caused this bug: the block was written when
+    # /api/healthscan/* was the only route family and never revisited when MVP 2 added three more.
+    location /api/ {
         # RESOLVE AT REQUEST TIME, NOT AT CONFIG LOAD. A literal hostname in proxy_pass is
         # resolved when nginx reads its config, so this container refused to start at all
         # while the engine was absent -- `host not found in upstream`, exit before serving
@@ -67,7 +88,17 @@ server {
         # nginx default of 60s. Shorter than the poll interval would abort healthy
         # requests; this is comfortably above it and well below the default.
         proxy_connect_timeout 5s;
-        proxy_read_timeout 10s;
+        # 10s WOULD CUT OFF AN INVESTIGATION. /api/investigate is an LLM round trip with several
+        # tool calls inside it -- measured at ~6s against gpt-4o-mini, and the engine's own hard
+        # timeout is 30s. A 10s read timeout here would abort the slower half of real
+        # investigations and return 504, which reads as "the AI is broken" rather than "the proxy
+        # gave up". 35s leaves the engine's own timeout as the one that fires, so the failure is
+        # reported by the component that knows what failed.
+        #
+        # The cost is a hung upstream holding a worker for 35s instead of 10s on this path. That is
+        # acceptable here and would not be on the poll path -- but the poll aborts client-side
+        # every 2s regardless, so it never reaches this limit.
+        proxy_read_timeout 35s;
 
         # Findings change every poll. A cached 200 here would freeze the dashboard while
         # it looked live, which is the one failure mode worse than an error banner.
