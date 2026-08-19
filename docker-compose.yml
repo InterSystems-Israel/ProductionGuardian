@@ -89,6 +89,16 @@ services:
       # ISC_DATA_DIRECTORY makes the namespace survive `compose down`; without it the
       # LABDEMO setup would re-run from scratch every time.
       ISC_DATA_DIRECTORY: /iris-shared/durable
+      # Setup.AIHub.CreateProvider() reads these at first boot to create the AI Hub wallet entry
+      # and the AI.LLM.pgdetective config. Declared HERE and not only in the shell: an exported
+      # variable does not reach a container unless compose passes it, and without this line the
+      # boot reported "SKIPPED -- PG_LLM_API_KEY is not set" while the variable was plainly set
+      # in the caller's environment. Measured -- the README's own instructions failed on it.
+      #
+      # No default. Absent, the provider is not created, the boot says so, and AI Detective
+      # degrades to a labelled canned investigation. A default here would be a committed key.
+      PG_LLM_API_KEY: ${PG_LLM_API_KEY:-}
+      PG_LLM_MODEL: ${PG_LLM_MODEL:-}
     depends_on:
       iris-init:
         condition: service_completed_successfully
