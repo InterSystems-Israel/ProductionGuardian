@@ -104,6 +104,21 @@ ClassMethod RunContinuous(delaySecs As %Double = 2)
         // THIS REDUCES EXPOSURE RATHER THAN FIXING THE WEDGE. If worker exhaustion is the
         // mechanism, a smaller backlog makes it less likely and not impossible. Stated so nobody
         // reads the cap as a fix and closes #101 on the strength of it.
+        //
+        // THE PAUSE IS UNBOUNDED, DELIBERATELY. @Ari-Glikman's parallel implementation (#103) capped
+        // it at 300s and then resumed with a warning, so a permanently stuck queue could not silence
+        // the generator forever -- a demo showing no traffic reads as dead rather than stuck. He
+        // flagged it as a guess and left the call here; declining it, because the argument against is
+        // stronger than the argument for.
+        //
+        // If the queue is genuinely not draining, resuming inflow makes it worse, and unbounded
+        // inflow into a non-draining queue is exactly what wedged the web server in #101. A timed
+        // resume would convert a visible stall into the failure this cap exists to prevent.
+        //
+        // The visibility concern is real and is answered better elsewhere: `Triggers.Status()`
+        // prints the cap beside the live depth and says "PAUSED, inflow held", so "held at the cap"
+        // and "stuck" are distinguishable without putting more messages into a queue that is not
+        // moving. Diagnose with Status(), not by resuming.
         set cap = +$get(^ProductionGuardian.Trigger("MaxQueued"), 0)
         if cap > 0 {
             set depth = ..QueueDepth()
