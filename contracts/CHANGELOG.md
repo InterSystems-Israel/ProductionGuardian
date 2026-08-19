@@ -5,6 +5,48 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-18 — role names corrected: no `%` prefix (Dev B)
+
+**Two files, values only, no shape change.** `mcp-tools.md` and `resolve-api.md`:
+`%Guardian_Read` → `Guardian_Read`, `%Guardian_Resolve` → `Guardian_Resolve`. 14 occurrences. No
+field added, removed or retyped; no schema and no sample affected (these two contracts still have
+neither). `validate.mjs` unchanged and passing.
+
+**The ratified names could not be created.** IRIS refuses them:
+
+```
+ERROR #887: Invalid role name '%Guardian_Read'
+```
+
+`%` marks a role as **system-supplied**, so a custom role may not use it. Resources follow the same
+rule, which is why `PG_Read` / `PG_Resolve` were always fine.
+
+**The reasoning in `mcp-tools.md` §5 was backwards, and that is the part worth reading.** It argued
+that roles carry `%` *because* it is the convention for a system-supplied role — a true premise
+supporting the opposite conclusion — and presented the `PG_*` / `%Guardian_*` split as "two
+different naming rules, applied correctly, rather than one applied uniformly and wrongly". It is in
+fact one rule applied wrongly. The paragraph has been rewritten rather than just having its values
+swapped, because a corrected value under intact bad reasoning invites the next person to "fix" it
+back.
+
+**Found by trying to create the roles, not by review.** The passage reads as a considered decision,
+complete with a rationale for the apparent inconsistency, which is exactly why it survived
+ratification by three people. A confident explanation is harder to doubt than a bare value —
+`AuthPolicy.cls` recorded the divergence in a class comment when it hit the error, and this entry
+closes it.
+
+**Verified against the running instance** rather than assumed from the error message:
+
+```
+RES   PG_Read           RES   PG_Resolve
+ROLE  Guardian_Read     ROLE  Guardian_Resolve
+```
+
+`resolve-api.md` §9.3's instruction to Dev C — render `audit.role` as an **opaque string** and never
+compare it to a literal — is what kept this from being a dashboard change, and is the reason it
+stays in force now that the values are settled.
+
+
 ## 2026-08-18 — four new MVP 2 contracts (Dev B)
 
 **Additive only. The two MVP 1 contracts are untouched** — `healthscan-api.md` and
@@ -77,6 +119,12 @@ the **role** that holds one (`%Guardian_Read`, `%Guardian_Resolve`) in `audit.ro
 after both landed, with a table in `resolve-api.md` §9.3, because grepping for one string and
 finding the other looks exactly like the #84 stale-copy pattern and invites a "fix" that would
 break it.
+
+> **The role names in the line above were corrected on 2026-08-18** to `Guardian_Read` /
+> `Guardian_Resolve` — see that day's second entry. Left as written here rather than rewritten: a
+> changelog records what a contract *said*, and silently updating a past entry would erase the fact
+> that the ratified names were unimplementable. The **resource/role distinction** the paragraph
+> makes is unaffected and still correct.
 
 ### What is asserted about the runtime, and how it was established
 

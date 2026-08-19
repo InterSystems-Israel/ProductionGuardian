@@ -53,6 +53,19 @@
 /// -- the `%` prefix is reserved for system roles. The created roles are `Guardian_Read` and
 /// `Guardian_Resolve`, unprefixed, and the contracts need correcting. Recorded here because the
 /// contracts are ratified and a silent divergence is worse than a noted one.
+///
+/// THIS CLASS ALSO WRITES THE AUDIT ROW FOR A DENIAL, which looks like a layering violation and is
+/// not. `%AI.ToolMgr.ExecuteTool` checks authorization, then executes, then calls the AUDIT policy --
+/// so a denial throws `<%AICore>ToolAccessDenied` at step one and the audit hook is never reached.
+/// Measured on build 126 with a deny-all policy registered: `%LogExecution` not called, 0 rows
+/// written. `contracts/mcp-tools.md` §5.5 and `resolve-api.md` §8 both promise that refusals --
+/// `not_authorized` explicitly -- are audited, and the runtime cannot deliver it: a tool-level
+/// refusal is audited because the tool ran, but an authorization refusal is not.
+///
+/// So this class is the only code that ever learns a denial happened, which makes it the only place
+/// the row can be written from. An audit log that records only what succeeded cannot answer "did
+/// anything try to write to the production", and that is the question a healthcare operations review
+/// actually asks. Recording here is what makes `Audit.Entry.Disposition` have two values.
 Class ProductionGuardian.LabDemo.Tools.AuthPolicy Extends %AI.Policy.Authorization
 {
 
@@ -93,13 +106,13 @@ Method %CanExecute(tool As %String, call As %DynamicObject, metadata As %Dynamic
     if name = "" {
         // FAIL CLOSED. A call we cannot identify is not a call we can authorise, and defaulting to
         // allow here would reintroduce the permissive default in a subtler form.
-        quit $$$ERROR($$$GeneralError, "tool call carried no name, so it cannot be authorised")
+        quit ..Deny(name, "tool call carried no name, so it cannot be authorised")
     }
 
     // Every tool needs PG_Read. Checked first so an unprivileged caller gets one clear answer
     // rather than a different one per tool.
     if '..HasResource(..#READRESOURCE) {
-        quit $$$ERROR($$$GeneralError, "'" _ name _ "' requires " _ ..#READRESOURCE _ ":USE")
+        quit ..Deny(name, "'" _ name _ "' requires " _ ..#READRESOURCE _ ":USE")
     }
 
     // The mutating tool needs the privileged resource ON TOP of PG_Read.
@@ -111,11 +124,32 @@ Method %CanExecute(tool As %String, call As %DynamicObject, metadata As %Dynamic
             // One line: a $$$ macro cannot span lines -- MPP5612 "Referenced macro missing right
             // paren". Building the message first keeps it readable without breaking the macro.
             set why = "'" _ name _ "' modifies a live production and requires " _ ..#WRITERESOURCE _ ":USE"
-            quit $$$ERROR($$$GeneralError, why)
+            quit ..Deny(name, why)
         }
     }
 
     quit $$$OK
+}
+
+/// Record the denial, then return it as the refusal. Private.
+///
+/// EVERY DENY PATH GOES THROUGH HERE, which is the point: an audit row that is written by three
+/// separate branches is one a fourth branch will forget. See the class comment for why the row is
+/// written here rather than by the audit policy -- the audit hook never runs for a denial.
+///
+/// The audit write CANNOT change the decision. A denial that failed to record is still a denial;
+/// returning $$$OK because the log was full would trade an unrecorded refusal for an unauthorised
+/// execution, which is the wrong direction. So the write is wrapped and its result ignored, and the
+/// refusal is returned either way.
+Method Deny(name As %String, why As %String) As %Status [ Private ]
+{
+    try {
+        do ##class(ProductionGuardian.LabDemo.Audit.Entry).Record(
+            $username, name, "", "", "denied", , , why)
+    } catch ex {
+        // See above: the decision stands regardless.
+    }
+    quit $$$ERROR($$$GeneralError, why)
 }
 
 /// True when the current user holds USE on a resource. Private.

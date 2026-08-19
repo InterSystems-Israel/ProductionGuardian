@@ -13,6 +13,8 @@ Developer A owns:
 |---|---|
 | `iris/setup/` | One-time ObjectScript setup scripts for the demo namespace |
 | `iris/labdemo/` | LABDEMO production class, HL7 generator, trigger toggles |
+| `iris/labdemo/Tools/` | MVP 2: the six MCP tools, the authorization and audit policies, the governed-manager factory |
+| `iris/labdemo/Audit/` | MVP 2: the persisted audit trail — AI Hub ships no audit store |
 | `services/metrics-proxy/` | Node.js proxy: polls `/api/monitor/metrics` + `/api/monitor/alerts`, exposes per-host JSON |
 
 Do **not** touch `services/detection-engine/`, `apps/dashboard/`, `contracts/` (read only), or any root config shared with other devs without a PR.
@@ -107,3 +109,48 @@ npm run mock
    - **`system_alert` outlives `Reset()`**, because the alert sits in the proxy's in-memory
      buffer on `:3001`, which IRIS cannot reach. Documented in the class and the README.
 4. `/api/monitor/alerts` forwarded as JSON at `/proxy/alerts`.
+
+---
+
+## 7. MVP 2 — the governed MCP tools (read this before touching `Tools/`)
+
+Full measurements are in `docs/mvp2-aihub-verified-api.md`. The four rules that matter here:
+
+**Every public ClassMethod on a `%AI.Tool` subclass becomes an LLM-callable tool.** Verified by
+reading `%AI.Tool.Generator`. A helper left public on `Tools.Resolve` is a second way to mutate a
+live production. Helpers are `[ Private ]`, and `Setup.AIHub.Run()` prints the discovered tool count
+on every boot so a seventh name shows up at boot rather than in review. **Six is the expected
+count.**
+
+**Governance is per-`%AI.ToolMgr` and held in memory — there is no setting.** So never construct a
+`%AI.ToolMgr` or call `%AI.Agent.UseToolSet` directly: both give you an ungoverned manager with no
+authorization check, no audit row, and `SetPoolSize` live. Go through
+`Tools.Governance.ToolManager()` or `Tools.Governance.GovernAgent()`, which cannot return one.
+
+**The runtime does not audit authorization denials.** It checks, then executes, then audits, so a
+denial throws before the audit hook. `Tools.AuthPolicy` writes that row itself. Anything that adds a
+new deny path must go through its `Deny()` helper or the refusal leaves no trace — which is the one
+event a security review actually asks about.
+
+**Tool return values reach an external LLM: metrics and configuration only, never message content
+or PHI** (root `CLAUDE.md` §2.1). `Ens_Util.Log` on this instance holds 61,772 rows carrying
+`PatientID` in plain text, so `GetRecentErrors` extracts an allowlisted error token and never returns
+log text. The audit table *inherits* that guarantee rather than re-enforcing it — if a tool ever
+returns PHI, it lands in `Audit.Entry.Result` in plain text.
+
+### Dev A MVP 2 acceptance
+
+| Criterion | State |
+|---|---|
+| Read tools return real evidence | met — six tools discovered, live values |
+| `set_pool_size` changes the live pool and is reversible | **dry-run verified only**; `before`/`after`/`reversal` correct, an apply has not been run against a live queue |
+| An unauthorized role is refused | met — observed, `iris/test/GovernanceProof.cls` |
+| Every call appears in the audit log | met for executions and for authorization denials |
+| RBAC roles and resources exist from a clean boot | met — `Setup.AIHub`, called by `FirstBoot` |
+| A principal can actually *use* the roles | needs `%DB_%DEFAULT` **as well**, from the invocation path — the `Guardian_*` roles stay minimal and grant only `PG_*`. Without it you get `<PROTECT>` before any policy is consulted |
+| LLM credential in the vault | **not met on the compose stack** — needs a key, and the current one must be rotated |
+
+```objectscript
+do ##class(ProductionGuardian.Setup.AIHub).Status()          // what is and is not in place
+do ##class(ProductionGuardian.LabDemo.Audit.Entry).Purge()   // reset the log between rehearsals
+```

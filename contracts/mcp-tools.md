@@ -26,7 +26,7 @@ silently disagrees with its neighbour is worse than one that is wrong out loud:
 |---|---|---|---|
 | dry-run | a `mode` on the endpoint | **no flag on the tool** | The endpoint's dry-run calls `get_pool_size` and never invokes the write tool. §3.6 |
 | `size` range | `2..8` | `1..8` | The tool must be able to express the reversal to `1`. §3.6 |
-| role names | `%Guardian_Resolve`, "illustrative, not ratified" | **ratified here** | §5.3 is the naming authority; the values match its examples |
+| role names | `Guardian_Resolve`, "illustrative, not ratified" | **ratified here** | §5.3 is the naming authority; the values match its examples |
 
 `investigation-api.md` is the other consumer: its `evidence[].tool` values are names from §1, and its
 §2.3 data boundary is the same boundary as §6 here, enforced one hop earlier.
@@ -44,8 +44,8 @@ silently disagrees with its neighbour is worse than one that is wrong out loud:
 | `get_processing_time` | `PG.Tools.Read` | read | `PG_Read` | `PG_Read` | `iris_interop_avg_*`, aggregated as the proxy aggregates them |
 | `set_pool_size` | `PG.Tools.Resolve` | **write** | `PG_Read` | **`PG_Resolve`** | `Ens.Config.Production` + `Ens.Director.UpdateProduction()` |
 
-`PG_Read` and `PG_Resolve` are **IRIS resources**, held by roles `%Guardian_Read` and
-`%Guardian_Resolve`. §5 explains the resource-not-role choice and why the write tool is
+`PG_Read` and `PG_Resolve` are **IRIS resources**, held by roles `Guardian_Read` and
+`Guardian_Resolve`. §5 explains the resource-not-role choice and why the write tool is
 **listable to `PG_Read` but executable only by `PG_Resolve`**.
 
 Two classes, not six, because discovery is per class: `%AI.Tool` exposes every public method of a
@@ -715,20 +715,31 @@ Three consequences:
 
 | Resource | Held by role | Grants |
 |---|---|---|
-| `PG_Read` | `%Guardian_Read` | listing and executing the five read tools; **listing** `set_pool_size` |
-| `PG_Resolve` | `%Guardian_Resolve` | **executing** `set_pool_size` |
+| `PG_Read` | `Guardian_Read` | listing and executing the five read tools; **listing** `set_pool_size` |
+| `PG_Resolve` | `Guardian_Resolve` | **executing** `set_pool_size` |
 
 **This file is where the names are ratified.** `resolve-api.md` §9.3 defers to it, calling the
-`%Guardian_Resolve` in its own examples "illustrative and not ratified here" and instructing Dev C to
+`Guardian_Resolve` in its own examples "illustrative and not ratified here" and instructing Dev C to
 render `audit.role` as an opaque string and never compare it to a literal. That instruction stands
 even now that the value is fixed: Dev C comparing against a literal is what would make a later rename
 a dashboard change. The names here match `resolve-api.md`'s examples so nothing has to be rewritten.
 
-Resources are named `PG_*` while roles are named `%Guardian_*`, which looks inconsistent and is not:
-the `%` prefix is the IRIS convention for a system-supplied role and is what `resolve-api.md`'s
-examples already carry, while a **custom resource must not use `%`** — that prefix is reserved and
-collides with the shipped `%Ens_*` / `%System_*` namespace. Two different naming rules, applied
-correctly, rather than one applied uniformly and wrongly.
+Resources are named `PG_*` and roles `Guardian_*` — **neither takes a `%` prefix.**
+
+CORRECTED 2026-08-18, and the original reasoning was backwards. This paragraph used to argue that
+roles carry `%` because it "is the IRIS convention for a system-supplied role", concluding that two
+different naming rules were being applied correctly. The premise is true and the conclusion does not
+follow: `%` marks a role as **system-supplied**, which is exactly why a *custom* role may not use it.
+IRIS refuses outright:
+
+```
+ERROR #887: Invalid role name '%Guardian_Read'
+```
+
+So the ratified names were unimplementable, and this was found by trying to create them rather than
+by review — the paragraph reads as a considered decision, which is what made it survive ratification.
+The rule is one rule, not two: `%` is reserved for what InterSystems ships, for both resources and
+roles. Custom names take no prefix.
 
 Resources gated with `$SYSTEM.Security.Check("PG_Resolve","USE")` rather than a `$ROLES` string
 match. That is the shape the shipped `%AI.Policy.ConsoleAuth` already uses — read from its
