@@ -220,9 +220,19 @@ ClassMethod CreateProvider() As %Status
             write "4b. resource ", ..#SECRETRESOURCE, ": ", $select(sc: "created", 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
         }
 
-        // Collection, then entry. Both idempotent by inspection rather than by relying on Create
-        // returning a benign error for an existing name -- an existing wallet must not be
-        // overwritten, because it may hold a key an operator rotated by hand.
+        // Collection, then entry, both idempotent by inspection rather than by relying on Create
+        // returning a benign error for an existing name.
+        //
+        // THE ENVIRONMENT VARIABLE IS THE SINGLE SOURCE OF TRUTH for the key, so the ENTRY below is
+        // rewritten on every boot when PG_LLM_API_KEY is set. An earlier version of this comment
+        // argued the opposite -- that an existing wallet must not be overwritten because it might
+        // hold a key rotated by hand -- while the code overwrote it anyway (@kskubach, #106). Both
+        // positions are defensible and holding both is a footgun: an operator who rotates in the
+        // wallet gets silently reverted on the next restart and diagnoses it as a rejected key.
+        //
+        // Rotation is therefore: change the variable, restart. DO NOT rotate by editing the wallet;
+        // it will be overwritten. The COLLECTION is left alone once it exists, because it carries
+        // only the resource bindings and nothing an operator would tune.
         if '##class(%Wallet.Collection).Exists(..#WALLET) {
             set sc = ##class(%Wallet.Collection).Create(..#WALLET, {"UseResource": (..#SECRETRESOURCE), "EditResource": (..#SECRETRESOURCE)})
             write "4b. wallet ", ..#WALLET, ": ", $select(sc: "created", 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
@@ -236,9 +246,31 @@ ClassMethod CreateProvider() As %Status
         // happen. Never printed -- only whether it was stored.
         set sc = ##class(%Wallet.KeyValue).Create(..#WALLETENTRY, {"Usage": "CUSTOM", "Secret": {"apikey": (key)}})
         if $$$ISERR(sc) {
-            // Create fails for an existing entry; replace it rather than leaving a stale key.
+            // ALREADY PRESENT. Rewrite it -- but NOT by deleting first (@kskubach, #106).
+            //
+            // `Delete` then `Create` turns a *stale* key into *no* key when the second call fails,
+            // and this runs on every boot from FirstBoot, so one transient failure takes out a demo
+            // that was working. The old value is captured first and restored if the rewrite fails,
+            // so the worst case is the key the instance already had.
+            set previous = ""
+            try {
+                set existing = ##class(%Wallet.KeyValue).%OpenId(..#WALLETENTRY)
+                if $isobject(existing) {
+                    set previous = existing.Secret
+                }
+            } catch {
+                set previous = ""
+            }
             do ##class(%Wallet.KeyValue).Delete(..#WALLETENTRY)
             set sc = ##class(%Wallet.KeyValue).Create(..#WALLETENTRY, {"Usage": "CUSTOM", "Secret": {"apikey": (key)}})
+            if $$$ISERR(sc), previous '= "" {
+                // Put back what was there. Reported, because a boot that silently reverted to an
+                // older key would present as the provider rejecting a good one.
+                do ##class(%Wallet.KeyValue).Delete(..#WALLETENTRY)
+                set restore = ##class(%Wallet.KeyValue).Create(..#WALLETENTRY, {"Usage": "CUSTOM", "Secret": (previous)})
+                write "4b. wallet entry rewrite FAILED; previous value ",
+                    $select(restore: "restored", 1: "COULD NOT BE RESTORED"), !
+            }
         }
         write "4b. wallet entry ", ..#WALLETENTRY, ": ", $select(sc: "stored (" _ $length(key) _ " chars, not logged)", 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
         if $$$ISERR(sc) {
@@ -249,9 +281,24 @@ ClassMethod CreateProvider() As %Status
         set cfg = {"model_provider": (..#PROVIDER), "model": (model), "api_key": ("secret://" _ ..#WALLETENTRY _ "#apikey")}
         set sc = ##class(%ConfigStore.Configuration).Create("AI", "LLM", "", "pgdetective", cfg)
         if $$$ISERR(sc) {
-            // Already present: replace, so a model change in the environment takes effect.
+            // Already present: replace, so a PG_LLM_MODEL change takes effect. Same restore-on-
+            // failure discipline as the wallet entry above -- this config is what BuildAgent reads,
+            // so losing it disables AI Detective entirely.
+            // Get(fqn, .config) -- a DOTTED name and an output, not the four positional arguments
+            // Create() takes. Passing Create's shape throws <PARAMETER> at runtime while compiling
+            // cleanly, and the catch turned that into "LLM provider: FAILED" on a boot where the
+            // config had in fact been written. Read from the compiled FormalSpec rather than
+            // assumed symmetrical with Create.
+            set previousCfg = ""
+            do ##class(%ConfigStore.Configuration).Get("AI.LLM.pgdetective", .previousCfg)
             do ##class(%ConfigStore.Configuration).Delete("AI.LLM.pgdetective")
             set sc = ##class(%ConfigStore.Configuration).Create("AI", "LLM", "", "pgdetective", cfg)
+            if $$$ISERR(sc), $isobject(previousCfg) {
+                do ##class(%ConfigStore.Configuration).Delete("AI.LLM.pgdetective")
+                set restoreCfg = ##class(%ConfigStore.Configuration).Create("AI", "LLM", "", "pgdetective", previousCfg)
+                write "4b. config rewrite FAILED; previous value ",
+                    $select(restoreCfg: "restored", 1: "COULD NOT BE RESTORED"), !
+            }
         }
         write "4b. config AI.LLM.pgdetective: ", $select(sc: "created, model = " _ model, 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
     } catch ex {
