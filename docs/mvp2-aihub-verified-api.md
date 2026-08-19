@@ -129,15 +129,185 @@ execution.
 
 - ~~No LLM provider is configured.~~ **CLOSED** -- see the provider section at the end of this
   file. A real OpenAI call and an agent tool call have both been made from this instance.
-- **What an audit record CONTAINS, and whether it is queryable.** Enforcement is confirmed (see
-  above), but the written record has not been observed, and Dev C needs to display one. This is
-  now the highest-value remaining unknown.
-- **Which policy implementation is active by default.** `%AI.Policy.ConsoleAuth` and
-  `%AI.Policy.ConsoleAudit` exist alongside the abstract bases, so something is wired out of the
-  box -- whether it permits everything until configured is unknown, and "enforced by the runtime"
-  is only a safety property if the configured policy actually denies.
+  **But not on the compose stack** -- see "None of it was on `pg-iris`" below.
+- ~~**What an audit record CONTAINS, and whether it is queryable.**~~ **CLOSED 2026-08-19** -- the
+  answer is that *nothing is written at all*. See "There is no audit store" below.
+- ~~**Which policy implementation is active by default.**~~ **CLOSED 2026-08-19** -- none is. A
+  fresh `%AI.ToolMgr` reports `AuthPolicy: <none>`, `AuditPolicy: <none>`,
+  `DiscoveryPolicy: <none>`. The default permits everything and records nothing.
 - **`@{wallet.*}` substitution** was broken on build 159 per the skill (only `env` and `config`
   registered). Unknown on 126. `%AI.Utils.WalletStore` exists, but existence is not function.
+
+## There is no audit store — the hook fires into nothing
+
+Measured 2026-08-19 on `pg-iris`. `%AI.Policy.Audit` is an abstract base whose one interesting
+method is
+
+```
+%LogExecution(call:%DynamicObject, metadata:%DynamicObject, result:%DynamicObject,
+              duration:%Integer, status:%Status) -> %Status
+```
+
+The only shipped implementation, `%AI.Policy.ConsoleAudit`, writes an ANSI-coloured box to the
+current device and returns. There is no `%AI.Audit.*` persistent class — searched
+`%Dictionary.CompiledClass` for `%AI.*` matching AUDIT or LOG and the only hits are the policy
+classes themselves.
+
+So `mcp-tools.md` §5.5's "every one of the six tools is audited on every call" was true of the
+**hook** and false of the **record**, and MVP 2 §3's final demo step is showing an audit entry.
+`iris/labdemo/Audit/Entry.cls` is the store; `iris/labdemo/Tools/AuditPolicy.cls` is the policy that
+fills it.
+
+### A real `%LogExecution` payload, captured from a live `GetPoolSize("Cloud API")`
+
+```
+call     {"id":"call_id","name":"GetPoolSize","arguments":"{\"host\":\"Cloud API\"}"}
+metadata {}
+result   {"tool_name":"GetPoolSize","result_json":"{...}","display_text":null}
+duration 0
+status   OK
+```
+
+Four things there are not what a reader would assume, and each one changed the implementation:
+
+| Assumption | Reality |
+|---|---|
+| `call.id` identifies the call | it is the **literal string `"call_id"`** on every call — unusable as `auditId` |
+| `call.arguments` is an object | it is a **JSON string**; iterating it yields nothing |
+| `metadata` carries caller identity | it is **empty** `{}` — `actor` has to come from `$username` |
+| `duration` is meaningful | **0** for a call `ExecuteTool` itself timed at `0.0071 s`; it is integer ms |
+
+Tool names are the **ObjectScript method names** — `GetPoolSize`, `SetPoolSize` — not the
+snake_case names in `mcp-tools.md`'s catalogue. Anything joining the two must map.
+
+## A refused call is NOT audited — the contracts overpromise
+
+**This is the most important finding in this file.** `contracts/mcp-tools.md` §5.5 and
+`resolve-api.md` §8 both state that refusals, `not_authorized` explicitly, are audited:
+
+> Every call produces exactly one attributable audit event: applies, refusals, and dry-runs alike.
+
+The runtime cannot deliver that. `ExecuteTool` checks authorization, **then** executes, **then**
+audits — so an authorization denial throws `<%AICore>ToolAccessDenied` at step one and the audit
+hook is never reached. Measured with a deny-all policy registered: `%LogExecution` not called, **0
+rows written**.
+
+The distinction is sharp, and only one half was broken:
+
+| Case | Audited by the runtime? |
+|---|---|
+| successful read | yes |
+| dry-run of the write tool | yes |
+| **tool-level** refusal (our own bounds guard returns `outcome: "refused"`) | yes — the tool ran |
+| unknown host | yes |
+| **authorization** denial (`%CanExecute` refuses) | **no** |
+
+The security-relevant event was the one going unrecorded — an audit log that records only what
+succeeded cannot answer *did anything try to write to the production*.
+
+**Fixed in `iris/labdemo/Tools/AuthPolicy.cls`**, which writes its own `denied` row before
+returning the refusal. It is the only code that ever learns a denial happened, so it is the only
+place the row can come from. That is why `Audit.Entry.Disposition` has two values and two writers.
+
+**Two contract corrections are owed** (`contracts/` is read-only — these are change requests, not
+edits): §5.5 and §8 should say that the *runtime* audits executions and that authorization denials
+are audited by our policy, and `resolve-api.md` §8's `auditId` example `aihub-audit-44812` implies
+an AI Hub audit store that does not exist. The handles are `pg-audit-<n>` — minted by us, because
+inventing AI Hub provenance is the same defect as the mock inventing an id.
+
+## Policies are per-ToolMgr and in memory — not a setting
+
+`SetAuthPolicy` / `SetAuditPolicy` attach the policy to the Rust tool manager identified by that
+object's `%token`:
+
+```objectscript
+Set ..AuditPolicy = policy
+If ..%token '= "" { Do $ZF(-6, $$$IrisLLMLibrary, $$$LLMTOOLMANAGERADDAUDIT, ..%token, policy) }
+```
+
+There is no persisted configuration, so **a first-boot script cannot switch governance on once.**
+Every caller that builds its own `%AI.ToolMgr` — or its own `%AI.Agent`, which builds one — gets an
+ungoverned manager: no authorization check, no audit row, and `SetPoolSize` fully callable against
+the live production. `%AI.Agent.UseToolSet` delegates straight to
+`..ToolManager.RegisterToolSet(className)`, so the natural thing to write is the unsafe thing.
+
+`iris/labdemo/Tools/Governance.cls` is the mitigation: one factory, it cannot return an ungoverned
+manager, and `GovernAgent()` is what Dev B's AI Detective should call instead of `UseToolSet`.
+
+## None of it was on `pg-iris`
+
+Measured 2026-08-19 against the running compose stack, up 2 days:
+
+| | Present |
+|---|---|
+| `PG_Read` / `PG_Resolve` resources | no |
+| `Guardian_Read` / `Guardian_Resolve` roles | no |
+| `AI.Secrets` resource | no |
+| `PGSecrets` wallet collection | no |
+| `AI.LLM.pgdetective` config | no — `ERROR #5809` |
+| `Tools.Read` / `Tools.Resolve` / `Tools.AuthPolicy` compiled | **no** |
+
+Everything the provider section below records as done *was* done — by hand, on the hand-built
+`iris-webinar` instance the MCP dev connection used to point at. None of it reached the container
+the demo runs from, and the tool classes were not even compiled there because the container had
+been up since before #90 landed.
+
+That is the failure `FirstBoot` exists to prevent (#70, #72): a step a person performed on one
+instance is not a step the stack performs. `iris/setup/AIHub.cls` now creates the resources and
+roles idempotently and `FirstBoot` calls it, so a clean `docker compose up` has the boundary armed.
+It deliberately does **not** create the LLM credential — that needs a key, a key does not belong in
+a repository, and this one must be rotated anyway — but it reports the config as missing and prints
+the sequence to create it.
+
+### Observed denial, which is the acceptance criterion
+
+`resolve-api.md` §9.4 and `mcp-tools.md` §5.6(b) both require an *observed* denial rather than a
+passing allow. `iris/test/GovernanceProof.cls` makes it repeatable. It cannot use
+`iris/test/StubPolicy.cls` for this: `$SYSTEM.Security.Check` returns 1 for every resource when the
+caller holds `%All`, and every session that can compile the code holds `%All`. So it creates a real
+throwaway user with a generated password, logs in as it, and attempts the write:
+
+```
+1. logged in as pg_proof_readonly, roles = Guardian_Read
+2. GetPoolSize : executed  <- expected executed
+3. SetPoolSize : denied    <- expected denied
+   error   : ERROR <%AICore>ToolAccessDenied: Tool access denied: Global policy denied:
+             ERROR #5001: 'SetPoolSize' modifies a live production and requires PG_Resolve:USE
+   auditId : pg-audit-6
+4. audit row for the denial:
+   {"auditId":"pg-audit-6","actor":"pg_proof_readonly","role":"Guardian_Read",
+    "tool":"SetPoolSize","recordedAt":"2026-08-19T10:53:43Z","source":"live",
+    "disposition":"denied","denialReason":"'SetPoolSize' modifies a live production
+    and requires PG_Resolve:USE"}
+
+PASS: read allowed, write refused, refusal audited.
+```
+
+**A principal needs a database privilege the contracts never mention.** A user holding only
+`PG_Read:U` logged in fine and then died with `<PROTECT> ... Access Denied` on
+`Tools.Governance.1` — before any policy was consulted, because it could not read the routine.
+
+**The `Guardian_*` roles deliberately do not grant it.** I first folded `%DB_%DEFAULT:RW` into both
+roles; @Ari-Glikman argued in the #94 review that the role should stay minimal and mean one thing,
+and he is right. The deciding reason is what the grant would *say*: on this image every database
+shares the `%DB_%DEFAULT` resource, so folding it in gives a role whose whole purpose is "may look,
+may not act" the ability to write every database on the instance. A least-privilege boundary that
+hands out broad write to keep a fixture working is not one.
+
+Database access comes from the invocation path instead — the CSP application hosting
+`REST.AgentDispatcher` for the demo, and the throwaway user in `GovernanceProof` for the direct
+session proof (the shipped `%DB_%DEFAULT` role, granted to the *user*). `Setup.AIHub.Run()` prints
+the requirement rather than granting it, because a requirement nobody states is how that `<PROTECT>`
+gets misdiagnosed as a policy bug.
+
+**A guard that could not work, and the reason it is worth recording.** The obvious fix to "the proof
+died before reaching the policy" is to assert inside the unprivileged half that the tool call was
+reached. That is not implementable: with the principal short of database access, `Invoke` dies while
+paging in `Governance.1`, so the process is gone before the result variable is assigned and no line
+after it runs. Verified by stripping the role and re-running. The check therefore lives on the
+**privileged** side — `Prove()` reads the probe user's granted roles back and refuses to hand over a
+password if the database role is missing, since an inconclusive run whose output reads
+`<PROTECT> ... Access Denied` looks exactly like the boundary working.
 
 ## The MCP dev connection
 
