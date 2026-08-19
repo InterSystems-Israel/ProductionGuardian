@@ -31,11 +31,23 @@
 /// broken. `evidence[].source` is the distinction: `mcp_tool` is NOW, `snapshot` is THEN. Worth
 /// stating because the transcript looks like a defect otherwise.
 ///
-/// THIS CLASS ADDS NO AUTHORITY. `/labdemo/resolve` calls `Tools.Resolve.SetPoolSize`, which is
-/// gated by `%AI.ToolMgr.ExecuteTool`'s authorization check and audited by the same runtime path.
-/// Every guard -- the single whitelisted host, the 2..8 bounds, the production checks -- lives in
-/// the tool, not here. A bug in this file cannot widen what may be written; it can only fail to
-/// reach the tool.
+/// THIS CLASS ADDS NO AUTHORITY -- BUT IT MUST GO THROUGH `Tools.Governance` TO HAVE NONE.
+///
+/// This comment previously said the write was "gated by `%AI.ToolMgr.ExecuteTool`'s authorization
+/// check and audited by the same runtime path". That was FALSE as written (@kskubach, #92).
+/// `ExecuteTool` does consult a policy -- but policies attach per manager INSTANCE, in memory, and
+/// a freshly constructed `%AI.ToolMgr` has none. It therefore asked a policy that permits
+/// everything and audited into nothing, while this comment asserted the opposite.
+///
+/// An unimplemented guard is a gap. A guard DOCUMENTED as present is a trap, because a reviewer
+/// reading this comment has no reason to check. This was the second kind, which is why the
+/// correction is here in full rather than quietly dropped.
+///
+/// The correct statement is conditional. Every guard -- the single whitelisted host, the 2..8
+/// bounds, the production checks, the PG_Resolve requirement, the audit row -- lives in the tool
+/// and its policies, not here. What this file must not do is build its own manager; that is the
+/// one way a bug here could widen what may be written. `Tools.Governance` is the only documented
+/// way to obtain a manager that cannot.
 Class ProductionGuardian.LabDemo.REST.AgentDispatcher Extends %CSP.REST
 {
 
@@ -114,28 +126,63 @@ ClassMethod Resolve() As %Status
             return ..Fail(400, "host and size are required")
         }
 
-        // THROUGH %AI.ToolMgr, not by calling the class method directly. That indirection IS the
-        // safety property: ExecuteTool checks the authorization policy before executing and writes
-        // the audit record after, so a call routed around it would be an unauthorised, unaudited
-        // production write that looked identical from here.
-        // RegisterToolSet, not AddToolSetInstance -- the latter is PRIVATE and throws
-        // <PRIVATE METHOD> at runtime while compiling cleanly. Checked the method list for the
-        // public entry point rather than guessing a second time.
-        set mgr = ##class(%AI.ToolMgr).%New()
-        set sc = mgr.RegisterToolSet("ProductionGuardian.LabDemo.Tools.Resolve")
-        if $$$ISERR(sc) {
-            return ..Fail(500, "could not register the write tool: " _ $system.Status.GetErrorText(sc))
-        }
+        // THROUGH Tools.Governance, not through a bare %AI.ToolMgr. This line is the difference
+        // between a governed write and an ungoverned one, and the earlier version of this method
+        // was the latter while its class comment claimed otherwise (@kskubach, #92).
+        //
+        // WHY A BARE MANAGER IS UNSAFE. Policies are attached PER INSTANCE, in memory, to the Rust
+        // manager behind that object's %token -- there is no persisted setting and no default that
+        // denies. So ##class(%AI.ToolMgr).%New() reports `AuthPolicy: <none>` and executes
+        // SetPoolSize against the live production with no PG_Resolve check and no audit row.
+        // Reproduced on this branch before changing it:
+        //
+        //     AuthPolicy : <none>
+        //     AuditPolicy: <none>
+        //     ExecuteTool: SUCCEEDED -> {"outcome":"previewed","before":{"poolSize":1},...}
+        //
+        // It works perfectly, which is what makes it dangerous: forgetting to attach a policy is
+        // not a visible mistake.
+        //
+        // Invoke() rather than ToolManager() + ExecuteTool, for the auditId. The handle is only
+        // knowable after the call, and resolve-api.md §8 requires it in every response -- a caller
+        // that executes and then forgets to read it publishes a response claiming an audit entry
+        // it cannot point at.
         set args = {"host": (host), "size": (+size), "dryRun": (dryRun)}
-        set result = mgr.ExecuteTool("SetPoolSize", args)
+        set governed = ##class(ProductionGuardian.LabDemo.Tools.Governance).Invoke("SetPoolSize", args)
 
-        if '$isobject(result) {
+        if '$isobject(governed) {
             return ..Fail(502, "write tool returned no result")
         }
+        // A DENIAL IS 403, NOT 500. The policy refused a caller lacking PG_Resolve -- that is the
+        // boundary working, and reporting it as a server fault would send someone to debug the
+        // production instead of granting a role. The auditId is included because the denial IS
+        // audited: AuthPolicy writes that row itself, since the runtime throws before its own
+        // audit hook runs.
+        if governed.outcome = "denied" {
+            set %response.Status = 403
+            set denial = {"outcome": "refused", "refusal": {"code": "not_authorized", "detail": (governed.error)}, "audit": {"auditId": (governed.auditId)}}
+            write denial.%ToJSON()
+            return $$$OK
+        }
+        if governed.outcome '= "executed" {
+            return ..Fail(503, "write tool unavailable: " _ governed.%Get("error", "unknown"))
+        }
+
         // ExecuteTool wraps the tool's return in {"timing":..., "value":...}. Unwrap here rather
         // than in the engine: the wrapper is an AI Hub implementation detail, and leaking it across
         // the HTTP boundary would make contracts/resolve-api.md's shape depend on it.
-        set payload = $select($isobject(result.%Get("value")): result.value, 1: result)
+        set result = governed.result
+        set payload = result
+        if $isobject(result), $isobject(result.%Get("value")) {
+            set payload = result.value
+        }
+        if '$isobject(payload) {
+            return ..Fail(502, "write tool returned an unreadable result")
+        }
+        // The audit handle travels WITH the outcome, in one object. §8 requires it on every
+        // response, and a null one on an applied write is what tells the engine to treat the write
+        // as unverified rather than as a silent success.
+        set payload.audit = {"auditId": (governed.auditId)}
         write payload.%ToJSON()
         return $$$OK
     } catch ex {
@@ -159,16 +206,26 @@ ClassMethod BuildAgent(Output pStatus As %Status) As %AI.Agent [ Private ]
     set agent.Model = details."model"
     set agent.SystemPrompt = ..SystemPrompt()
 
-    // Read tools ONLY. The agent investigates; it does not act. Wiring Tools.Resolve here would
-    // let a model call the write tool as part of its reasoning loop, with no human between the
-    // recommendation and the production -- which is the single thing root CLAUDE.md §2.1 forbids.
-    set pStatus = agent.UseToolSet("ProductionGuardian.LabDemo.Tools.Read")
+    // %Init() FIRST, then govern. That is the REVERSE of what this method used to do, and the
+    // order is forced: %Init builds the agent's ToolManager, and GovernAgent attaches the policies
+    // to that object. There is nothing to govern before %Init has run, and GovernAgent says so
+    // rather than attaching to nothing and reporting success.
+    set pStatus = agent.%Init()
     if $$$ISERR(pStatus) {
         quit $$$NULLOREF
     }
-    // AFTER UseToolSet: %Init wires the provider and the tools, so tools added later are not
-    // registered. Verified in the skill and by the introspected method list.
-    set pStatus = agent.%Init()
+
+    // GovernAgent, NOT UseToolSet. UseToolSet delegates straight to
+    // ..ToolManager.RegisterToolSet, so it registers tools on a manager with NO policies --
+    // meaning every read the agent performed was unaudited, while MVP 2 §2.2 promises "every MCP
+    // tool call, read AND write, is recorded". The natural call is the ungoverned one (#94).
+    //
+    // pIncludeWrite = 0: read tools only. The agent investigates; it does not act. Registering
+    // Tools.Resolve here would let a model call the write tool inside its own reasoning loop with
+    // no human between the recommendation and the production -- the single thing root CLAUDE.md
+    // §2.1 forbids. This is defence in depth rather than the boundary: AuthPolicy refuses
+    // SetPoolSize without PG_Resolve even when the tool IS registered. Both hold.
+    set pStatus = ##class(ProductionGuardian.LabDemo.Tools.Governance).GovernAgent(agent, 0)
     if $$$ISERR(pStatus) {
         quit $$$NULLOREF
     }
