@@ -62,6 +62,33 @@ ClassMethod Run(count As %Integer = 20, delaySecs As %Double = 2) As %Status
 ///
 /// Same pattern as the injected delay in PatientDemographicsOperation: a global read at runtime,
 /// so nothing is edited or recompiled mid-demo, and Triggers.Reset() clears it.
+///
+/// IT ALSO PAUSES ABOVE A QUEUE CAP, and that is a safety valve rather than a demo nicety (#101).
+/// `Cloud API` POSTs to the SAME embedded web server that serves the Management Portal, the
+/// /api/monitor/ endpoints the metrics proxy polls, and the agent dispatcher -- so this generator
+/// is, transitively, a load generator against the instance the whole stack depends on. On
+/// 2026-08-19 a long armed run reached ~2,650 queued and that web server stopped serving
+/// ENTIRELY: connections accepted, nothing answered, for a static file as well as a CSP page. The
+/// Portal, the metrics endpoint and the dispatcher all went down together and it took a
+/// `compose down` to recover.
+///
+/// The cause is not proven (#101 ranks the options; mod_status is not enabled, so worker/keep-alive
+/// exhaustion fits the evidence but is inference). The cap does not depend on the diagnosis being
+/// right: no demo needs a 2,600-message backlog, and the scenario's SHAPE -- a queue building, then
+/// draining once the pool grows -- is unaffected by bounding it. A few hundred messages
+/// demonstrates a bottleneck exactly as well as a few thousand.
+///
+/// PAUSES, DOES NOT STOP. Stopping would end the demo: inflow has to resume once the fix drains
+/// the queue, or the recovery shows a drained queue with no traffic behind it, which looks like the
+/// production died rather than recovered. So above the cap it waits and re-checks, and inflow
+/// returns on its own as soon as the queue falls back under.
+/// The config item whose queue the cap watches. Named here rather than repeated as a literal --
+/// root CLAUDE.md §5 keeps the host list in Production.cls, and a copied name is what went stale
+/// when FHIR Transform was removed. Triggers.#OPERATION is the same value; this class cannot
+/// reference it without a circular dependency, so the two are checked against each other by
+/// Triggers.Status() rather than by being one copy.
+Parameter Target = "Cloud API";
+
 ClassMethod RunContinuous(delaySecs As %Double = 2)
 {
     set sc = ..EnsureDropDir()
@@ -82,6 +109,39 @@ ClassMethod RunContinuous(delaySecs As %Double = 2)
         // argument.
         set override = +$get(^ProductionGuardian.Trigger("RateSecs"), 0)
         hang $select(override > 0: override, 1: delaySecs)
+
+        // QUEUE CAP. Checked after the hang so the first message always goes out -- a cap that
+        // could stall before producing anything would make a misconfigured global look like a dead
+        // generator.
+        //
+        // 0 or unset disables it, because the cap must never be the reason a demo produces no
+        // traffic. Triggers.Reset() clears the global, so the default state is uncapped exactly as
+        // before this change.
+        set cap = +$get(^ProductionGuardian.Trigger("QueueCap"), 0)
+        if cap > 0 {
+            set waited = 0
+            // Ens.Queue.GetCount is the same read Triggers.Status() uses -- the authoritative
+            // depth, not the proxy's copy, because this must hold even with the proxy down.
+            while ##class(Ens.Queue).GetCount(..#Target) >= cap {
+                if waited = 0 {
+                    write "  PAUSED: queue at cap (", cap, "), waiting for it to drain", !
+                }
+                hang 2
+                set waited = waited + 2
+                // A bound on the pause itself, so a permanently stuck queue cannot silence the
+                // generator forever. 300s is far longer than any drain in this scenario (a pool-4
+                // drain of 2,600 messages takes ~20 minutes at the demo's rates; 300s covers every
+                // depth the cap allows) and short enough that a wedged production still ends up
+                // showing traffic rather than an unexplained silence.
+                if waited >= 300 {
+                    write "  RESUMING despite the cap after ", waited, "s -- the queue is not draining", !
+                    quit
+                }
+            }
+            if waited > 0 {
+                write "  resumed after ", waited, "s", !
+            }
+        }
         set i = i + 1
     }
 }

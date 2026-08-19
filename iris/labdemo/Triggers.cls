@@ -350,7 +350,7 @@ ClassMethod SystemAlert(pHost As %String = {..#OPERATION}) As %Status
 /// So the default leaves headroom: 2/sec in against 4/sec out drains ~2/sec, and the backlog the
 /// demo built visibly disappears. Raise pRateSecs to make the drain faster and more dramatic;
 /// lower it toward 0.25 only if you want to demonstrate that a pool of 4 is NOT enough.
-ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Double = 0.5, pWarmSeconds As %Integer = 75) As %Status
+ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Double = 0.5, pWarmSeconds As %Integer = 75, pQueueCap As %Integer = 600) As %Status
 {
     set sc = ..CheckProduction()
     if $$$ISERR(sc) {
@@ -365,6 +365,25 @@ ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Doubl
         // filesystem allows, which takes the instance down instead of demonstrating a queue.
         write "REFUSED  an inflow interval of ", pRateSecs, "s would spin the generator", !
         quit $$$ERROR($$$GeneralError, "pRateSecs must be > 0")
+    }
+    if pQueueCap < 0 {
+        write "REFUSED  a negative queue cap is meaningless; pass 0 to disable the cap", !
+        quit $$$ERROR($$$GeneralError, "pQueueCap must be >= 0")
+    }
+    // 600 by default, and the number is a judgement rather than a measurement: it is comfortably
+    // above the 50-message absolute floor queue_buildup needs and roughly a quarter of the ~2,650
+    // depth at which the embedded web server stopped serving (#101). A queue of 600 at pool 1 is
+    // ~10 minutes of backlog, which is more than any rehearsal needs to show a bottleneck.
+    //
+    // Set BEFORE the throttle goes on, so there is no window where inflow is raised and the cap is
+    // not yet in force.
+    if pQueueCap > 0 {
+        set ^ProductionGuardian.Trigger("QueueCap") = pQueueCap
+    } else {
+        // Explicit 0 means uncapped, and it is worth saying out loud: this is the configuration
+        // that took the stack down, so someone choosing it should see that they chose it.
+        kill ^ProductionGuardian.Trigger("QueueCap")
+        write "  QUEUE CAP DISABLED by request -- inflow will build without bound (#101)", !
     }
 
     // Stash before changing anything, and only if not already stashed -- arming twice must not
@@ -441,6 +460,14 @@ ClassMethod Reset() As %Status
     if $data(^ProductionGuardian.Trigger("DispatcherMs")) {
         kill ^ProductionGuardian.Trigger("DispatcherMs")
         write "  cleared the downstream dispatcher throttle", !
+    }
+    // The cap goes AFTER the inflow rate is restored, deliberately. Cleared first, the generator
+    // would be uncapped for the interval it takes the rate to drop -- brief, but it is the exact
+    // combination (raised inflow, no cap) that #101 was about, so the ordering closes the window
+    // rather than shortening it.
+    if $data(^ProductionGuardian.Trigger("QueueCap")) {
+        kill ^ProductionGuardian.Trigger("QueueCap")
+        write "  cleared the generator queue cap", !
     }
 
     // Pool size back to what it WAS, by the same rule as the port above: restore the stashed
@@ -522,6 +549,11 @@ ClassMethod Status() As %Status
     write "  dispatcher     : ", $select(thr > 0: thr _ "ms per POST  <- downstream throttled", 1: "no throttle"), !
     set rate = +$get(^ProductionGuardian.Trigger("RateSecs"), 0)
     write "  HL7 inflow     : ", $select(rate > 0: rate _ "s per message  <- rate overridden", 1: "generator default"), !
+    // Reported for the same reason as the two above -- invisible otherwise -- and the UNCAPPED
+    // state is the one worth seeing, because that is the configuration #101 was about. So the
+    // absent case says "uncapped" rather than staying quiet.
+    set cap = +$get(^ProductionGuardian.Trigger("QueueCap"), 0)
+    write "  queue cap      : ", $select(cap > 0: cap _ " messages  <- generator pauses above this", 1: "UNCAPPED (#101)"), !
     if $data(^ProductionGuardian.Trigger("PoolWas")) {
         write "  pool stashed   : ", ^ProductionGuardian.Trigger("PoolWas"), "  <- Reset() will restore this", !
     }
