@@ -181,7 +181,20 @@ ClassMethod Refuse(out As %DynamicObject, code As %String, detail As %String) As
     // The reason is surfaced because it is what lets a UI explain WHY Approve is disabled, but it
     // names only the rule and the bound -- never instance data, since a refusal string crosses the
     // same boundary to the model as any other tool output.
-    set out.refusal = { "code": (code), "detail": (detail) }
+    // §5 FIELD NAMES: reason, message, checkedBy. This emitted { code, detail } until
+    // 2026-08-19 -- a drift from the ratified contract in the object Dev C renders when Approve is
+    // refused, so their banner read `undefined` (@kskubach, #92). The parameter names are kept as
+    // code/detail because that is what every call site passes; only the wire shape was wrong.
+    //
+    // checkedBy is "iris" unconditionally, and it is a fact rather than a label: this method only
+    // runs inside the tool, so a refusal carrying it WAS decided by the production's own guard and
+    // not by the engine's convenience validation.
+    set out.refusal = { "reason": (code), "message": (detail), "checkedBy": "iris" }
+    // §5 carries the range on an out_of_bounds refusal so a UI can state it without hardcoding a
+    // copy -- which is the #84 stale-number pattern waiting to happen.
+    if code = "out_of_bounds" {
+        set out.refusal.bounds = { "min": (..#MINSIZE), "max": (..#MAXSIZE) }
+    }
     quit out
 }
 

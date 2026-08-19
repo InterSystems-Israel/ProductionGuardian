@@ -186,24 +186,47 @@ export function liveResolveTool(
  */
 export function mockResolveTool(initialPoolSize = 1): ResolveDeps['callTool'] {
   let pool = initialPoolSize;
+  let auditSeq = 0;
   return async (action, dryRun) => {
     const before = pool;
     const reversal = { host: action.host, size: before, capturedFrom: 'mock' };
+    // A §8 audit block on every mock reply, with `source: "mock"` -- which is the field that keeps
+    // it honest. Omitting audit here would let Dev C build the approve flow against responses with
+    // no attribution and then meet it for the first time against a live production. Emitting it
+    // with `source: "live"` would be worse: an audit entry claiming to be real.
+    auditSeq += 1;
+    const audit = {
+      auditId: `mock-audit-${auditSeq}`,
+      actor: 'mock',
+      role: 'Guardian_Resolve',
+      tool: dryRun ? 'get_pool_size' : 'set_pool_size',
+      recordedAt: '2026-08-19T00:00:00Z',
+      source: 'mock',
+    };
     if (action.size < 2 || action.size > 8) {
       return {
         outcome: 'refused',
         before: { poolSize: before },
         after: null,
-        refusal: { code: 'out_of_bounds', detail: 'size must be an integer between 2 and 8' },
+        // Contract §5 field names, matching the real tool exactly -- a mock that emitted
+        // `{code, detail}` would let Dev C build a banner against fields the live path does not
+        // send, which is how a demo fails only when it goes live.
+        refusal: {
+          reason: 'out_of_bounds',
+          message: 'size must be an integer between 2 and 8',
+          checkedBy: 'iris',
+          bounds: { min: 2, max: 8 },
+        },
+        audit,
       };
     }
     if (before === action.size) {
-      return { outcome: 'no_change', before: { poolSize: before }, after: { poolSize: before }, reversal };
+      return { outcome: 'no_change', before: { poolSize: before }, after: { poolSize: before }, reversal, audit };
     }
     if (dryRun) {
-      return { outcome: 'previewed', before: { poolSize: before }, after: { poolSize: action.size }, reversal };
+      return { outcome: 'previewed', before: { poolSize: before }, after: { poolSize: action.size }, reversal, audit };
     }
     pool = action.size;
-    return { outcome: 'applied', before: { poolSize: before }, after: { poolSize: pool }, reversal };
+    return { outcome: 'applied', before: { poolSize: before }, after: { poolSize: pool }, reversal, audit };
   };
 }

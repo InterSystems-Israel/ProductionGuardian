@@ -178,13 +178,22 @@ test('a refusal is a NORMAL response carrying the code, not an error', async () 
     outcome: 'refused',
     before: { poolSize: 1 },
     after: null,
-    refusal: { code: 'host_not_permitted', detail: 'only Cloud API may be adjusted' },
+    refusal: {
+      reason: 'not_whitelisted_host',
+      message: 'this tool may only change Cloud API',
+      checkedBy: 'iris',
+    },
   });
   // §5.2. A 500 would make "the policy forbids this" indistinguishable from "the production is
   // broken", and the operator's next action differs completely between those two.
   const res = await resolve({ mode: 'apply', action: { ...ACTION, host: 'EMR Source' } }, deps);
   assert.equal(res.outcome, 'refused');
-  assert.equal(res.refusal?.code, 'host_not_permitted');
+  // §5 field names. `reason` from the contract's closed set, `message` rendered verbatim by the
+  // UI, `checkedBy` naming which component decided -- `iris` means the production's own guard
+  // refused, not this service's convenience validation.
+  assert.equal(res.refusal?.reason, 'not_whitelisted_host');
+  assert.equal(res.refusal?.checkedBy, 'iris');
+  assert.match(res.refusal?.message ?? '', /Cloud API/);
   assert.equal(res.after, null);
   assert.equal(res.confirmation, null);
   assert.equal(res.failure, null);
@@ -333,7 +342,9 @@ test('mockResolveTool refuses out-of-bounds like the real tool does', async () =
   for (const size of [1, 0, -4, 9, 64]) {
     const res = await resolve({ mode: 'apply', action: { ...ACTION, size } }, deps);
     assert.equal(res.outcome, 'refused', `size ${size} should be refused`);
-    assert.equal(res.refusal?.code, 'out_of_bounds');
+    assert.equal(res.refusal?.reason, 'out_of_bounds');
+    // §5 carries the range on this refusal so the UI states it without keeping its own copy.
+    assert.deepEqual(res.refusal?.bounds, { min: 2, max: 8 });
   }
   // 1 is refused specifically because it is the SHIPPED value -- "setting it to 1" is a no-op
   // dressed as a fix, and the real tool's MINSIZE=2 exists for that reason.
@@ -346,4 +357,113 @@ test('mockResolveTool accepts the whole legal range', async () => {
     assert.equal(res.outcome, 'applied', `size ${size} should apply`);
     assert.deepEqual(res.after, { poolSize: size });
   }
+});
+
+// ---------------------------------------------------------------------------
+// The §8 audit block — attribution, and what a missing one means
+// ---------------------------------------------------------------------------
+
+const AUDIT = {
+  auditId: 'pg-audit-42',
+  actor: 'pg_service',
+  role: 'Guardian_Resolve',
+  tool: 'set_pool_size',
+  recordedAt: '2026-08-19T11:00:00Z',
+  source: 'live',
+};
+
+test('the audit block is forwarded on every outcome, not just applies', async () => {
+  // §8: "Every call produces exactly one attributable audit event: applies, refusals, and dry-runs
+  // alike." Dry-runs specifically -- "who was probing the production, and when" is part of the same
+  // story as who changed it, and an audit log with a hole where the reconnaissance was is a partial
+  // account.
+  for (const outcome of ['previewed', 'applied', 'no_change', 'refused'] as const) {
+    const { deps } = stub({
+      outcome,
+      before: { poolSize: 1 },
+      after: outcome === 'refused' ? null : { poolSize: 4 },
+      refusal: outcome === 'refused'
+        ? { reason: 'not_authorized', message: 'requires PG_Resolve', checkedBy: 'iris' }
+        : undefined,
+      audit: AUDIT,
+    });
+    const res = await resolve({ mode: 'apply', action: ACTION }, deps);
+    assert.equal(res.outcome, outcome);
+    assert.equal(res.audit?.auditId, 'pg-audit-42', `${outcome} must carry the audit handle`);
+    assert.equal(res.audit?.actor, 'pg_service', `${outcome} must name the actor`);
+  }
+});
+
+test('requestedBy comes from the REQUEST and never replaces actor', async () => {
+  // §8: "a caller cannot name itself". requestedBy is a string a browser typed; treating it as
+  // identity would make the log a record of what the client CLAIMED, which §8 calls worse than no
+  // audit log because it is trusted. So it is recorded NEXT TO actor, and actor is resolved
+  // server-side.
+  const { deps } = stub({
+    outcome: 'applied',
+    before: { poolSize: 1 },
+    after: { poolSize: 4 },
+    audit: AUDIT,
+  });
+  const res = await resolve(
+    { mode: 'apply', action: ACTION, requestedBy: 'presenter@laptop' },
+    deps,
+  );
+  assert.equal(res.audit?.requestedBy, 'presenter@laptop');
+  assert.equal(res.audit?.actor, 'pg_service', 'actor must stay the server-resolved principal');
+});
+
+test('a caller-supplied actor in the reply cannot override the tool-reported one', async () => {
+  // The tool is the only thing that can resolve a principal. A reply whose audit block omits actor
+  // yields null rather than falling back to requestedBy -- the fallback is the defect §8 describes.
+  const { deps } = stub({
+    outcome: 'applied',
+    before: { poolSize: 1 },
+    after: { poolSize: 4 },
+    audit: { auditId: 'pg-audit-9' },
+  });
+  const res = await resolve({ mode: 'apply', action: ACTION, requestedBy: 'someone' }, deps);
+  assert.equal(res.audit?.auditId, 'pg-audit-9');
+  assert.equal(res.audit?.actor, null, 'a missing actor is null, never the caller-supplied label');
+  assert.equal(res.audit?.requestedBy, 'someone');
+});
+
+test('no audit handle means audit is null, not an object of nulls', async () => {
+  // §8: auditId null "when the record could not be written -- and if it could not be written for an
+  // apply, that is failed / verify, not a silent success". The engine's caller branches on the
+  // whole object being absent, so an object full of nulls would read as "audited, details unknown".
+  for (const audit of [undefined, null, {}, { actor: 'x' }, 'nope'] as unknown[]) {
+    const { deps } = stub({ outcome: 'applied', before: { poolSize: 1 }, after: { poolSize: 4 }, audit });
+    const res = await resolve({ mode: 'apply', action: ACTION }, deps);
+    assert.equal(res.audit, null, `audit ${JSON.stringify(audit)} should normalise to null`);
+  }
+});
+
+test('a failed tool call reports no audit rather than an assumed one', async () => {
+  const deps: ResolveDeps = {
+    callTool: async () => {
+      throw new Error('write tool timed out after 30000ms');
+    },
+    now: () => 1_760_000_000_000,
+  };
+  const res = await resolve({ mode: 'apply', action: ACTION }, deps);
+  assert.equal(res.outcome, 'failed');
+  // Consistent with liveStateVerified: false. We do not know whether a row exists, so we name none.
+  assert.equal(res.audit, null);
+});
+
+test('mockResolveTool emits an audit block marked source mock', async () => {
+  // A mock that omitted audit would let Dev C build the approve flow against responses with no
+  // attribution and meet it for the first time against a live production. One that claimed
+  // source:"live" would be worse -- an audit entry asserting it is real.
+  const deps: ResolveDeps = { callTool: mockResolveTool(1), now: () => 1_760_000_000_000 };
+  const res = await resolve({ mode: 'apply', action: ACTION }, deps);
+  assert.equal(res.audit?.source, 'mock');
+  assert.match(res.audit?.auditId ?? '', /^mock-audit-\d+$/);
+  // A distinct handle per call, like the real one: a fixed id would let a UI dedupe two real
+  // actions into one row.
+  const second = await resolve({ mode: 'dry_run', action: { ...ACTION, size: 8 } }, deps);
+  assert.notEqual(second.audit?.auditId, res.audit?.auditId);
+  // tool reflects what was actually invoked -- get_pool_size on a dry-run, per §8's table.
+  assert.equal(second.audit?.tool, 'get_pool_size');
 });

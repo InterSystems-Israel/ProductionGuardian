@@ -40,7 +40,21 @@ export interface ResolveResponse {
   before: { poolSize: number } | null;
   after: { poolSize: number } | null;
   reversal: { host: string; size: number; capturedFrom: string } | null;
-  refusal: { code: string; detail: string } | null;
+  /**
+   * Contract §5: `reason`, `message`, `checkedBy` -- NOT `code`/`detail`.
+   *
+   * This said `{code, detail}` until 2026-08-19, which is a field-name drift from a ratified
+   * contract in the one object Dev C renders when Approve is refused: §5 instructs consumers to
+   * "render `refusal.message` verbatim" for an unrecognised reason, so the banner would have read
+   * `undefined`. Caught in review on #92 (@kskubach) rather than by a test, because nothing here
+   * validated the shape -- the type was a cast, and a cast asserts rather than checks.
+   *
+   * `reason` is a CLOSED set in §5's table. Typed as a string anyway: an unrecognised reason must
+   * reach the UI to be rendered rather than be dropped by a narrow union, which is exactly what §5
+   * asks for. The closed set is documented in the contract; enforcing it here would turn a new
+   * refusal code into a swallowed one.
+   */
+  refusal: { reason: string; message: string; checkedBy: string; bounds?: { min: number; max: number } } | null;
   failure: { stage: string; message: string; liveStateVerified: boolean } | null;
   confirmation: {
     status: string;
@@ -48,6 +62,27 @@ export interface ResolveResponse {
     observeVia: string;
     expectedWithinSeconds: number;
     directEvidence: boolean;
+  } | null;
+  /**
+   * Contract §8. PRESENT ON EVERY RESPONSE -- applies, refusals and dry-runs alike.
+   *
+   * Was missing entirely until 2026-08-19: the dispatcher returned it and this module dropped it,
+   * so every response claimed §8 compliance while carrying no attribution at all. §8's opening line
+   * is "the contract does not permit an unattributed write", and MVP 2 §2.2's whole reason for
+   * putting the write tool in IRIS is that "the AI changed a production setting" be a reviewable,
+   * attributable event. Dropping this field defeated that while looking correct.
+   *
+   * `null` is legal and MEANINGFUL rather than a blank: it means the record could not be written,
+   * and §8 makes that `failed` / verify on an apply rather than a silent success.
+   */
+  audit: {
+    auditId: string | null;
+    actor: string | null;
+    role: string | null;
+    requestedBy: string | null;
+    tool: string | null;
+    recordedAt: string | null;
+    source: string | null;
   } | null;
   requestedAt: string;
   completedAt: string;
@@ -135,6 +170,72 @@ export function parseResolveRequest(body: unknown): ResolveRequest {
   return out;
 }
 
+/**
+ * Read the contract's refusal object out of the tool's reply.
+ *
+ * Contract §5 field names, and `message` is the load-bearing one: Dev C renders it verbatim for
+ * any reason they do not recognise, so losing it turns an informative refusal into a blank banner.
+ * A refusal with no readable message still returns an object rather than null -- `outcome:
+ * "refused"` with `refusal: null` would tell the UI something was refused for no stated reason,
+ * which is worse than a generic sentence.
+ */
+function parseRefusal(value: unknown): ResolveResponse['refusal'] {
+  if (typeof value !== 'object' || value === null) return null;
+  const r = value as Record<string, unknown>;
+  const reason = typeof r['reason'] === 'string' && r['reason'] !== '' ? r['reason'] : 'unknown';
+  const message =
+    typeof r['message'] === 'string' && r['message'] !== ''
+      ? r['message']
+      : `refused (${reason})`;
+  // `checkedBy` says WHICH component refused, which matters when the answer is "not the one you
+  // are looking at": a refusal from `iris` is the production's policy, not this service's
+  // validation. Defaults to `iris` because that is the only thing that can refuse a real write.
+  const checkedBy = typeof r['checkedBy'] === 'string' && r['checkedBy'] !== '' ? r['checkedBy'] : 'iris';
+  const out: NonNullable<ResolveResponse['refusal']> = { reason, message, checkedBy };
+  // §5 carries `bounds` on an `out_of_bounds` refusal so the UI can state the range without
+  // hardcoding it. Forwarded when present, never synthesised: a guessed range that disagreed with
+  // the tool's would be worse than none.
+  const bounds = r['bounds'];
+  if (typeof bounds === 'object' && bounds !== null) {
+    const b = bounds as Record<string, unknown>;
+    if (typeof b['min'] === 'number' && typeof b['max'] === 'number') {
+      out.bounds = { min: b['min'], max: b['max'] };
+    }
+  }
+  return out;
+}
+
+/**
+ * Read the §8 audit block out of the tool's reply.
+ *
+ * FIELD BY FIELD, and every field defaults to `null` rather than to a placeholder. An audit record
+ * is the one object in this response where a plausible-looking value is worse than an absent one:
+ * a fabricated `actor` would make the log a record of what we assumed rather than of who acted,
+ * which §8 calls "worse than no audit log because it is trusted".
+ *
+ * `requestedBy` comes from the REQUEST, not from the tool -- §8 is explicit that it is "a string a
+ * browser typed" and is recorded next to `actor`, never in place of it. So it is threaded in here
+ * rather than read from the reply, which is also why a caller cannot name itself as the actor.
+ */
+function parseAudit(value: unknown, requestedBy: string | null): ResolveResponse['audit'] {
+  if (typeof value !== 'object' || value === null) return null;
+  const a = value as Record<string, unknown>;
+  const str = (key: string): string | null => (typeof a[key] === 'string' && a[key] !== '' ? (a[key] as string) : null);
+  const auditId = str('auditId');
+  // No handle at all means nothing was written, which is a null audit rather than an object full of
+  // nulls -- the distinction the engine's caller acts on.
+  if (auditId === null) return null;
+  return {
+    auditId,
+    actor: str('actor'),
+    role: str('role'),
+    requestedBy,
+    tool: str('tool'),
+    recordedAt: str('recordedAt'),
+    source: str('source'),
+  };
+}
+
 /** Read a `{poolSize: n}` shape out of the tool's reply, tolerating absence. */
 function poolShape(value: unknown): { poolSize: number } | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -183,6 +284,9 @@ export async function resolve(
       // guess, and a reader deciding whether to retry needs to know we cannot tell.
       failure: { stage: 'tool_call', message, liveStateVerified: false },
       confirmation: null,
+      // NULL, and this is the honest reading: the call did not come back, so we do not know whether
+      // an audit row exists. Claiming one we cannot name would be the fabrication §8 warns about.
+      audit: null,
       completedAt: isoSeconds(now()),
     };
   }
@@ -209,14 +313,19 @@ export async function resolve(
         liveStateVerified: false,
       },
       confirmation: null,
+      // Forwarded even here. The reply was unreadable as an OUTCOME, but if it named an audit
+      // handle that handle is still the pointer to what actually happened -- which is exactly what
+      // someone investigating an unrecognised outcome needs.
+      audit: parseAudit(r['audit'], request.requestedBy ?? null),
       completedAt: isoSeconds(now()),
     };
   }
 
-  const refusal =
-    typeof r['refusal'] === 'object' && r['refusal'] !== null
-      ? (r['refusal'] as { code: string; detail: string })
-      : null;
+  // READ FIELD BY FIELD, not cast. The previous version cast the tool's object straight to a
+  // typed shape, which is why a field-name mismatch was invisible: a cast asserts the shape and
+  // checks nothing, so `{code, detail}` type-checked cleanly as `{reason, message}` and produced
+  // `undefined` at the UI. Reading each field is what makes a drift surface here instead of there.
+  const refusal = parseRefusal(r['refusal']);
   const reversal =
     typeof r['reversal'] === 'object' && r['reversal'] !== null
       ? (r['reversal'] as { host: string; size: number; capturedFrom: string })
@@ -253,6 +362,7 @@ export async function resolve(
             directEvidence: false,
           }
         : null,
+    audit: parseAudit(r['audit'], request.requestedBy ?? null),
     completedAt: isoSeconds(now()),
   };
 }

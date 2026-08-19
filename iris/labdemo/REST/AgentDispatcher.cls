@@ -153,14 +153,54 @@ ClassMethod Resolve() As %Status
         if '$isobject(governed) {
             return ..Fail(502, "write tool returned no result")
         }
-        // A DENIAL IS 403, NOT 500. The policy refused a caller lacking PG_Resolve -- that is the
-        // boundary working, and reporting it as a server fault would send someone to debug the
-        // production instead of granting a role. The auditId is included because the denial IS
-        // audited: AuthPolicy writes that row itself, since the runtime throws before its own
-        // audit hook runs.
+        // A DENIAL IS 200 WITH `outcome: "refused"`. NOT 403, and the contract forbids it by name
+        // (resolve-api.md §5.1: "`not_authorized` is `200`. It is not `403`, and it is not a
+        // `500`.").
+        //
+        // I wrote 403 first, on the reasoning that a policy refusal is not a server fault
+        // (@kskubach, #92 -- who noted they would have written 403 too). The reasoning is fine and
+        // the conclusion breaks the demo: Dev C's client branches on `res.ok`, so every generic
+        // fetch wrapper turns a non-2xx into a thrown error and a generic banner. The specific,
+        // informative refusal becomes "something went wrong" in the layer above the one that knew
+        // -- and MVP 2 §5.4's acceptance criterion is that the RBAC-denied state is VISIBLE. A
+        // thrown error is not a visible state.
+        //
+        // SAME SHAPE AS THE AUTHORIZED PATH, which is the other half of §5.1: an authorized caller
+        // and an unauthorized one differ only in `outcome`, `refusal`, and `before`/`after` being
+        // null. Every other field is present, because Dev C mocks the denied state by changing two
+        // fields rather than by handling a second shape.
         if governed.outcome = "denied" {
-            set %response.Status = 403
-            set denial = {"outcome": "refused", "refusal": {"code": "not_authorized", "detail": (governed.error)}, "audit": {"auditId": (governed.auditId)}}
+            // Describe() reads back the row the denial WROTE -- AuthPolicy writes it itself,
+            // because the runtime throws before its own audit hook. So `audit.actor` names the
+            // identity that was REFUSED, which §8 requires and which is the entire point of
+            // auditing denials.
+            set audit = ##class(ProductionGuardian.LabDemo.Audit.Entry).Describe(governed.auditId)
+            // denialReason, not governed.error. The raw error is
+            // `ERROR <%AICore>ToolAccessDenied: Tool access denied: Global policy denied: ERROR
+            // #5001: ...` -- fine in a log, poor as a UI message. The audit row carries the clean
+            // sentence, and it is free of instance data by construction, which matters because
+            // this crosses the same boundary as any other output.
+            set message = governed.error
+            if $isobject(audit), audit.%Get("denialReason", "") '= "" {
+                set message = audit.denialReason
+            }
+            set denial = {
+                "outcome": "refused",
+                "before": null,
+                "after": null,
+                "reversal": null,
+                "refusal": {
+                    "reason": "not_authorized",
+                    "message": (message),
+                    "checkedBy": "iris"
+                },
+                "failure": null,
+                // §3 marks confirmation always present. `not_applicable` rather than null: nothing
+                // was written, so there is no clearance to wait for, and a null would read as
+                // "unknown" to a UI deciding whether to poll.
+                "confirmation": { "status": "not_applicable" },
+                "audit": (audit)
+            }
             write denial.%ToJSON()
             return $$$OK
         }
@@ -179,10 +219,16 @@ ClassMethod Resolve() As %Status
         if '$isobject(payload) {
             return ..Fail(502, "write tool returned an unreadable result")
         }
-        // The audit handle travels WITH the outcome, in one object. §8 requires it on every
-        // response, and a null one on an applied write is what tells the engine to treat the write
-        // as unverified rather than as a silent success.
-        set payload.audit = {"auditId": (governed.auditId)}
+        // The full §8 audit block, not just the handle -- same reason as the denial branch: §8
+        // wants actor, role, tool, recordedAt and source, and Describe() returns them straight from
+        // the row this call wrote. A handle alone makes a consumer perform a second lookup it has
+        // no endpoint for.
+        //
+        // Falls back to the bare handle if the row cannot be read. A null audit on an applied write
+        // is what tells the engine to treat the write as unverified rather than as a silent
+        // success, so degrading to less information is right and inventing any is not.
+        set audit = ##class(ProductionGuardian.LabDemo.Audit.Entry).Describe(governed.auditId)
+        set payload.audit = $select($isobject(audit): audit, 1: {"auditId": (governed.auditId)})
         write payload.%ToJSON()
         return $$$OK
     } catch ex {
