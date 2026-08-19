@@ -88,6 +88,29 @@ Parameter RESOURCETYPE = 2147483648;
 /// `<PROTECT>` above gets diagnosed as a policy bug.
 Parameter DBROLE = "%DB_%DEFAULT";
 
+/// Environment variable carrying the LLM API key. Never defaulted, never logged, never stored
+/// outside the AI Hub wallet.
+///
+/// NO FALLBACK, for the same reason the roles have no default password: a key in source is a key in
+/// git history. Absent, the provider is not created and `ReportProvider()` says NOT CONFIGURED --
+/// which is the honest state, and one the engine already degrades to (`source: "canned"`).
+Parameter APIKEYVAR = "PG_LLM_API_KEY";
+
+/// Wallet collection and entry holding the key. The `secret://` URI in the ConfigStore entry
+/// references these, so the key itself never appears in the configuration.
+Parameter WALLET = "PGSecrets";
+
+Parameter WALLETENTRY = "PGSecrets.openai";
+
+/// Security resource guarding the wallet collection.
+Parameter SECRETRESOURCE = "AI.Secrets";
+
+/// Provider and model for the ConfigStore entry. `gpt-4o-mini` is what every live run on this
+/// project used; overridable by PG_LLM_MODEL so a demo can switch model without a code change.
+Parameter PROVIDER = "openai";
+
+Parameter MODEL = "gpt-4o-mini";
+
 /// Create the resources and roles, then report what is and is not in place.
 ///
 /// IDEMPOTENT. Every step checks before acting and says what it found, so a re-run after a partial
@@ -107,6 +130,7 @@ ClassMethod Run() As %Status
         quit sc
     }
     do ..ReportTools()
+    do ..CreateProvider()
     do ..ReportProvider()
 
     write !, "-----------------------------------------------", !
@@ -156,6 +180,86 @@ ClassMethod CreateResources() As %Status
 /// every tool before it considers the write resource at all, so a role holding only `PG_Resolve`
 /// would be refused on the first check with a message about the wrong privilege. Verified against
 /// the policy's own ordering rather than assumed from the names.
+/// Create the LLM provider config from the environment, or report why not. Idempotent.
+///
+/// WHAT THIS CLOSES. Until 2026-08-19 the wallet entry and ConfigStore config were created BY HAND
+/// and lived only in a durable volume, so a fresh clone booted with
+/// `4. LLM provider AI.LLM.pgdetective: NOT CONFIGURED` and AI Detective could not be demonstrated
+/// at all. `ReportProvider()` reported it and nothing created it -- the same
+/// "deployed interactively once" state #97 found for `iris/test/` and #106 for `/labdemo/agent`.
+///
+/// THE KEY GOES IN THE WALLET, NOT THE CONFIG. The ConfigStore entry holds
+/// `secret://PGSecrets.openai#apikey`, and `GetDetails(..., resolveSecrets=1)` resolves it at read
+/// time. So the key is in one place, guarded by a resource, and never in the configuration, the
+/// repo, or a log line. Root `CLAUDE.md` §2.1 and MVP 2 §6's credential-exposure row both apply.
+///
+/// REPORTS AND CONTINUES on failure, matching the rest of GovernanceSetup(): MVP 1 does not need an
+/// LLM, and the engine degrades to a labelled canned investigation rather than breaking.
+ClassMethod CreateProvider() As %Status
+{
+    set key = $system.Util.GetEnviron(..#APIKEYVAR)
+    if key = "" {
+        write "4b. LLM provider: SKIPPED -- ", ..#APIKEYVAR, " is not set", !
+        write "    AI Detective will serve a CANNED investigation (source ""canned""), which is", !
+        write "    labelled and correct but is not a live agent. Set the variable to enable it.", !
+        quit $$$OK
+    }
+
+    set model = $system.Util.GetEnviron("PG_LLM_MODEL")
+    if model = "" {
+        set model = ..#MODEL
+    }
+
+    try {
+        // The resource first: %Wallet.Collection.Create refers to it, and creating the collection
+        // against a nonexistent resource is the failure that reads as a wallet problem.
+        new $namespace
+        set $namespace = "%SYS"
+        if '##class(Security.Resources).Exists(..#SECRETRESOURCE) {
+            set sc = ##class(Security.Resources).Create(..#SECRETRESOURCE, "Production Guardian LLM secrets", "")
+            write "4b. resource ", ..#SECRETRESOURCE, ": ", $select(sc: "created", 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
+        }
+
+        // Collection, then entry. Both idempotent by inspection rather than by relying on Create
+        // returning a benign error for an existing name -- an existing wallet must not be
+        // overwritten, because it may hold a key an operator rotated by hand.
+        if '##class(%Wallet.Collection).Exists(..#WALLET) {
+            set sc = ##class(%Wallet.Collection).Create(..#WALLET, {"UseResource": (..#SECRETRESOURCE), "EditResource": (..#SECRETRESOURCE)})
+            write "4b. wallet ", ..#WALLET, ": ", $select(sc: "created", 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
+        } else {
+            write "4b. wallet ", ..#WALLET, ": exists", !
+        }
+
+        // The KEY IS WRITTEN EVERY BOOT when the variable is set, so rotating it is
+        // "change the env var and restart" rather than a manual wallet edit. That is deliberate:
+        // a rotation that needs a documented interactive procedure is a rotation that does not
+        // happen. Never printed -- only whether it was stored.
+        set sc = ##class(%Wallet.KeyValue).Create(..#WALLETENTRY, {"Usage": "CUSTOM", "Secret": {"apikey": (key)}})
+        if $$$ISERR(sc) {
+            // Create fails for an existing entry; replace it rather than leaving a stale key.
+            do ##class(%Wallet.KeyValue).Delete(..#WALLETENTRY)
+            set sc = ##class(%Wallet.KeyValue).Create(..#WALLETENTRY, {"Usage": "CUSTOM", "Secret": {"apikey": (key)}})
+        }
+        write "4b. wallet entry ", ..#WALLETENTRY, ": ", $select(sc: "stored (" _ $length(key) _ " chars, not logged)", 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
+        if $$$ISERR(sc) {
+            quit
+        }
+
+        // The ConfigStore entry, holding the secret:// URI rather than the key.
+        set cfg = {"model_provider": (..#PROVIDER), "model": (model), "api_key": ("secret://" _ ..#WALLETENTRY _ "#apikey")}
+        set sc = ##class(%ConfigStore.Configuration).Create("AI", "LLM", "", "pgdetective", cfg)
+        if $$$ISERR(sc) {
+            // Already present: replace, so a model change in the environment takes effect.
+            do ##class(%ConfigStore.Configuration).Delete("AI.LLM.pgdetective")
+            set sc = ##class(%ConfigStore.Configuration).Create("AI", "LLM", "", "pgdetective", cfg)
+        }
+        write "4b. config AI.LLM.pgdetective: ", $select(sc: "created, model = " _ model, 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
+    } catch ex {
+        write "4b. LLM provider: FAILED ", ex.DisplayString(), !
+    }
+    quit $$$OK
+}
+
 ClassMethod CreateRoles() As %Status
 {
     // THE PG_* RESOURCES ONLY. See #DBROLE for why database access is deliberately not folded in.
