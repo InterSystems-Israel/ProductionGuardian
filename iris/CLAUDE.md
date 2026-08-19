@@ -155,6 +155,31 @@ do ##class(ProductionGuardian.Setup.AIHub).Status()          // what is and is n
 do ##class(ProductionGuardian.LabDemo.Audit.Entry).Purge()   // reset the log between rehearsals
 ```
 
+### Every row above means "on a boot", so test with `compose down -v`
+
+**A fresh clone is not a fresh instance.** `docker-compose.yml` fixes the volume name
+(`name: production-guardian`), so cloning the repo into a new directory and running `compose up`
+reuses the existing volume — the boot then reports `exists` for every security object, every web
+application and the provider config, and looks perfectly clean. Only `docker compose down -v`
+destroys the volume and tests what a colleague actually gets.
+
+This has now cost the team three defects in one day, each invisible on every machine we had:
+
+| Missing on a cold boot | Found in |
+|---|---|
+| `iris/test/` never compiled, so the acceptance proof did not exist | #97 |
+| `/labdemo/agent` web app unregistered, so **every MVP 2 write returned 404** | #106 |
+| the LLM wallet entry and `AI.LLM.pgdetective` config, so AI Detective could not run | #106 |
+
+All three existed everywhere we tested because each of us created it by hand while building it.
+@Ari-Glikman's framing is the one to keep: **the state that matters is what a fresh boot produces,
+not what your instance contains.** That is #84's argument arriving by a different route — the second
+copy here is a live instance rather than a stale number, and the "staling" event is having worked on
+it.
+
+So a row reading "met" in the table above is a claim about a boot, and the only way to check one is
+to throw the volume away first.
+
 ### The running system cannot refuse anything, and "met" above means the fixture
 
 `docker-compose.yml` gives the engine and the proxy `IRIS_USER=superuser`, which holds `%All`, and
