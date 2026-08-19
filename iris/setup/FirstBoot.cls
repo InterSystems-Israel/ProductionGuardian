@@ -88,11 +88,41 @@ ClassMethod Run(pSourceDir As %String = "", pStartGenerator As %Boolean = 1) As 
         do ..StartGenerator()
     }
 
+    // MVP 2 governance, and it runs on every boot for the same reason the rest of this class does:
+    // measured on the running compose stack, none of the resources or roles existed, because they
+    // had only ever been created by hand on a different instance. A failure here does NOT fail the
+    // boot -- MVP 1's Health Scan does not depend on the MCP tools, and a stack that refuses to come
+    // up because an MVP 2 role could not be created is worse than one that comes up and says so.
+    do ..GovernanceSetup()
+
     write !, "==================================", !
     write "Done. Verify with:", !
     write "  do ##class(ProductionGuardian.LabDemo.Triggers).Status()", !
     write "  do ##class(ProductionGuardian.Setup.EnableMetrics).Verify()", !
+    write "  do ##class(ProductionGuardian.Setup.AIHub).Status()", !
     quit $$$OK
+}
+
+/// The MVP 2 resources, roles and tool check. Delegates rather than restating.
+///
+/// Guarded by a class existence check so this file still runs on a checkout that predates
+/// `AIHub.cls` -- the load step compiles from a mounted source directory, and a missing class there
+/// should read as "not deployed yet" rather than abort a boot with <CLASS DOES NOT EXIST>.
+ClassMethod GovernanceSetup()
+{
+    write "9. MVP 2 governance:", !
+    if '##class(%Dictionary.CompiledClass).%ExistsId("ProductionGuardian.Setup.AIHub") {
+        write "   AIHub.cls not compiled -- skipped", !
+        quit
+    }
+    try {
+        set sc = ##class(ProductionGuardian.Setup.AIHub).Run()
+        if $$$ISERR(sc) {
+            write "   FAILED: ", $system.Status.GetErrorText(sc), !
+        }
+    } catch ex {
+        write "   FAILED: ", ex.DisplayString(), !
+    }
 }
 
 /// Refuse unless this namespace is interop-enabled. IsEnsembleNamespace is the real test
