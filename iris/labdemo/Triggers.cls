@@ -350,7 +350,7 @@ ClassMethod SystemAlert(pHost As %String = {..#OPERATION}) As %Status
 /// So the default leaves headroom: 2/sec in against 4/sec out drains ~2/sec, and the backlog the
 /// demo built visibly disappears. Raise pRateSecs to make the drain faster and more dramatic;
 /// lower it toward 0.25 only if you want to demonstrate that a pool of 4 is NOT enough.
-ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Double = 0.5, pWarmSeconds As %Integer = 75) As %Status
+ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Double = 0.5, pWarmSeconds As %Integer = 75, pMaxQueued As %Integer = 400) As %Status
 {
     set sc = ..CheckProduction()
     if $$$ISERR(sc) {
@@ -359,6 +359,16 @@ ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Doubl
     if pDispatcherMs < 1 {
         write "REFUSED  a dispatcher throttle under 1ms induces nothing", !
         quit $$$ERROR($$$GeneralError, "pDispatcherMs must be >= 1")
+    }
+    // THE DEPTH CAP MUST CLEAR THE RULE'S ABSOLUTE FLOOR, or arming this produces no finding at all.
+    // queue_buildup will not fire below 50 queued, so a cap at or under that pauses the generator
+    // before the thing it exists to demonstrate can happen -- an armed scenario that looks armed and
+    // shows nothing. 100 is the lower bound rather than 51 so the depth is unambiguously past the
+    // floor while the finding debounces over its 2 consecutive samples.
+    if pMaxQueued < 100 {
+        write "REFUSED  a cap of ", pMaxQueued, " is too close to the rule's absolute floor (50)", !
+        write "         the generator would pause before queue_buildup could fire", !
+        quit $$$ERROR($$$GeneralError, "pMaxQueued must be >= 100")
     }
     if pRateSecs <= 0 {
         // Guarded rather than trusted: a zero interval spins the generator loop as fast as the
@@ -383,6 +393,9 @@ ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Doubl
     }
     set ^ProductionGuardian.Trigger("DispatcherMs") = pDispatcherMs
     set ^ProductionGuardian.Trigger("RateSecs") = pRateSecs
+    // Read per message by HL7Generator.RunContinuous, which pauses above it. Set with the rest of the
+    // armed state so it cannot outlive the scenario, and cleared by Reset() with everything else.
+    set ^ProductionGuardian.Trigger("MaxQueued") = pMaxQueued
 
     set pool = ..GetPoolSize(..#OPERATION)
     set drainPerSec = 1000 / pDispatcherMs * $select(+pool > 0: +pool, 1: 1)
@@ -393,6 +406,12 @@ ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Doubl
     write "    -> drains ~", $fnumber(drainPerSec, "", 1), "/sec", !
     write "  HL7 inflow every ", pRateSecs, "s -> ~", $fnumber(inflowPerSec, "", 1), "/sec", !
     write "  net ~+", $fnumber(inflowPerSec - drainPerSec, "", 1), "/sec into the queue", !
+    write "  inflow PAUSES at ", pMaxQueued, " queued and resumes as the queue drains (#101)", !
+    // Stated at arming time with the arithmetic, because a presenter needs to know roughly how long
+    // the build-up takes before they are standing in front of it.
+    if (inflowPerSec - drainPerSec) > 0 {
+        write "    ~", $fnumber(pMaxQueued / (inflowPerSec - drainPerSec), "", 0), "s to reach the cap from empty", !
+    }
     write "  Expect queue_buildup once depth clears the absolute floor (50).", !
     write "  dead_host will NOT fire: the host is healthy, just outnumbered.", !
     write "  The fix is more workers, not a restart -- pool ", pool, " -> 4 makes the", !
@@ -437,6 +456,10 @@ ClassMethod Reset() As %Status
     if $data(^ProductionGuardian.Trigger("RateSecs")) {
         kill ^ProductionGuardian.Trigger("RateSecs")
         write "  restored the HL7 inflow rate to the generator's own interval", !
+    }
+    if $data(^ProductionGuardian.Trigger("MaxQueued")) {
+        kill ^ProductionGuardian.Trigger("MaxQueued")
+        write "  removed the generator's queue-depth cap", !
     }
     if $data(^ProductionGuardian.Trigger("DispatcherMs")) {
         kill ^ProductionGuardian.Trigger("DispatcherMs")
@@ -522,6 +545,16 @@ ClassMethod Status() As %Status
     write "  dispatcher     : ", $select(thr > 0: thr _ "ms per POST  <- downstream throttled", 1: "no throttle"), !
     set rate = +$get(^ProductionGuardian.Trigger("RateSecs"), 0)
     write "  HL7 inflow     : ", $select(rate > 0: rate _ "s per message  <- rate overridden", 1: "generator default"), !
+    // Reported with the live depth beside it, so "capped" and "currently paused" are distinguishable
+    // at a glance -- a presenter seeing a flat queue needs to know whether it is held or stuck.
+    set cap = +$get(^ProductionGuardian.Trigger("MaxQueued"), 0)
+    if cap > 0 {
+        set depth = ##class(Ens.Queue).GetCount(..#OPERATION)
+        write "  inflow cap     : ", cap, " queued, now ", depth,
+            $select(depth >= cap: "  <- PAUSED, inflow held", 1: "  <- producing"), !
+    } else {
+        write "  inflow cap     : none  <- the backlog is unbounded (#101)", !
+    }
     if $data(^ProductionGuardian.Trigger("PoolWas")) {
         write "  pool stashed   : ", ^ProductionGuardian.Trigger("PoolWas"), "  <- Reset() will restore this", !
     }
