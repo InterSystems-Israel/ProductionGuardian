@@ -62,6 +62,21 @@ ClassMethod Run(count As %Integer = 20, delaySecs As %Double = 2) As %Status
 ///
 /// Same pattern as the injected delay in PatientDemographicsOperation: a global read at runtime,
 /// so nothing is edited or recompiled mid-demo, and Triggers.Reset() clears it.
+///
+/// RECOMPILING THIS CLASS DOES NOT AFFECT A GENERATOR ALREADY RUNNING, and that distinction cost me
+/// a run to learn. `FirstBoot.StartGenerator()` `job`s this method, and the loop below never returns
+/// -- so the process keeps executing the routine version it loaded at start, and new CODE reaches it
+/// only after the process is restarted. The rate override works on a running generator precisely
+/// because the old code already read that global; the depth cap added for #101 did nothing until the
+/// job was cycled, while the queue sailed past it to 231.
+///
+/// So: a fresh `docker compose up` picks up changes here, and a mid-session recompile needs
+///
+///     do ##class(%SYSTEM.Process).Terminate(pid)   // pid from %SYS.ProcessQuery, Routine LIKE '%HL7Generator%'
+///     do ##class(ProductionGuardian.Setup.FirstBoot).StartGenerator(2)
+///
+/// A global that changes BEHAVIOUR the existing code already reads takes effect within one interval;
+/// a global that only new code reads takes effect never, and looks identical from the outside.
 ClassMethod RunContinuous(delaySecs As %Double = 2)
 {
     set sc = ..EnsureDropDir()
@@ -69,8 +84,48 @@ ClassMethod RunContinuous(delaySecs As %Double = 2)
 
     write "Continuous HL7 generation started (Ctrl-C to stop). Interval: ", delaySecs, "s",!
     write "  Rate is re-read from ^ProductionGuardian.Trigger(""RateSecs"") each message.",!
+    write "  Depth cap re-read from ^ProductionGuardian.Trigger(""MaxQueued"") each message.",!
     set i = 1
+    set paused = 0
     for {
+        // THE DEPTH CAP, checked BEFORE producing rather than after (#101). `PoolBottleneck()` arms
+        // the scenario and exits, so nothing in the trigger can bound the backlog -- the only place
+        // that can is the loop actually producing load. A run left armed reached 2,650 queued and
+        // IRIS's embedded Apache stopped serving on :52773 entirely, taking the portal, the metrics
+        // endpoint the proxy polls and the agent dispatcher with it for ~40 minutes.
+        //
+        // PAUSES, DOES NOT STOP, and that is what keeps the demo's shape. Depth climbs, the
+        // queue_buildup finding fires and stays lit -- the cap is far above the rule's absolute
+        // floor of 50 -- and once Smart Resolve raises the pool the queue drains and inflow resumes
+        // by itself as depth falls back under the cap. A generator that stopped would need
+        // restarting mid-demo, in front of an audience, and the visible drain is the last step of
+        // the whole MVP 2 loop.
+        //
+        // THIS REDUCES EXPOSURE RATHER THAN FIXING THE WEDGE. If worker exhaustion is the
+        // mechanism, a smaller backlog makes it less likely and not impossible. Stated so nobody
+        // reads the cap as a fix and closes #101 on the strength of it.
+        set cap = +$get(^ProductionGuardian.Trigger("MaxQueued"), 0)
+        if cap > 0 {
+            set depth = ..QueueDepth()
+            if (depth '= "") && (depth >= cap) {
+                if 'paused {
+                    // Announced ONCE per pause, not per iteration. A line every interval would bury
+                    // the drain a presenter is watching for under identical messages.
+                    write $zdatetime($ztimestamp, 3, 1), "  PAUSED at ", depth, " queued (cap ", cap, ")", !
+                    set paused = 1
+                }
+                // Re-check on the same cadence as production, so inflow resumes within one interval
+                // of the queue dropping under the cap.
+                set override = +$get(^ProductionGuardian.Trigger("RateSecs"), 0)
+                hang $select(override > 0: override, 1: delaySecs)
+                continue
+            }
+            if paused {
+                write $zdatetime($ztimestamp, 3, 1), "  RESUMED at ", depth, " queued (cap ", cap, ")", !
+                set paused = 0
+            }
+        }
+
         set msg = ..BuildADTA01(i)
         set msgType = "ADT_A01"
         set filename = ..#DropDir _ msgType _ "_" _ $translate($horolog, ",", "_") _ "_" _ i _ ".hl7"
@@ -84,6 +139,34 @@ ClassMethod RunContinuous(delaySecs As %Double = 2)
         hang $select(override > 0: override, 1: delaySecs)
         set i = i + 1
     }
+}
+
+/// Current queue depth for the bottlenecked host, or "" when it cannot be read. Private.
+///
+/// "" AND NOT 0, by the rule this project keeps relearning (#33, #49): an unmeasurable depth is not
+/// a small one. A failed read returning 0 would compare below any cap and let the generator produce
+/// without limit -- which is the exact condition the cap exists to prevent, reached through the cap's
+/// own error path.
+///
+/// Reads `Ens.Queue.GetCount` rather than EnumerateHostStatus: verified signature
+/// `GetCount(pQueueName)`, the queue name is the config item name, and it is one call per message
+/// rather than a result set.
+ClassMethod QueueDepth() As %String [ Private ]
+{
+    // `return`, not `quit`. Inside a TRY block `quit` is the block terminator and cannot carry an
+    // argument -- `#1043: QUIT argument not allowed`, which is a compile error rather than a runtime
+    // one and so failed the whole class. Worth a note because every other method in this area uses
+    // argumentless `quit` to return, and this is the one place that shape is wrong.
+    set depth = ""
+    try {
+        // Triggers.#OPERATION rather than a second copy of "Cloud API" -- that parameter exists so
+        // the name lives in one place (root CLAUDE.md §5), and a stale copied host name is #84.
+        set host = ##class(ProductionGuardian.LabDemo.Triggers).#OPERATION
+        set depth = ##class(Ens.Queue).GetCount(host)
+    } catch ex {
+        set depth = ""
+    }
+    quit depth
 }
 
 /// Build an ADT^A01 (Admit) message.
