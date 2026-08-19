@@ -283,15 +283,31 @@ throwaway user with a generated password, logs in as it, and attempts the write:
 PASS: read allowed, write refused, refusal audited.
 ```
 
-**The roles need a database privilege the contracts never mention.** A user holding only
+**A principal needs a database privilege the contracts never mention.** A user holding only
 `PG_Read:U` logged in fine and then died with `<PROTECT> ... Access Denied` on
-`Tools.Governance.1` — before any policy was consulted, because it could not read the routine. Both
-roles therefore carry `%DB_%DEFAULT:RW`, and `RW` rather than `R` because `AuthPolicy` writes the
-denial row *as the refused principal*, which is what makes it attributable.
+`Tools.Governance.1` — before any policy was consulted, because it could not read the routine.
 
-**An honest limitation:** on this image every database shares `%DB_%DEFAULT`, so that grant is
-broad. The least-privilege story is real at the **tool** boundary — `PG_Resolve` genuinely gates
-`set_pool_size` — and is not a database-isolation story. A demo should not imply otherwise.
+**The `Guardian_*` roles deliberately do not grant it.** I first folded `%DB_%DEFAULT:RW` into both
+roles; @Ari-Glikman argued in the #94 review that the role should stay minimal and mean one thing,
+and he is right. The deciding reason is what the grant would *say*: on this image every database
+shares the `%DB_%DEFAULT` resource, so folding it in gives a role whose whole purpose is "may look,
+may not act" the ability to write every database on the instance. A least-privilege boundary that
+hands out broad write to keep a fixture working is not one.
+
+Database access comes from the invocation path instead — the CSP application hosting
+`REST.AgentDispatcher` for the demo, and the throwaway user in `GovernanceProof` for the direct
+session proof (the shipped `%DB_%DEFAULT` role, granted to the *user*). `Setup.AIHub.Run()` prints
+the requirement rather than granting it, because a requirement nobody states is how that `<PROTECT>`
+gets misdiagnosed as a policy bug.
+
+**A guard that could not work, and the reason it is worth recording.** The obvious fix to "the proof
+died before reaching the policy" is to assert inside the unprivileged half that the tool call was
+reached. That is not implementable: with the principal short of database access, `Invoke` dies while
+paging in `Governance.1`, so the process is gone before the result variable is assigned and no line
+after it runs. Verified by stripping the role and re-running. The check therefore lives on the
+**privileged** side — `Prove()` reads the probe user's granted roles back and refuses to hand over a
+password if the database role is missing, since an inconclusive run whose output reads
+`<PROTECT> ... Access Denied` looks exactly like the boundary working.
 
 ## The MCP dev connection
 

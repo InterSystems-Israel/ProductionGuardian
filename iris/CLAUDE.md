@@ -147,6 +147,7 @@ returns PHI, it lands in `Audit.Entry.Result` in plain text.
 | An unauthorized role is refused | met — observed, `iris/test/GovernanceProof.cls` |
 | Every call appears in the audit log | met for executions and for authorization denials |
 | RBAC roles and resources exist from a clean boot | met — `Setup.AIHub`, called by `FirstBoot` |
+| A principal can actually *use* the roles | needs `%DB_%DEFAULT` **as well**, from the invocation path — the `Guardian_*` roles stay minimal and grant only `PG_*`. Without it you get `<PROTECT>` before any policy is consulted |
 | LLM credential in the vault | **not met on the compose stack** — needs a key, and the current one must be rotated |
 
 ```objectscript

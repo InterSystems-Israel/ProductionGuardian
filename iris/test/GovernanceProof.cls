@@ -42,7 +42,29 @@ ClassMethod Prove() As %String
         write "could not create ", ..#PROBEUSER, ": ", $system.Status.GetErrorText(sc), !
         quit ""
     }
-    write "1. probe user ", ..#PROBEUSER, ": ready, holds Guardian_Read only", !
+    // The roles must be right before the user is created, or the proof measures a stale boundary.
+    // Converging them here rather than assuming AIHub.Run() was called makes the fixture
+    // self-sufficient -- @Ari-Glikman's run failed because the roles on his instance predated the
+    // definition this class expects, which is a fixture problem rather than his.
+    do ##class(ProductionGuardian.Setup.AIHub).CreateResources()
+    do ##class(ProductionGuardian.Setup.AIHub).CreateRoles()
+
+    // PRECONDITION, CHECKED ON THIS SIDE because the other side cannot check it -- see the comment in
+    // AsReadOnlyUser. A principal without the database role dies with <PROTECT> before any policy is
+    // consulted, and that output reads like the boundary working. Refusing here is what stops an
+    // inconclusive run from being reported as a pass.
+    set granted = ..ProbeUserRoles()
+    if '..HasRole(granted, ##class(ProductionGuardian.Setup.AIHub).#DBROLE) {
+        write "   probe user roles are '", granted, "' -- missing ",
+            ##class(ProductionGuardian.Setup.AIHub).#DBROLE, !
+        write "   Refusing to continue: without it the proof dies at <PROTECT> before the", !
+        write "   tool policy is reached, and that looks like a successful denial.", !
+        quit ""
+    }
+    write "1. probe user ", ..#PROBEUSER, ": ready, holds ", granted, !
+    write "   (", ##class(ProductionGuardian.Setup.AIHub).#READROLE, " grants ",
+        ##class(ProductionGuardian.Setup.AIHub).#READRESOURCE, ":U and NOT ",
+        ##class(ProductionGuardian.Setup.AIHub).#WRITERESOURCE, ")", !
 
     // The privileged calls, through the governed manager. Both must be audited.
     set before = ##class(ProductionGuardian.Setup.AIHub).AuditCount()
@@ -76,12 +98,28 @@ ClassMethod AsReadOnlyUser(pPassword As %String) As %Status
     }
     write "1. logged in as ", $username, ", roles = ", $roles, !
 
-    // A read must still work: the demo's point is that AI Detective can LOOK without acting.
+    // A read must still work: the demo's point is that AI Detective can LOOK without acting. A
+    // failed read ABORTS rather than continuing to a "denied" that would prove nothing.
+    //
+    // THIS GUARD DOES NOT CATCH THE CASE @Ari-Glikman HIT, and I checked rather than assumed it did.
+    // With the principal short of database access, `Invoke` dies at
+    // `<PROTECT> ... Governance.1  Access Denied` while paging in the routine -- the process is gone
+    // before `r1` is ever assigned, so nothing below this line runs. His option 2, "assert the tool
+    // call was reached", is not implementable from inside the unprivileged half for that reason.
+    //
+    // So the real protection is the PRIVILEGED side: `Prove()` verifies the probe user holds the
+    // database role before it hands over a password, and refuses otherwise. This guard stays because
+    // it still catches the failures that DO return -- a misconfigured resource, a tool error, a policy
+    // that refuses the read -- and those are the ones that would otherwise reach a meaningless PASS.
     set r1 = ##class(ProductionGuardian.LabDemo.Tools.Governance).Invoke("GetPoolSize", {"host": "Cloud API"})
     write "2. GetPoolSize : ", r1.outcome, "  <- expected executed", !
     if r1.outcome '= "executed" {
-        write "   UNEXPECTED: a Guardian_Read holder must be able to read.", !
+        write "   *** ABORTING: a ", ##class(ProductionGuardian.Setup.AIHub).#READROLE, " holder must be able to read.", !
         write "   error: ", r1.error, !
+        write "   If this is <PROTECT>/Access Denied, the principal is short of database", !
+        write "   access and the TOOL POLICY WAS NEVER REACHED -- so a refusal below would", !
+        write "   prove nothing. Grant ", ##class(ProductionGuardian.Setup.AIHub).#DBROLE, " to the user.", !
+        quit $$$ERROR($$$GeneralError, "read failed before the policy was reached -- proof inconclusive")
     }
 
     // And the write must be refused.
@@ -132,7 +170,13 @@ ClassMethod CreateProbeUser(pPassword As %String) As %Status [ Private ]
     // and `ProductionGuardian.Setup.AIHub` does not exist in %SYS -- reading it after the switch
     // throws <CLASS DOES NOT EXIST> from a line that looks like a compile-time constant. Cost
     // one run to find; worth a comment so it is not reintroduced.
-    set role = ##class(ProductionGuardian.Setup.AIHub).#READROLE
+    //
+    // TWO ROLES, and the second one is not ours. `Guardian_Read` grants `PG_Read:U` and deliberately
+    // nothing else (see `Setup.AIHub.#DBROLE`), so the probe user needs the shipped `%DB_%DEFAULT`
+    // role as well or it cannot read the routine implementing the tool. Granting it to the USER
+    // rather than to `Guardian_Read` is @Ari-Glikman's #94 review call: the role stays minimal and
+    // means one thing, and the fixture carries its own plumbing instead of widening a boundary.
+    set role = ##class(ProductionGuardian.Setup.AIHub).#READROLE _ "," _ ##class(ProductionGuardian.Setup.AIHub).#DBROLE
 
     new $namespace
     set $namespace = "%SYS"
@@ -155,6 +199,37 @@ ClassMethod CreateProbeUser(pPassword As %String) As %Status [ Private ]
         ,
         0,
         1)
+}
+
+/// The probe user's granted roles, as IRIS records them. "" if the user is absent.
+ClassMethod ProbeUserRoles() As %String [ Private ]
+{
+    new $namespace
+    set $namespace = "%SYS"
+    if '##class(Security.Users).Exists(..#PROBEUSER) {
+        quit ""
+    }
+    do ##class(Security.Users).Get(..#PROBEUSER, .props)
+    quit $get(props("Roles"))
+}
+
+/// Is `role` one of the comma-separated `list`? Private.
+///
+/// EXACT ELEMENT MATCH, not `[`. A substring test would accept `Guardian_ReadOnly` as
+/// `Guardian_Read`, and would also match `%DB_%DEFAULT` inside a hypothetical `%DB_%DEFAULTX` --
+/// the same class of bug as the quoted-label match in `Tools.Read.ScrapeGauge`.
+ClassMethod HasRole(list As %String, role As %String) As %Boolean [ Private ]
+{
+    // Explicit result variable: a bare `quit` breaks the FOR and leaves the loop index pointing at
+    // whatever was examined last, matched or not -- the mistake `Tools.Read.FindItem` documents.
+    set found = 0
+    for i = 1:1:$length(list, ",") {
+        if $zstrip($piece(list, ",", i), "<>W") = role {
+            set found = 1
+            quit
+        }
+    }
+    quit found
 }
 
 /// A random password. Not stored, not derived from anything guessable.

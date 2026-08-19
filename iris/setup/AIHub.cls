@@ -58,29 +58,35 @@ Parameter WRITEROLE = "Guardian_Resolve";
 /// to read, so an existing resource of the right kind is the only honest source.
 Parameter RESOURCETYPE = 2147483648;
 
-/// Database privilege both roles need on top of the PG_* resources.
+/// The shipped role carrying database access, which a caller ALSO needs — and which these roles
+/// deliberately do not include.
 ///
-/// NOT OPTIONAL, AND NOT OBVIOUS. `PG_Read:U` lets the policy say yes; it does not let a principal
-/// run the code that asks. Measured: a real user holding only `Guardian_Read` logged in successfully
-/// (`roles = Guardian_Read`) and then died with
+/// A PRINCIPAL NEEDS TWO THINGS, and only one of them is ours. `PG_Read:U` lets the policy say yes;
+/// it does not let a principal run the code that asks. Measured: a real user holding only
+/// `Guardian_Read` logged in successfully and then died with
 ///
 ///     <PROTECT> ... |ProductionGuardian.LabDemo.Tools.Governance.1    Access Denied
 ///
-/// before any policy was consulted -- it could not read the routine. Neither `mcp-tools.md` nor
+/// before any policy was consulted — it could not read the routine. Neither `mcp-tools.md` nor
 /// `resolve-api.md` mentions a database privilege, so a reader implementing the roles from the
-/// contracts alone produces roles that cannot be used.
+/// contracts alone produces roles that appear correct and cannot be used.
 ///
-/// RW RATHER THAN R, and the reason is the audit trail. `Tools.AuthPolicy` writes the `denied` row as
-/// the REFUSED principal -- that is what makes the row attributable to them -- so a read-only
-/// principal must be able to write one row to the audit table. A role with `:R` produces a denial
-/// that cannot be recorded, which is the hole this whole audit design exists to close.
+/// THESE ROLES STILL DO NOT GRANT IT, and that is @Ari-Glikman's call from the #94 review rather than
+/// mine — I had folded `%DB_%DEFAULT:RW` into both roles and he argued the role should stay minimal
+/// and mean one thing. He is right, and the deciding reason is what the grant would say: on this image
+/// every database shares the `%DB_%DEFAULT` resource, so folding it in gives a role whose entire
+/// purpose is "may look, may not act" the ability to write every database on the instance. A
+/// least-privilege boundary that hands out broad write to keep a fixture working is not one.
 ///
-/// THE HONEST LIMITATION. On this image every database shares the `%DB_%DEFAULT` resource (read from
-/// `SYS.Database` for the labdemo directory), so this grant is broad: a principal who may run the
-/// tools may also reach other databases. The least-privilege story MVP 2 §2.2 tells is real at the
-/// TOOL boundary -- `PG_Resolve` genuinely gates `set_pool_size` -- and is NOT a database isolation
-/// story. Stating that here rather than letting a demo imply otherwise.
-Parameter DBRESOURCE = "%DB_%DEFAULT:RW";
+/// SO WHERE DOES IT COME FROM? The invocation path, which is the layer that actually knows. In the
+/// demo that is the CSP application hosting `REST.AgentDispatcher` — a web application authenticates
+/// the caller and can carry application roles — and for the direct-session proof it is
+/// `Test.GovernanceProof`, which grants this role to its throwaway user. Named here rather than in
+/// both places so there is one spelling of it.
+///
+/// Reported by `Run()` rather than granted, because a requirement nobody states is how the
+/// `<PROTECT>` above gets diagnosed as a policy bug.
+Parameter DBROLE = "%DB_%DEFAULT";
 
 /// Create the resources and roles, then report what is and is not in place.
 ///
@@ -104,6 +110,10 @@ ClassMethod Run() As %Status
     do ..ReportProvider()
 
     write !, "-----------------------------------------------", !
+    write "These roles grant the PG_* resources and nothing else. A principal", !
+    write "ALSO needs database access or it dies with <PROTECT> before any", !
+    write "policy is consulted -- grant ", ..#DBROLE, " alongside, from the", !
+    write "invocation path (the CSP application, or the proof fixture).", !
     write "Policies are NOT registered by this call -- they cannot be.", !
     write "%AI.ToolMgr holds them in memory, per instance. Obtain a governed", !
     write "manager with:", !
@@ -148,12 +158,13 @@ ClassMethod CreateResources() As %Status
 /// the policy's own ordering rather than assumed from the names.
 ClassMethod CreateRoles() As %Status
 {
+    // THE PG_* RESOURCES ONLY. See #DBROLE for why database access is deliberately not folded in.
     set roles(..#READROLE) = $listbuild(
         "Production Guardian: evidence gathering, no mutation",
-        ..#DBRESOURCE _ "," _ ..#READRESOURCE _ ":U")
+        ..#READRESOURCE _ ":U")
     set roles(..#WRITEROLE) = $listbuild(
         "Production Guardian: may apply the governed pool-size action",
-        ..#DBRESOURCE _ "," _ ..#READRESOURCE _ ":U," _ ..#WRITERESOURCE _ ":U")
+        ..#READRESOURCE _ ":U," _ ..#WRITERESOURCE _ ":U")
 
     new $namespace
     set $namespace = "%SYS"
