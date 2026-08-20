@@ -141,10 +141,21 @@ The contract describes **per-error rows with timestamps and a catalogue string**
 returns **an aggregated histogram**. The `errors[]` array does not exist at all. An agent written
 against the contract looks for occurrences and finds counts.
 
-**That makes the shape change mandatory rather than incidental**, which is the part to understand
-before anyone estimates this: `summary` is a property of an error *occurrence*, not of a *code count*,
-so there is no field you can add to a `byCode` entry that would carry it. Implementing `summary` means
-implementing `errors[]`.
+**Resolved in #116, and not the way this section first argued.** An earlier draft claimed the shape
+change was mandatory — that `summary` is a property of an error *occurrence* rather than of a *code
+count*, so implementing it meant implementing `errors[]`. **That was wrong.** `summary` is "a catalogue
+string keyed by `errorCode`", and keyed by `errorCode` makes it a property of **the code** — which is
+exactly what a `byCode` entry is keyed on. It fits there as `{errorCode, count, summary}`.
+
+The error mattered because it pointed at the less safe design. Per-event rows are the shape that
+*invites an agent to reason about individual occurrences*, and the row it would want to quote is the
+one that may carry PHI (@Ari-Glikman, #116). So aggregation is not a concession to the implementation —
+it is the shape the data boundary wants, and the contract was corrected toward it.
+
+**The resolution:** the implementation's `byCode` aggregation is kept and the contract corrected to it,
+`summary` is added to each entry from a catalogue keyed by `errorCode`, and `windowMinutes`,
+`occurredAt`, `sourceClass`, `limit` and `truncated` are dropped — none is emitted, none is needed, and
+`limit`/`truncated` bounded a list that no longer exists.
 
 This is a **pre-existing divergence** — the fifth to reach `main` in a shape no schema covered, after
 the three in `contracts/CHANGELOG.md` (2026-08-20) and the one fixed in #111. Closing it is not MVP 3
@@ -375,7 +386,7 @@ divergences have now reached `main` in shapes no schema covered:
 | `refusal` field names — `{code, detail}` vs `{reason, message, checkedBy}` | shape | #99 |
 | `reversal` shape — `{action, capturedFrom, automatic}` vs flat | shape | #114 |
 | `reversal.capturedFrom` — `"live production"` vs `"live"` | **value** | #111 |
-| `get_recent_errors` — `errors[]` vs `byCode[]`, and `windowMinutes` vs `sinceMinutes` | shape + name | open, §2.4 |
+| `get_recent_errors` — `errors[]` vs `byCode[]`, and `windowMinutes` vs `sinceMinutes` | shape + name | #116 |
 | `set_pool_size` bound — `1..8` ratified, `2..8` shipped | value | #114 |
 
 **Four of the five were findable only by reading two documents side by side**, and the `capturedFrom`
