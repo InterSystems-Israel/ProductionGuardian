@@ -331,37 +331,69 @@ small and there is no write path anywhere in it.
 Fully independent of Track A — no shared files beyond `AppShell.tsx` and the stylesheet, and no
 contract between them.
 
-### The ownership problem this creates, stated rather than skipped
+### The ownership problem this created — resolved in #113
 
-Both tracks touch `apps/dashboard/**`, which root `CLAUDE.md` §3 assigns to Dev C — **and there is no
-Dev C at this stage.** That table needs amending before either track starts, exactly as §2 needed
-amending before MVP 2 (#85). Two options:
+Both tracks touch `apps/dashboard/**`, which root `CLAUDE.md` §3 assigned to Dev C — **and there was no
+Dev C at this stage**, so MVP 3's dashboard work had no owner. That table needed amending before either
+track started, exactly as §2 needed amending before MVP 2 (#85).
 
-1. Reassign `apps/dashboard/**` to one developer, who then owns both the panel state in Track A and
-   all of Track B. Track A's dashboard work is one conditional render; Track B's is the bulk.
-2. Split the dashboard by file, which produces the seam problem above in a smaller form.
+**Resolved: the whole directory goes to Dev B, not split by file.** Splitting it between two people
+would create exactly the seam this section argues against. So Track B *and* Track A's panel change both
+belong to whoever owns `apps/dashboard/**`, and Track A's owner stops at the contract — making the split
+**scenario back-end and contract** / **everything the audience sees**.
 
-**Option 1**, and it argues for giving Track B and the Track A panel change to the same person — so
-whoever owns `apps/dashboard/**` owns every change in it, and Track A's owner stops at the contract.
-That makes the split: *scenario back-end and contract* / *everything the audience sees*.
-
-Either way the root `CLAUDE.md` ownership table is a joint PR reviewed by both developers, and it is
-the first task, not an afterthought.
+#113 also corrected a second wrong row nobody had noticed: `iris/**` and `services/metrics-proxy/**`
+read "Dev B (was Dev A)", the reverse of the truth, contradicted by `iris/CLAUDE.md`, by MVP 2 §5.2 and
+by the commit history. Worth recording here because it is the same failure mode as §2.4's contract
+divergences — **a document that nobody follows, in the one place a newcomer would look to settle a
+dispute.**
 
 ---
 
-## 6. Decisions needed before development starts
+## 6. Decisions — all four taken, 2026-08-20
 
-1. **The ownership table.** Who owns `apps/dashboard/**` with two developers (§5). Blocking.
-2. **`manualRemediation`, or overload `rootCause`?** I recommend the new field (§2.5). Overloading
-   `rootCause` is cheaper today and merges "why it broke" with "what you should do" in the one field
-   an operator reads first.
-3. **Do the four MVP 2 contracts get schemas first?** `contracts/CHANGELOG.md` (2026-08-20) raises
-   this, and MVP 3 adds a fifth contract change to prose-only documents. Four field-level drifts have
-   already reached `main` in shapes no schema covered. My view: adding `manualRemediation` to a
-   document with no schema makes the fifth drift likelier, so this is the moment.
-4. **#100, the `reversal` self-contradiction.** Open, and it is a resolve-api decision that MVP 3
-   does not touch but should not inherit unresolved.
+| # | Decision | Outcome | Where it lands |
+|---|---|---|---|
+| 1 | Who owns `apps/dashboard/**` with two developers | **Dev B, the whole directory** — not split by file | #113 |
+| 2 | `manualRemediation`, or overload `rootCause` | **New field** | §2.5, and §6.1 below |
+| 3 | Do the four MVP 2 contracts get schemas first | **Yes, before the `manualRemediation` change** | §6.1 below |
+| 4 | #100, the `reversal` self-contradiction | **Settled** — reversal is a record, not a request; `2..8` at both layers | #114 |
+
+Decisions 2 and 3 were taken by the project owner after both developers recommended them; 1 and 4 are
+implemented in the PRs named. **Nothing in MVP 3 is built yet.**
+
+### 6.1 Decision 3 reorders the work
+
+This is the one consequence worth stating explicitly, because it changes sequence rather than content:
+**schemas for the four MVP 2 contracts land before `manualRemediation` is added to one of them.**
+
+Adding a fifth field-level change to a prose-only document is what decision 3 exists to stop. Five
+divergences have now reached `main` in shapes no schema covered:
+
+| Divergence | Kind | Closed by |
+|---|---|---|
+| `refusal` field names — `{code, detail}` vs `{reason, message, checkedBy}` | shape | #99 |
+| `reversal` shape — `{action, capturedFrom, automatic}` vs flat | shape | #114 |
+| `reversal.capturedFrom` — `"live production"` vs `"live"` | **value** | #111 |
+| `get_recent_errors` — `errors[]` vs `byCode[]`, and `windowMinutes` vs `sinceMinutes` | shape + name | open, §2.4 |
+| `set_pool_size` bound — `1..8` ratified, `2..8` shipped | value | #114 |
+
+**Four of the five were findable only by reading two documents side by side**, and the `capturedFrom`
+one took four readings of the same line by the person who had just written about it. That is not
+inattention; it is what prose review cannot do. A schema with an `enum` catches the value drifts and a
+`required`/`additionalProperties` pair catches the shape drifts, at validation time, without anyone
+remembering to look.
+
+So the order is:
+
+1. Schemas and captured samples for the four MVP 2 contracts — which also closes the
+   `get_recent_errors` divergence, since that one has to be settled to be written down
+2. `manualRemediation` added to `investigation-api.md` **and its schema together**
+3. Track A and Track B (§5)
+
+`services/detection-engine/test/mvp2-contract-drift.test.ts` — the prose grep — is **replaced** by
+this, not extended. Its own header asks for that, and a prose grep cannot see a wrong value in a
+correctly-named field, which is exactly the class the schema is for.
 
 ---
 
@@ -385,9 +417,14 @@ the first task, not an afterthought.
 presented with a worded recommendation and **no button** — plus the brochure and the two architecture
 slides.
 
-**First milestone:** the ownership table amended, the `manualRemediation` decision taken, and
-`Triggers.MissingFolder()` arming and resetting cleanly. Everything after that runs in parallel on two
-tracks.
+**First milestone:** all four §6 decisions taken — done, 2026-08-20 — then **schemas and captured
+samples for the four MVP 2 contracts** (§6.1), then `manualRemediation` added to
+`investigation-api.md` together with its schema, then `Triggers.MissingFolder()` arming and resetting
+cleanly. Everything after that runs in parallel on two tracks.
+
+The schemas come first by decision 3, and that is a deliberate delay rather than an oversight: MVP 3
+adds the fifth field-level change to documents that have already leaked four, and the cheapest moment
+to make them machine-readable is before the fifth rather than after it.
 
 **What would make this a bad MVP 3:** adding a second governed action. The reason to build this
 scenario is that it is the first one the product cannot fix, and that is the honest half of an
