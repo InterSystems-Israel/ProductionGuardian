@@ -1211,3 +1211,182 @@ button {
 .pg-forecast--spent .pg-forecast__label {
   color: var(--pg-warning);
 }
+
+/* ── MVP 3: brochure and architecture views ───────────────────────────────── */
+
+/* A real control in the rail. Reset the button chrome so it sits flush with the
+   inert spans above it -- the difference an operator should see is hover and
+   focus, not a mismatched box. */
+.pg-rail__item--action {
+  width: 100%;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  color: rgb(255 255 255 / 78%);
+  cursor: pointer;
+}
+
+.pg-rail__item--action:hover {
+  background: var(--pg-navy-700);
+  color: var(--pg-text-invert);
+}
+
+.pg-rail__item--action:focus-visible {
+  outline: 2px solid var(--pg-teal-500);
+  outline-offset: -2px;
+}
+
+/* Our group heading sits below the Health Connect list, so it needs the space the
+   first one gets from the rail's own padding. */
+.pg-rail__brand--ours {
+  margin-top: var(--pg-space-5);
+}
+
+/* Shared frame for both document views. */
+.pg-view {
+  background: var(--pg-surface);
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-radius-lg);
+  box-shadow: var(--pg-shadow-card);
+  padding: var(--pg-space-5);
+}
+
+.pg-view__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--pg-space-4);
+  margin-bottom: var(--pg-space-4);
+}
+
+.pg-view__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--pg-text);
+}
+
+.pg-view__caption {
+  margin: var(--pg-space-4) 0 0;
+  max-width: 78ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--pg-text-muted);
+}
+
+.pg-brochure {
+  background: var(--pg-surface-sunk);
+  border-radius: var(--pg-radius);
+  padding: var(--pg-space-3);
+  text-align: center;
+}
+
+/* Bounded by viewport height as well as width: the brochure is a tall page, and a
+   projector at 1024×768 would otherwise show only its masthead. */
+.pg-brochure img {
+  max-width: 100%;
+  max-height: 68vh;
+  object-fit: contain;
+  border-radius: var(--pg-radius);
+}
+
+.pg-arch {
+  background: var(--pg-surface-sunk);
+  border-radius: var(--pg-radius);
+  padding: var(--pg-space-4);
+}
+
+.pg-arch__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 64vh;
+}
+
+/* Containment boxes -- the IRIS container, AI Hub. Dashed so they read as a
+   boundary rather than as another component. */
+.pg-arch__group rect {
+  fill: none;
+  stroke: var(--pg-border);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+
+.pg-arch__group text {
+  fill: var(--pg-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-anchor: middle;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pg-arch__node rect {
+  fill: var(--pg-surface);
+  stroke: var(--pg-border);
+  stroke-width: 1.5;
+}
+
+.pg-arch__node text {
+  fill: var(--pg-text);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-anchor: middle;
+}
+
+.pg-arch__node .pg-arch__sub {
+  fill: var(--pg-text-muted);
+  font-size: 10.5px;
+  font-weight: 400;
+}
+
+/* Two tones only, and both are brand rather than severity. Severity colours are
+   reserved for severity (§7.1) -- a teal box here must not read as "healthy". */
+.pg-arch__node--brand rect {
+  fill: var(--pg-navy-800);
+  stroke: var(--pg-navy-900);
+}
+
+.pg-arch__node--brand text {
+  fill: var(--pg-text-invert);
+}
+
+.pg-arch__node--brand .pg-arch__sub {
+  fill: var(--pg-teal-200);
+}
+
+.pg-arch__node--accent rect {
+  fill: var(--pg-ok-bg);
+  stroke: var(--pg-teal-500);
+}
+
+.pg-arch__flow path {
+  fill: none;
+  stroke: var(--pg-navy-600);
+  stroke-width: 1.6;
+}
+
+.pg-arch__flow--dashed path {
+  stroke-dasharray: 4 3;
+}
+
+.pg-arch__flow marker path,
+.pg-arch__svg marker path {
+  fill: var(--pg-navy-600);
+  stroke: none;
+}
+
+.pg-arch__flow-label,
+.pg-arch__note {
+  fill: var(--pg-text-muted);
+  font-size: 10.5px;
+}
+
+@media (max-width: 1100px) {
+  .pg-view__head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

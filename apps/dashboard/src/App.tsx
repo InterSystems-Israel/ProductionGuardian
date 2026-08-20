@@ -14,7 +14,9 @@ import { useHealthScan } from './hooks/useHealthScan';
 import { useInvestigation } from './hooks/useInvestigation';
 import { useProjections } from './hooks/useProjections';
 import { pollIntervalMs, usePolling } from './hooks/usePolling';
-import { AppShell } from './components/AppShell';
+import { AppShell, type View } from './components/AppShell';
+import { ArchitectureView } from './components/ArchitectureView';
+import { BrochureView } from './components/BrochureView';
 import { ConnectionBanner, type ConnectionState } from './components/ConnectionBanner';
 import { SeveritySummary } from './components/SeveritySummary';
 import { HostGrid } from './components/HostGrid';
@@ -35,6 +37,14 @@ export function App(): JSX.Element {
   const [mode, setMode] = useState<Mode>(() => readMode());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+
+  /* Which top-level view is on screen (MVP 3).
+     NOT in the URL, unlike `mode`. `mode` is shareable because it changes what the
+     data means; which slide a presenter is looking at is transient, and putting it in
+     the URL would make the back button walk through the deck. Polling is left running
+     across views on purpose -- pausing it would have the dashboard show a stale
+     "updated 4m ago" the moment the presenter came back from the brochure. */
+  const [view, setView] = useState<View>('dashboard');
 
   const intervalMs = useMemo(() => pollIntervalMs(), []);
 
@@ -215,8 +225,20 @@ export function App(): JSX.Element {
   // a stale number as current.
   const contentClass = connectionState === 'ok' ? '' : 'pg-stale';
 
+  /* The two MVP 3 views are static documents about the product, not readings from it,
+     so the connection banner, the severity row and the drawer are all irrelevant to
+     them -- and a "cannot reach the API" banner over a brochure would be actively
+     confusing. They return early rather than being wrapped in the dashboard's chrome. */
+  if (view !== 'dashboard') {
+    return (
+      <AppShell headerActions={headerActions} view={view} onNavigate={setView}>
+        {view === 'brochure' ? <BrochureView /> : <ArchitectureView />}
+      </AppShell>
+    );
+  }
+
   return (
-    <AppShell headerActions={headerActions}>
+    <AppShell headerActions={headerActions} view={view} onNavigate={setView}>
       <ConnectionBanner
         state={connectionState}
         error={error}

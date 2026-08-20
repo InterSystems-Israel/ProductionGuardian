@@ -109,7 +109,8 @@ already exists for MVP 2's scenario to build on.
 | Path | Owner |
 |---|---|
 | `iris/**`, `services/metrics-proxy/**` | Dev A |
-| `services/detection-engine/**`, `apps/dashboard/**`, `docs/demo/**` | Dev B |
+| `services/detection-engine/**` | Dev B |
+| `apps/dashboard/**`, `docs/demo/**` | **Dev A from 2026-08-20** (MVP 3 Track B) — was Dev B |
 | `contracts/**` | see §4 — **nobody edits without a PR** |
 | `tools/**`, root config, `.github/**` | shared, PR + review |
 | `docs/*` source material (brochure, deck, MVP docx, demo html) | read-only |
