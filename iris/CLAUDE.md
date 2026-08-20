@@ -143,8 +143,8 @@ returns PHI, it lands in `Audit.Entry.Result` in plain text.
 | Criterion | State |
 |---|---|
 | Read tools return real evidence | met — six tools discovered, live values |
-| `set_pool_size` changes the live pool and is reversible | **dry-run verified only**; `before`/`after`/`reversal` correct, an apply has not been run against a live queue |
-| An unauthorized role is refused | met — observed, `iris/test/GovernanceProof.cls`. **Compile `test/` first — first boot does not** (see below) |
+| `set_pool_size` changes the live pool and is reversible | met — a real `1 → 4` against a queue held at its cap, drained to 0, `Reset()` restored pool 1 (#102). Reversal is *recorded* and correct; reversing **through the API** is blocked by #100 |
+| An unauthorized role is refused | met **by the fixture, not by the running system** — see below |
 | Every call appears in the audit log | met for executions and for authorization denials |
 | RBAC roles and resources exist from a clean boot | met, and **verified from a real boot** rather than inferred: the four security objects were deleted and `docker compose restart iris` recreated them through step 9. `Audit/` compiled on the way through, including its SQL table, so the recursive load picks up a new subdirectory |
 | A principal can actually *use* the roles | needs `%DB_%DEFAULT` **as well**, from the invocation path — the `Guardian_*` roles stay minimal and grant only `PG_*`. Without it you get `<PROTECT>` before any policy is consulted |
@@ -154,6 +154,57 @@ returns PHI, it lands in `Audit.Entry.Result` in plain text.
 do ##class(ProductionGuardian.Setup.AIHub).Status()          // what is and is not in place
 do ##class(ProductionGuardian.LabDemo.Audit.Entry).Purge()   // reset the log between rehearsals
 ```
+
+### Every row above means "on a boot", so test with `compose down -v`
+
+**A fresh clone is not a fresh instance.** `docker-compose.yml` fixes the volume name
+(`name: production-guardian`), so cloning the repo into a new directory and running `compose up`
+reuses the existing volume — the boot then reports `exists` for every security object, every web
+application and the provider config, and looks perfectly clean. Only `docker compose down -v`
+destroys the volume and tests what a colleague actually gets.
+
+This has now cost the team three defects in one day, each invisible on every machine we had:
+
+| Missing on a cold boot | Found in |
+|---|---|
+| `iris/test/` never compiled, so the acceptance proof did not exist | #97 |
+| `/labdemo/agent` web app unregistered, so **every MVP 2 write returned 404** | #106 |
+| the LLM wallet entry and `AI.LLM.pgdetective` config, so AI Detective could not run | #106 |
+
+All three existed everywhere we tested because each of us created it by hand while building it.
+@Ari-Glikman's framing is the one to keep: **the state that matters is what a fresh boot produces,
+not what your instance contains.** That is #84's argument arriving by a different route — the second
+copy here is a live instance rather than a stale number, and the "staling" event is having worked on
+it.
+
+So a row reading "met" in the table above is a claim about a boot, and the only way to check one is
+to throw the volume away first.
+
+### The running system cannot refuse anything, and "met" above means the fixture
+
+`docker-compose.yml` gives the engine and the proxy `IRIS_USER=superuser`, which holds `%All`, and
+under `%All` `$SYSTEM.Security.Check` returns 1 for **every** resource — including ones that do not
+exist. Measured:
+
+```
+roles: %All
+  Check PG_Resolve:USE       = 1
+  Check PG_TotallyMadeUp:USE = 1
+```
+
+So `Tools.AuthPolicy` is correct code on a path the deployed stack never exercises, and every audit
+row reads `actor: SuperUser`. The observed denial in `Test.GovernanceProof` is real, but it works by
+manufacturing a throwaway low-privilege principal *because* the deployed one is over-privileged.
+Read the acceptance row as "the policy denies when asked by a principal that lacks the resource",
+not as "the demo shows the boundary refusing a live request".
+
+**Do not try to fix this by creating service accounts before reading #104.** @Ari-Glikman built
+exactly that, it worked, and it had to be reverted: `Ens.Director.UpdateProduction()` returns
+`ERROR #940: Insufficient privilege` for a non-`%All` caller, and the privilege cannot be granted
+because **no `%Ens_*` resource or role exists on this instance** — verified independently, 0 rows in
+both `Security.Resources` and `Security.Roles`. `EnableNamespace` normally creates them and never
+did here; `%All` has masked it since day one. The end state was a policy that authorizes the write
+and a write that cannot land, which is worse than either extreme.
 
 ### `iris/test/` is not deployed by first boot — compile it by hand
 
