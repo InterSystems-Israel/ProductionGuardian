@@ -283,28 +283,82 @@ Recent error events for one host, **sanitised**. Read §6 before implementing th
 | Field | Type | Req | Notes |
 |---|---|---|---|
 | `host` | string | **required** | Config item name. |
-| `sinceMinutes` | integer | optional, default `15` | Window, 1..60. |
-| `limit` | integer | optional, default `20` | Max events returned, 1..50. |
+| `sinceMinutes` | integer | optional, default `15` | Window, 1..60. Bounded rather than open — see §6. |
 
 **Output**
 
 | Field | Type | Notes |
 |---|---|---|
 | `host` | string | Echoed. |
-| `windowMinutes` | integer | The window actually applied. |
-| `count` | integer \| null | Events in the window. `null` when the log could not be read. |
-| `errors` | array | At most `limit` entries, newest first. |
-| `truncated` | boolean | `true` when `count > limit`. |
+| `sinceMinutes` | integer | The window actually applied. **Echoes the input name** — see the reconciliation note below. |
+| `count` | integer \| null | Events in the window. `null` when the log could not be read, **never `0`**. |
+| `byCode` | array | One entry per distinct `errorCode`, with a count and a catalogue summary. |
 | `sanitised` | boolean | Always `true`. Present so its absence is conspicuous. |
 
-Each entry:
+Each `byCode` entry:
 
 | Field | Type | Notes |
 |---|---|---|
-| `occurredAt` | string | ISO 8601 UTC. |
-| `errorCode` | string | The IRIS error token only — `<Ens>ErrFailureTimeout`, `#6059`, or `unclassified`. |
-| `sourceClass` | string | Class name from the log row. A class name, never an instance value. |
-| `summary` | string \| null | A **catalogue** string keyed by `errorCode`. `null` when unclassified. |
+| `errorCode` | string | The IRIS error token only — `<Ens>ErrFailureTimeout`, `#6059`, `#5021`, or `unclassified`. |
+| `count` | integer | Occurrences of this code in the window. |
+| `summary` | string \| null | A **catalogue** string keyed by `errorCode`, from the table in §3.4a. `null` when unclassified. |
+
+**RECONCILED WITH THE IMPLEMENTATION 2026-08-20, and the contract moved further than the code.** This
+table specified something the tool has never emitted, and the two shapes differed in kind rather than
+by a field (@kskubach, MVP 3 spec §2.4; @Ari-Glikman, #112 review):
+
+| | this table, before | `Tools/Read.cls` |
+|---|---|---|
+| window echo | `windowMinutes` | `sinceMinutes` |
+| array | `errors[]` of per-event rows | `byCode[]` of `{errorCode, count}` |
+| `truncated` | specified | absent |
+| `limit` input | specified | not a parameter |
+| `occurredAt`, `sourceClass` | specified | absent |
+
+**The implementation's shape is kept and the contract corrected to it, except for `summary`.** Three
+reasons, in ascending order of weight:
+
+1. **`sinceMinutes` on both sides.** A different name on input and output is a translation step for no
+   gain, and the divergence proves nobody wanted it. One name.
+2. **Aggregation beats per-event rows for the consumer that exists.** The agent asks *"what kind of
+   thing is going wrong and how often"*, and `byCode` answers exactly that. Per-event rows with
+   timestamps invite an agent to reason about individual occurrences, which is the reasoning the data
+   boundary cannot support — the row it would want to quote is the one that may carry PHI.
+3. **`limit` and `truncated` were solving a problem aggregation removes.** They exist to bound a list
+   of events; there are at most a handful of distinct codes, so there is nothing to truncate. Removing
+   them removes two fields nothing emitted and nothing needed.
+
+**`summary` is the one thing the contract was right about, and it is added rather than dropped.** MVP
+3's missing-folder scenario needs the agent to learn *what kind of failure* `#5021` is without reading
+log text — see §3.4a. It is a property of a code, so it lives on a `byCode` entry naturally, which is
+where the original `errors[]` shape had nowhere to put it.
+
+**`occurredAt` and `sourceClass` are dropped, not deferred.** Neither is emitted, neither is needed by
+the one consumer, and `occurredAt` on an aggregate is meaningless. A field specified and unimplemented
+for a month is a claim the document should stop making.
+
+### 3.4a The `summary` catalogue — configuration knowledge, not log text
+
+`summary` is a **fixed string looked up by `errorCode`**. It is not derived from the log row, so it
+cannot carry payload-derived content by construction — which is the whole reason it is safe to send
+and the reason it is a catalogue rather than a message excerpt.
+
+| `errorCode` | `summary` |
+|---|---|
+| `#5021` | `a configured directory or file path does not exist` |
+| `#6059` | `the configured downstream host or port could not be reached` |
+| `<Ens>ErrFailureTimeout` | `the host retried and gave up within its failure timeout` |
+| `unclassified` | `null` |
+
+**THE ALLOWLIST MUST NOT GAIN AN EXCEPTION FOR `#5021`.** The obvious shortcut for MVP 3 is to return
+`#5021`'s message text, because it contains the missing path and the path is *usually* harmless. That
+is the wrong shape twice over: an allowlist with one exception is an allowlist an implementer widens,
+and "usually harmless" is the rare-rather-than-absent pattern that survives review and then leaks.
+The path is obtained instead from the host's configured settings — configuration, which §6 permits —
+and this catalogue supplies the *kind* of failure.
+
+**Adding a row is a contract change**, deliberately. A code that reaches an agent with a
+human-readable meaning is a decision about what the model is told, not an implementation detail.
 
 **Wraps** `Ens.Util.Log` filtered to error and alert types for the host, plus a count of
 `Ens.MessageHeader` rows at `Status = 8` (Error) — the same `MSGSTATUSERROR = 8` that
@@ -375,37 +429,54 @@ Raw rows in `Ens_Util.Log` (what the tool reads, and what it must not publish):
 
 ```jsonc
 // -> get_recent_errors
-{ "host": "Cloud API", "sinceMinutes": 15, "limit": 20 }
+{ "host": "Cloud API", "sinceMinutes": 15 }
 ```
 
 ```jsonc
 // <- what the agent, and therefore the external LLM, sees
 {
   "host": "Cloud API",
-  "windowMinutes": 15,
+  "sinceMinutes": 15,
   "count": 42,
-  "truncated": true,
   "sanitised": true,
-  "errors": [
+  "byCode": [
     {
-      "occurredAt": "2026-08-18T07:46:29.533Z",
       "errorCode": "<Ens>ErrFailureTimeout",
-      "sourceClass": "ProductionGuardian.LabDemo.Operation.PatientDemographicsOperation",
-      "summary": "The host did not complete a message within its FailureTimeout."
+      "count": 27,
+      "summary": "the host retried and gave up within its failure timeout"
     },
     {
-      "occurredAt": "2026-08-18T07:46:29.533Z",
       "errorCode": "#6059",
-      "sourceClass": "ProductionGuardian.LabDemo.Operation.PatientDemographicsOperation",
-      "summary": "Could not open a TCP/IP socket to the configured target."
+      "count": 15,
+      "summary": "the configured downstream host or port could not be reached"
     }
   ]
 }
 ```
 
-Note what did **not** survive: the `127.0.0.1:59999` target, the timeout value, and every character
-of the original text. `summary` is written by us, indexed by code. The two entries share a timestamp
-because the raw rows do — that is a real property of `Ens.Util.Log`, not a formatting artefact.
+And the MVP 3 scenario, where the host is a service that cannot read its inbound directory:
+
+```jsonc
+// <- get_recent_errors for EMR Source
+{
+  "host": "EMR Source",
+  "sinceMinutes": 15,
+  "count": 8,
+  "sanitised": true,
+  "byCode": [
+    { "errorCode": "#5021", "count": 8, "summary": "a configured directory or file path does not exist" }
+  ]
+}
+```
+
+Note what did **not** survive: the `127.0.0.1:59999` target, the timeout value, the missing path, and
+every character of the original text. `summary` is written by us and indexed by code (§3.4a), so the
+agent learns the KIND of failure from this tool and the offending path from the host's configured
+settings — never from a log row.
+
+**The `#5021` entry is the whole reason MVP 3 needs this tool at all**, and it is also why the tool
+alone is insufficient: `count: 8` and that summary tell the agent a path is missing and not *which*
+path. Naming it requires reading configuration, which is a different tool and a different boundary.
 
 ### 3.5 `get_processing_time` — read
 

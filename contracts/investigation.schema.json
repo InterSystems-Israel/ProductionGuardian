@@ -1,0 +1,148 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://production-guardian/contracts/investigation.schema.json",
+  "title": "Production Guardian — AI Detective API",
+  "description": "Schema for POST /api/investigate. Owner: Dev B. See investigation-api.md. Added 2026-08-20 with MVP 3's manualRemediation, because five field-level divergences had already reached main in shapes nothing validated.",
+
+  "definitions": {
+    "ResolveAction": {
+      "description": "Exactly three keys. resolve-api.md §1.1 refuses unknown keys inside action, so additionalProperties: false here is the same rule stated where a validator can enforce it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "host", "size"],
+      "properties": {
+        "type": { "const": "set_pool_size" },
+        "host": { "type": "string", "minLength": 1 },
+        "size": { "type": "integer" }
+      }
+    },
+
+    "RecommendedAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "currentValue",
+        "bounds",
+        "reversible",
+        "requiresApproval",
+        "summary"
+      ],
+      "properties": {
+        "action": { "$ref": "#/definitions/ResolveAction" },
+        "currentValue": { "type": ["integer", "null"] },
+        "bounds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "type": "integer" },
+            "max": { "type": "integer" }
+          }
+        },
+        "reversible": { "type": "boolean" },
+        "requiresApproval": { "type": "boolean" },
+        "summary": { "type": "string" }
+      }
+    },
+
+    "ManualRemediation": {
+      "description": "MVP 3, §3.3a. A fix the system may NOT apply. Deliberately has no `action` object: a consumer cannot render an approve control for it, which makes the wrong UI unrepresentable rather than merely discouraged.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "steps", "target", "appliedBy"],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "target": {
+          "description": "Configuration only. Never message content -- see mcp-tools.md §6.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["host", "setting", "currentValue"],
+          "properties": {
+            "host": { "type": "string", "minLength": 1 },
+            "setting": { "type": "string", "minLength": 1 },
+            "currentValue": { "type": ["string", "null"] }
+          }
+        },
+        "appliedBy": {
+          "description": "Enumerated so a second value is a contract change rather than a code change.",
+          "enum": ["operator"]
+        }
+      }
+    },
+
+    "EvidenceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "detail", "source", "tool"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1 },
+        "detail": { "type": "string", "minLength": 1 },
+        "source": {
+          "description": "§3.2. `llm` means the model asserted it and nothing measured it -- the distinction a human approving a write is entitled to see.",
+          "enum": ["mcp_tool", "snapshot", "llm"]
+        },
+        "tool": { "type": ["string", "null"] }
+      }
+    },
+
+    "InvestigationResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestId",
+        "findingId",
+        "state",
+        "source",
+        "investigatedAt",
+        "rootCause",
+        "evidence",
+        "confidence",
+        "recommendedAction",
+        "diagnostics"
+      ],
+      "properties": {
+        "requestId": { "type": "string", "minLength": 1 },
+        "findingId": { "type": "string", "minLength": 1 },
+        "state": { "enum": ["complete", "degraded", "unavailable"] },
+        "source": {
+          "description": "`canned` is the mock agent. Enumerated because a canned investigation presenting itself as live is the same defect class as a projection shown as a measurement.",
+          "enum": ["agent", "cache", "canned", "none"]
+        },
+        "investigatedAt": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+        },
+        "rootCause": {
+          "description": "NULL IS A LEGITIMATE ANSWER (§4.4) -- the engine declining to invent an explanation. Not a loading state and not an error.",
+          "type": ["string", "null"]
+        },
+        "evidence": { "type": "array", "items": { "$ref": "#/definitions/EvidenceItem" } },
+        "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "recommendedAction": {
+          "oneOf": [{ "$ref": "#/definitions/RecommendedAction" }, { "type": "null" }]
+        },
+        "manualRemediation": {
+          "description": "MVP 3, optional and additive. Absent on an MVP 2 response; null when the agent recommended nothing manual.",
+          "oneOf": [{ "$ref": "#/definitions/ManualRemediation" }, { "type": "null" }]
+        },
+        "diagnostics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["model", "toolCalls", "durationMs", "note"],
+          "properties": {
+            "model": { "type": ["string", "null"] },
+            "toolCalls": { "type": ["integer", "null"] },
+            "durationMs": { "type": ["integer", "null"] },
+            "note": { "type": ["string", "null"] }
+          }
+        }
+      }
+    }
+  }
+}

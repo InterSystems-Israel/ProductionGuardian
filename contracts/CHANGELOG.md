@@ -5,6 +5,100 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-20 — MVP 3's two contract changes, and the first MVP 2 schema (Dev B)
+
+**Two documents changed, one schema and one captured sample added.** `validate.mjs` goes from
+2 samples / 19 reject to **3 samples / 26 reject**. Reviewed by Dev A before merge, per §4.
+
+### 1. `investigation-api.md` §3.3a — `manualRemediation`
+
+MVP 3's scenario is a finding with **no governed action**: a service polls a directory that does not
+exist, and the fix is an operator changing a setting. §3.1 already allows `recommendedAction: null`,
+so the *absence* of a fix was expressible; a recommendation **in words** was not, and §3.3 is right
+that `recommendedAction` must stay a structured object.
+
+So this is an additive nullable sibling, and the reason it is a separate field rather than a flag is
+worth stating plainly: the two carry different **authority**.
+
+- `recommendedAction` — *there is a fix and the system may apply it, with approval*
+- `manualRemediation` — *there is a fix and the system may not apply it at all*
+
+Two shapes make the wrong UI **unrepresentable**: there is no `action` object to send, so a consumer
+cannot render an approve control for it. One shape with an `applyable: false` flag makes the wrong UI
+a forgotten `if`, and the thing being designed out is an approve button next to a recommendation the
+system cannot carry out — which a human would click.
+
+`appliedBy` is enumerated with `operator` as its only member, so autonomous remediation becomes a
+contract change rather than a code change.
+
+### 2. `mcp-tools.md` §3.4 — `get_recent_errors` reconciled with the implementation
+
+This table specified a response the tool has never emitted, and the shapes differed **in kind**:
+
+| | contract, before | `Tools/Read.cls` |
+|---|---|---|
+| window echo | `windowMinutes` | `sinceMinutes` |
+| array | `errors[]` of `{occurredAt, errorCode, sourceClass, summary}` | `byCode[]` of `{errorCode, count}` |
+| `truncated`, `limit` | specified | absent |
+
+**The implementation's shape is kept and the contract corrected to it, except `summary`.** Aggregation
+is what the one consumer needs — *what kind of thing is going wrong and how often* — and per-event
+rows invite an agent to reason about individual occurrences, which is exactly the reasoning the data
+boundary cannot support: the row it would want to quote is the one that may carry PHI. `limit` and
+`truncated` bounded a list that no longer exists.
+
+`summary` is added rather than dropped, because MVP 3 needs it, and §3.4a gives it a **catalogue**
+keyed by `errorCode` — `#5021` → *"a configured directory or file path does not exist"*. A fixed
+string cannot carry payload content by construction, which is why it is safe to send.
+
+§3.4a also refuses the shortcut it invites: **the allowlist must not gain an exception for `#5021`**
+so the agent can read the missing path out of the message. An allowlist with one exception is one an
+implementer widens, and "the path is usually harmless" is the rare-rather-than-absent pattern that
+survives review and then leaks. The path comes from configuration; the catalogue supplies the kind.
+
+`occurredAt` and `sourceClass` are dropped, not deferred — neither is emitted, neither is needed, and
+`occurredAt` on an aggregate is meaningless. A field specified and unimplemented for a month is a
+claim the document should stop making.
+
+### 3. `investigation.schema.json` — the first machine-readable MVP 2 contract
+
+The 2026-08-20 entry above recorded that all four MVP 2 contracts were prose-only and that five
+field-level divergences had reached `main` in shapes nothing validated. This closes that for the one
+document MVP 3 edits.
+
+`samples/investigation-response.json` is **captured from a live run** — `source: "agent"`,
+`gpt-4o-mini`, 5 tool calls, five `mcp_tool` evidence bullets — with only the ids and timestamp
+pinned so the fixture does not move. Same rule as the MVP 1 samples: a hand-written sample proves the
+schema accepts what its author imagined; a captured one proves it accepts what the system emits.
+
+**Seven negative cases, each a real defect or a safety property**, because a schema that accepts
+everything would pass the positive case too:
+
+```
+rejects: manualRemediation carrying an action object -- a UI could render Approve for it
+rejects: appliedBy 'system' -- autonomous remediation, which root CLAUDE.md §2.1 forbids
+rejects: target carrying a message-content key -- the data boundary in schema form
+rejects: steps: [] -- a manual remediation with no steps says nothing
+rejects: evidence source 'tool' instead of 'mcp_tool' -- the enum that keeps provenance honest
+rejects: action with a fourth key -- resolve-api.md §1.1 refuses unknown keys inside action
+rejects: action.type 'restart_host' -- one action type, enumerated so a second is a decision
+```
+
+The first three are the ones that could not be caught by a TypeScript type: they are **values and
+extra keys**, not shapes. That is the lesson from `capturedFrom: "live production"` (#111), which
+sat in a correctly-typed string field and survived four readings of the line.
+
+### Deliberately not done
+
+`earlywarning-api.md` and `resolve-api.md` get no schema here. **MVP 3 does not touch them**, and
+retrofitting two documents nothing is about to edit would be scope this change does not need. They
+remain prose-only and that remains a known gap — recorded in the 2026-08-20 entry above rather than
+silently carried.
+
+`earlywarning-api.md` also still reads `Status: proposed` while its endpoint is shipped and consumed
+by the merged dashboard. Left alone for the same reason, and flagged so it is a decision.
+
+
 ## 2026-08-20 — `reversal` is a record, not a request; the `1..8` asymmetry withdrawn (Dev A)
 
 Closes #100. **Two files, no field added and none removed that anything emitted.** `resolve-api.md`

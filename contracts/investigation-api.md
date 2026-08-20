@@ -390,6 +390,67 @@ spelling, same types — and §1.1 **refuses unknown keys inside `action`** (`ma
 
 `additionalProperties: false` at both levels.
 
+### 3.3a `manualRemediation` — a fix that is not ours to apply
+
+**MVP 3.** `recommendedAction` above stays exactly as specified: a structured object whose `action`
+travels verbatim to `POST /api/resolve`. This is a **separate, additive, nullable sibling** for the
+case where the agent knows the fix and the system may not perform it.
+
+```json
+{
+  "recommendedAction": null,
+  "manualRemediation": {
+    "summary": "EMR Source polls a directory that does not exist",
+    "steps": [
+      "Create the directory /tmp/labdemo/hl7-in/ on the IRIS host, or",
+      "point EMR Source's FilePath setting at an existing directory"
+    ],
+    "target": { "host": "EMR Source", "setting": "FilePath", "currentValue": "/tmp/labdemo/hl7-in-missing/" },
+    "appliedBy": "operator"
+  }
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `summary` | string | One line naming the condition. Rendered as-is; not a button label — there is no button. |
+| `steps` | array of string | Ordered, imperative, each independently actionable. Rendered as a list, verbatim. |
+| `target` | object \| null | What to change, **configuration only**: `{ host, setting, currentValue }`. `null` when the agent could not identify it. |
+| `appliedBy` | string | Enumerated. **`operator` is the only member.** Present so a second value is a contract change rather than a code change. |
+| `steps[]` | — | **Never contains message content or PHI** — same boundary as everything else that leaves the instance (§6 of `mcp-tools.md`). |
+
+`additionalProperties: false`.
+
+**WHY A SEPARATE FIELD RATHER THAN LOOSENING `recommendedAction`.** §3.3 is right that a recommended
+action is a structured object and never prose — that is what makes it safe to hand to a write
+endpoint. Adding a `prose` variant, or an `applyable: false` flag, would put two things with
+different **authority** into one shape:
+
+- `recommendedAction` means *"there is a fix and the system may apply it, with your approval"*
+- `manualRemediation` means *"there is a fix and the system may not apply it at all"*
+
+Two shapes make the wrong UI **unrepresentable**: a consumer cannot render an approve control for a
+`manualRemediation`, because there is no `action` object to send. One shape with a boolean makes the
+wrong UI a forgotten `if`. The failure mode being designed out is an approve button appearing next
+to a recommendation the system cannot carry out — the single worst thing this endpoint could cause,
+because a human would click it.
+
+**BOTH MAY BE NULL, AND THAT IS STILL A VALID INVESTIGATION.** §3.1 already allows
+`recommendedAction: null` on a `complete` investigation. `manualRemediation: null` alongside it means
+the agent explained the condition and recommended nothing — which stays legal and must render as
+*no recommended action* rather than as an error.
+
+**THEY ARE MUTUALLY EXCLUSIVE IN PRACTICE AND NOT ENFORCED HERE.** Nothing in this contract forbids
+both being non-null; a future condition might legitimately have a bounded action *and* a manual
+follow-up. A consumer that receives both must render both, and must not treat `manualRemediation` as
+a reason to suppress the approve control for a genuine `recommendedAction`.
+
+**ACCEPTANCE IS THE ABSENCE OF A CONTROL, WHICH IS WHY IT NEEDS AN EXPLICIT CHECK.** *"With a
+`manualRemediation` finding open, the drawer shows the summary and steps and NO Preview or Approve
+button."* A missing negative is invisible: every check can pass while the control is wrongly present,
+because nothing asserts what should not be there. Stated here rather than left to the UI, because
+this contract is where the authority distinction lives.
+
 **Dev C must not build a translation layer.** Take `recommendedAction.action` and send it as
 `action`; take `currentValue` and send it as `precondition.poolSize`. Any reshaping between the two
 endpoints is the prose-parsing failure with extra steps, which is `resolve-api.md` §1.2's stated
