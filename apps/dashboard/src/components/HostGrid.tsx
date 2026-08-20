@@ -9,9 +9,18 @@ import type { FindingView, HostView, Severity } from '../types/healthscan';
 import { toSeverity, worstSeverity } from '../lib/severity';
 import { EmptyState } from './EmptyState';
 import { HostCard } from './HostCard';
+import type { HostProjectionView } from '../types/mvp2';
 import { IconProductions } from './icons';
 
 export interface HostGridProps {
+  /**
+   * Early Warning projections, keyed by host inside the grid rather than by the caller.
+   *
+   * Optional and defaulted to empty: the grid renders exactly as it did in MVP 1 without them, so a
+   * deployment whose engine predates /api/earlywarning loses nothing.
+   */
+  projections?: readonly HostProjectionView[];
+
   hosts: readonly HostView[];
   findings: readonly FindingView[];
   now: number;
@@ -74,6 +83,7 @@ export function HostGrid({
   now,
   loading,
   skeletonCount = null,
+  projections = [],
 }: HostGridProps): JSX.Element {
   // Skeletons, not spinners (§7.3), as many as this production last reported, so the
   // layout does not jump when real data lands — whatever production that is.
@@ -100,6 +110,9 @@ export function HostGrid({
   }
 
   const bySeverity = severityByHost(findings);
+  /* Built once per render rather than a find() per card: three hosts today, but the grid is the one
+     component that scales with the production's size. */
+  const byHost = new Map(projections.map((p) => [p.host, p]));
 
   return (
     <div className="pg-grid">
@@ -112,6 +125,7 @@ export function HostGrid({
             worst={summary?.worst ?? null}
             findingCount={summary?.count ?? 0}
             now={now}
+            projection={byHost.get(host.host) ?? null}
           />
         );
       })}

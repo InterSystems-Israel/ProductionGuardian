@@ -6,10 +6,15 @@
  * the visual focus: two large monospaced numerals with the comparison between
  * them. Everything else here is supporting context.
  *
- * Two things this view must not do, both from §1.1: no remediation control (Smart
- * Resolve), and no root-cause narrative or confidence score (AI Detective). It
- * shows what breached and what normal looks like — the operator draws the
- * conclusion.
+ * MVP 2 ADDED BOTH THINGS THIS COMMENT USED TO FORBID. It read: "no remediation
+ * control (Smart Resolve), and no root-cause narrative or confidence score (AI
+ * Detective)" — correct under MVP 1's boundary, and root `CLAUDE.md` §2.1 moved
+ * all three modules in scope. The comparison below is still the visual focus and
+ * still renders without an investigation; the panel is opt-in, behind a button, so
+ * a drawer opened to read a number does not fire an LLM call.
+ *
+ * What has NOT changed is who draws the conclusion on a write: the panel proposes,
+ * an operator approves, and nothing is applied unattended.
  *
  * Accessibility (§7.3): closes on `Esc` and returns focus to the row that opened
  * it, which is why `onClose` is called rather than the row being re-focused here —
@@ -37,6 +42,17 @@ export interface FindingDetailProps {
   finding: FindingView | null;
   now: number;
   onClose: () => void;
+  /**
+   * The MVP 2 panel, passed in rather than built here.
+   *
+   * This component takes no `api` and owns no request state -- §4.1 keeps `fetch` out of
+   * components, and threading a client through the drawer would put the LLM call one prop away from
+   * a purely presentational view. The owner wires `useInvestigation` and hands the rendered panel
+   * down, so the drawer stays renderable in a test with no client at all.
+   *
+   * Absent, the drawer is exactly the MVP 1 view.
+   */
+  investigation?: JSX.Element | null;
 }
 
 /**
@@ -58,7 +74,12 @@ function deltaFormatter(kind: ReturnType<typeof valueKind>): (value: number) => 
   return formatCount;
 }
 
-export function FindingDetail({ finding, now, onClose }: FindingDetailProps): JSX.Element | null {
+export function FindingDetail({
+  finding,
+  now,
+  onClose,
+  investigation = null,
+}: FindingDetailProps): JSX.Element | null {
   /* Esc closes from anywhere, not only from inside the drawer: the operator's
      focus is often still on the row that opened it, since that row deliberately
      keeps focus for the return trip. Bound to the document for that reason. */
@@ -212,6 +233,11 @@ export function FindingDetail({ finding, now, onClose }: FindingDetailProps): JS
             the engine having warmed up.
           </p>
         )}
+
+        {/* LAST in the body, deliberately: the comparison is what the operator came for, and an
+            investigation is what they do next. Reversing them would put a paragraph of narrative
+            above the two numbers this view exists to show. */}
+        {investigation}
       </div>
     </aside>
   );

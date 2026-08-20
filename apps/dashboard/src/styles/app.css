@@ -951,3 +951,263 @@ button {
     width: min(var(--pg-drawer-width), 60vw);
   }
 }
+
+/* ─── AI Detective + Smart Resolve (MVP 2) ──────────────────────────────────────────
+   All tokens, no literals: a hardcoded colour here would drift from the severity
+   palette the rest of the drawer uses, and the refusal/failure states need to read
+   as the same family as a critical finding. */
+
+.pg-investigate {
+  margin-top: var(--pg-space-5);
+  padding-top: var(--pg-space-4);
+  border-top: 1px solid var(--pg-border);
+}
+
+.pg-investigate__heading {
+  margin: 0 0 var(--pg-space-2);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--pg-text);
+}
+
+.pg-investigate__intro,
+.pg-investigate__status {
+  margin: 0 0 var(--pg-space-3);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--pg-text-muted);
+}
+
+/* The narrative. Slightly larger and darker than the supporting copy, because it is
+   the answer to the question the heading asks. */
+.pg-investigate__rootcause {
+  margin: var(--pg-space-3) 0;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--pg-text);
+}
+
+.pg-investigate__note {
+  margin: var(--pg-space-2) 0 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--pg-text-muted);
+}
+
+.pg-investigate__error,
+.pg-investigate__unavailable {
+  margin: var(--pg-space-3) 0;
+  padding: var(--pg-space-3);
+  border-radius: var(--pg-radius);
+  background: var(--pg-critical-bg);
+  color: var(--pg-text);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.pg-investigate__error p,
+.pg-investigate__unavailable p {
+  margin: 0 0 var(--pg-space-2);
+}
+
+.pg-investigate__provenance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pg-space-2);
+  margin: var(--pg-space-2) 0 var(--pg-space-3);
+}
+
+/* Provenance chips. `--warn` is the canned/demo one and is deliberately the most
+   visually distinct: it is the label that stops a mock being mistaken for live. */
+.pg-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--pg-space-2);
+  border-radius: var(--pg-radius-pill);
+  background: var(--pg-surface-sunk);
+  color: var(--pg-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.pg-tag--ok {
+  background: var(--pg-ok-bg);
+  color: var(--pg-ok);
+}
+
+.pg-tag--warn {
+  background: var(--pg-warning-bg);
+  color: var(--pg-warning);
+  font-weight: 600;
+}
+
+/* Evidence list. Each row carries its own provenance, so the source label sits on
+   the same line as the label rather than under the detail. */
+.pg-evidence {
+  margin: var(--pg-space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pg-evidence__item {
+  padding: var(--pg-space-2) 0;
+  border-bottom: 1px solid var(--pg-border-soft);
+}
+
+.pg-evidence__item:last-child {
+  border-bottom: 0;
+}
+
+.pg-evidence__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--pg-space-2);
+}
+
+.pg-evidence__label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--pg-text);
+}
+
+.pg-evidence__source {
+  font-size: 0.6875rem;
+  color: var(--pg-text-muted);
+  white-space: nowrap;
+}
+
+/* `mcp_tool` was measured by a governed tool; `llm` was asserted by the model and
+   nothing verified it. Colouring only those two, because the distinction that matters
+   to someone about to approve a write is measured-vs-asserted. */
+.pg-evidence__source--mcp_tool {
+  color: var(--pg-ok);
+}
+
+.pg-evidence__source--llm {
+  color: var(--pg-warning);
+}
+
+.pg-evidence__detail {
+  margin-top: 2px;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--pg-text-muted);
+}
+
+/* The write panel, visually separated from the read-only narrative above it. */
+.pg-resolve {
+  margin-top: var(--pg-space-4);
+  padding-top: var(--pg-space-4);
+  border-top: 1px solid var(--pg-border);
+}
+
+.pg-resolve__summary {
+  margin: 0 0 var(--pg-space-3);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--pg-text);
+}
+
+.pg-resolve__actions {
+  display: flex;
+  gap: var(--pg-space-2);
+  margin-top: var(--pg-space-3);
+}
+
+.pg-resolve__gate {
+  margin: var(--pg-space-3) 0 0;
+  padding: var(--pg-space-2) var(--pg-space-3);
+  border-left: 3px solid var(--pg-warning);
+  background: var(--pg-warning-bg);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--pg-text);
+}
+
+.pg-resolve__outcome {
+  margin-top: var(--pg-space-3);
+  padding: var(--pg-space-3);
+  border-radius: var(--pg-radius);
+  background: var(--pg-surface-sunk);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.pg-resolve__outcome-label {
+  margin: 0 0 var(--pg-space-1);
+  font-weight: 600;
+  color: var(--pg-text);
+}
+
+/* An APPLIED write reads as success; a refusal reads as the safety model working, not
+   as an error; a failure reads as critical. §5.2 forbids merging the last two. */
+.pg-resolve__outcome--applied {
+  background: var(--pg-ok-bg);
+}
+
+.pg-resolve__outcome--refused {
+  background: var(--pg-info-bg);
+}
+
+.pg-resolve__outcome--failed {
+  background: var(--pg-critical-bg);
+}
+
+.pg-resolve__refusal {
+  margin: var(--pg-space-1) 0 0;
+  color: var(--pg-text);
+}
+
+/* ─── Early Warning (MVP 2) ──────────────────────────────────────────────────────────
+   Info-toned, NOT warning-toned. A projection is a heads-up about something that has
+   not happened, and colouring it like a breach would put two hosts at the same visual
+   weight when only one of them is actually in trouble. */
+
+.pg-forecast {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: var(--pg-space-3);
+  padding: var(--pg-space-2) var(--pg-space-3);
+  border-left: 3px solid var(--pg-info);
+  border-radius: 0 var(--pg-radius) var(--pg-radius) 0;
+  background: var(--pg-info-bg);
+}
+
+/* The pending variant says "not yet", so it reads as inert rather than as information. */
+.pg-forecast--pending {
+  border-left-color: var(--pg-border);
+  background: var(--pg-surface-sunk);
+}
+
+.pg-forecast__label {
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--pg-info);
+}
+
+.pg-forecast--pending .pg-forecast__label {
+  color: var(--pg-text-muted);
+}
+
+.pg-forecast__body {
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--pg-text);
+}
+
+/* The spent variant: the window has closed and a finding covers the state now. Warning-toned
+   rather than info-toned, because unlike a pending projection this one is reporting that the
+   thing being watched for has actually happened. */
+.pg-forecast--spent {
+  border-left-color: var(--pg-warning);
+  background: var(--pg-warning-bg);
+}
+
+.pg-forecast--spent .pg-forecast__label {
+  color: var(--pg-warning);
+}

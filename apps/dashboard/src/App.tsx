@@ -11,6 +11,8 @@ import type { Mode } from './api/HealthScanApi';
 import { createLiveClient } from './api/liveClient';
 import { createMockClient, type MockClient } from './api/mockClient';
 import { useHealthScan } from './hooks/useHealthScan';
+import { useInvestigation } from './hooks/useInvestigation';
+import { useProjections } from './hooks/useProjections';
 import { pollIntervalMs, usePolling } from './hooks/usePolling';
 import { AppShell } from './components/AppShell';
 import { ConnectionBanner, type ConnectionState } from './components/ConnectionBanner';
@@ -18,6 +20,7 @@ import { SeveritySummary } from './components/SeveritySummary';
 import { HostGrid } from './components/HostGrid';
 import { FindingsList } from './components/FindingsList';
 import { FindingDetail } from './components/FindingDetail';
+import { InvestigationPanel } from './components/InvestigationPanel';
 import { IconRestart } from './components/icons';
 import { formatAge } from './lib/format';
 import { readMode, readScenario, writeMode } from './lib/mode';
@@ -61,6 +64,12 @@ export function App(): JSX.Element {
 
   const { failureCount, pollNow } = usePolling({ onTick, intervalMs });
 
+  /* Early Warning rides the SAME tick as the findings poll rather than its own timer: a projection
+     shown next to a queue depth from a different moment would be two readings pretending to be one,
+     and two independent intervals would drift apart within minutes. Failures are swallowed inside
+     the hook -- a missing forecast must never blank a host card that has real metrics on it. */
+  const projections = useProjections(api, failureCount);
+
   // One shared clock for every relative timestamp on the page.
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
@@ -95,6 +104,12 @@ export function App(): JSX.Element {
      somewhere sensible. The row keeps DOM identity across polls thanks to the
      `finding.id` key, so this ref stays valid through a refresh. */
   const returnFocusTo = useRef<string | null>(null);
+
+  /* The MVP 2 request lifecycle, keyed by the selected finding.
+     Keyed rather than global so an investigation cannot outlive the finding it explains: the hook
+     clears itself when `selectedId` changes, which is what stops a previous finding's root cause
+     appearing under a new heading. */
+  const detective = useInvestigation(api, selectedId);
 
   /* Drop the selection once its finding is gone, rather than leaving `selectedId`
      pointing at nothing. Without this the drawer would *reopen by itself* if the
@@ -219,6 +234,7 @@ export function App(): JSX.Element {
             Hosts
           </h2>
           <HostGrid
+            projections={projections}
             hosts={hosts}
             findings={findings}
             now={now}
@@ -246,7 +262,25 @@ export function App(): JSX.Element {
       {/* Outside the dimming wrapper: stale data dims the grid, but the drawer the
           operator deliberately opened should stay fully legible. Its numbers carry
           the same "as of" caveat the banner states once. */}
-      <FindingDetail finding={selected} now={now} onClose={closeDetail} />
+      <FindingDetail
+        finding={selected}
+        now={now}
+        onClose={closeDetail}
+        investigation={
+          selected === null ? null : (
+            <InvestigationPanel
+              investigation={detective.investigation}
+              investigating={detective.investigating}
+              error={detective.error}
+              resolve={detective.resolve}
+              resolving={detective.resolving}
+              resolveError={detective.resolveError}
+              onInvestigate={detective.investigate}
+              onResolve={detective.applyAction}
+            />
+          )
+        }
+      />
     </AppShell>
   );
 }

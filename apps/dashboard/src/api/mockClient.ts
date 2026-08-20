@@ -13,6 +13,13 @@
 
 import type { HealthScanApi } from './HealthScanApi';
 import { parseFindings, parseHosts } from './guards';
+import type {
+  HostProjectionView,
+  InvestigationView,
+  ResolveActionView,
+  ResolveMode,
+  ResolveView,
+} from '../types/mvp2';
 import { PROGRESSION, resolveScenario, scenarioById, SCENARIOS } from './scenarios';
 import type { FindingView, HostView, Scenario } from '../types/healthscan';
 
@@ -80,6 +87,11 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
     return pinned ?? scenarioAt(cursor);
   }
 
+  /* Mock write state. Module-scoped per client instance so `restart()` does not reset it -- a
+     presenter stepping the scenario back should not silently un-apply a fix they demonstrated. */
+  let mockPoolSize = 1;
+  let mockAuditSeq = 0;
+
   function noteRead(which: 'hosts' | 'findings'): void {
     if (pinned !== undefined) return;
     served = cursor;
@@ -106,6 +118,198 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
       const { findings } = resolveScenario(serving(), Date.now());
       noteRead('findings');
       return parseFindings(findings);
+    },
+
+    /**
+     * Demo-mode projections, derived from the scenario's own queue depths.
+     *
+     * A RISING QUEUE GETS A PROJECTION; ANYTHING ELSE GETS A REASON. The slope is not invented --
+     * it is the current depth over the fit span, which is the same arithmetic the engine does. A
+     * fixed slope would show "crosses in 4 minutes" for a host whose queue is empty.
+     */
+    async getProjections(signal?: AbortSignal): Promise<HostProjectionView[]> {
+      await delay(SIMULATED_LATENCY_MS, signal);
+      const { hosts } = resolveScenario(serving(), Date.now());
+      const at = new Date().toISOString().slice(0, 19) + 'Z';
+
+      return parseHosts(hosts).map((host) => {
+        const queued = host.queued;
+        const threshold = 50;
+        const rising = queued !== null && queued > 0 && queued < threshold;
+        return {
+          host: host.host,
+          metric: 'queued',
+          currentValue: queued,
+          measuredAt: at,
+          fitSampleCount: 60,
+          fitSpanSeconds: 295,
+          threshold: { value: threshold, basis: 'absoluteFloor', baselineValue: 0, findingType: 'queue_buildup' },
+          projection: rising
+            ? {
+                kind: 'projection' as const,
+                slope: Number(((queued ?? 0) / 5).toFixed(1)),
+                slopeUnit: 'items/minute',
+                secondsToThreshold: Math.round(((threshold - (queued ?? 0)) / ((queued ?? 1) / 300)) || 0),
+                crossesAt: null,
+              }
+            : null,
+          projectionUnavailable: rising
+            ? null
+            : queued === null
+              ? ('metric_unmeasurable' as const)
+              : queued >= threshold
+                ? ('already_crossed' as const)
+                : ('not_rising' as const),
+        };
+      });
+    },
+
+    /**
+     * Demo-mode investigation. `source: "canned"`, and that is the load-bearing field.
+     *
+     * The narrative is fixed; the NUMBERS are not -- host and queue depth come from the finding
+     * being explained, so the panel never shows `Cloud API` while the drawer shows another host.
+     * A mock that returned a wholly fixed string would drift the moment the scenario changed.
+     *
+     * It must never be mistaken for a live agent, so `model` and `toolCalls` are null: those are
+     * the two fields the UI uses to say "a real model answered, and it looked things up".
+     */
+    async investigate(findingId: string, signal?: AbortSignal): Promise<InvestigationView> {
+      await delay(SIMULATED_LATENCY_MS * 4, signal);
+      const { findings } = resolveScenario(serving(), Date.now());
+      const parsed = parseFindings(findings);
+      const finding = parsed.find((f) => f.id === findingId) ?? parsed[0];
+      const host = finding?.host ?? 'Cloud API';
+      const queued = finding?.currentValue ?? null;
+
+      return {
+        requestId: `inv-mock-${findingId}`,
+        findingId,
+        state: 'complete',
+        source: 'canned',
+        investigatedAt: new Date().toISOString().slice(0, 19) + 'Z',
+        rootCause:
+          `${host} is throughput-bound. It runs at PoolSize 1 against a downstream that takes ` +
+          `about a second per message, so it clears roughly 1 message/sec while inbound volume ` +
+          `exceeds that. The host itself is healthy — it is outnumbered, not broken.`,
+        evidence: [
+          { label: 'Configured pool size', detail: `${host} PoolSize = 1`, source: 'mcp_tool', tool: 'get_pool_size' },
+          {
+            label: 'Queue depth',
+            detail: queued === null ? 'queue depth not measurable' : `${queued} message(s) queued`,
+            source: 'snapshot',
+            tool: null,
+          },
+          { label: 'Downstream latency', detail: 'average processing time ~1s per message', source: 'mcp_tool', tool: 'get_processing_time' },
+        ],
+        confidence: 0.9,
+        recommendedAction: {
+          action: { type: 'set_pool_size', host, size: 4 },
+          currentValue: 1,
+          bounds: { min: 2, max: 8 },
+          reversible: true,
+          requiresApproval: true,
+          summary: `increase ${host} pool 1 -> 4`,
+        },
+        diagnostics: { model: null, toolCalls: null, durationMs: 240, note: 'demo mode: canned investigation' },
+      };
+    },
+
+    /**
+     * Demo-mode resolve, against an in-memory pool size.
+     *
+     * `audit.source: "mock"` and a `mock-audit-*` handle, so nothing here can be mistaken for a
+     * record of a real production change. It tracks state so apply-then-apply gives
+     * `applied` then `no_change`, matching the real tool -- a mock that returned `applied` twice
+     * would leave the double-click path untested, and a demo will hit it.
+     */
+    async resolve(
+      mode: ResolveMode,
+      action: ResolveActionView,
+      origin: { findingId: string },
+      signal?: AbortSignal,
+    ): Promise<ResolveView> {
+      await delay(SIMULATED_LATENCY_MS * 2, signal);
+      const at = new Date().toISOString().slice(0, 19) + 'Z';
+      mockAuditSeq += 1;
+      const audit = {
+        auditId: `mock-audit-${mockAuditSeq}`,
+        actor: 'demo',
+        role: 'Guardian_Resolve',
+        requestedBy: 'dashboard',
+        tool: mode === 'apply' ? 'set_pool_size' : 'get_pool_size',
+        recordedAt: at,
+        source: 'mock',
+      };
+      const base = {
+        resolveId: `res-mock-${mockAuditSeq}`,
+        requestId: null,
+        mode,
+        action,
+        reversal: { host: action.host, size: mockPoolSize, capturedFrom: 'mock' },
+        failure: null,
+        audit,
+        requestedAt: at,
+        completedAt: at,
+      };
+
+      // Bounds refused with the contract's field names, so the UI's refusal path is exercised in
+      // demo mode rather than only against a live production.
+      if (action.size < 2 || action.size > 8) {
+        return {
+          ...base,
+          outcome: 'refused',
+          before: { poolSize: mockPoolSize },
+          after: null,
+          reversal: null,
+          refusal: {
+            reason: 'out_of_bounds',
+            message: 'size must be an integer between 2 and 8',
+            checkedBy: 'iris',
+            bounds: { min: 2, max: 8 },
+          },
+          confirmation: null,
+        };
+      }
+
+      if (mockPoolSize === action.size) {
+        return {
+          ...base,
+          outcome: 'no_change',
+          before: { poolSize: mockPoolSize },
+          after: { poolSize: mockPoolSize },
+          refusal: null,
+          confirmation: null,
+        };
+      }
+
+      if (mode === 'dry_run') {
+        return {
+          ...base,
+          outcome: 'previewed',
+          before: { poolSize: mockPoolSize },
+          after: { poolSize: action.size },
+          refusal: null,
+          confirmation: null,
+        };
+      }
+
+      const before = mockPoolSize;
+      mockPoolSize = action.size;
+      return {
+        ...base,
+        outcome: 'applied',
+        before: { poolSize: before },
+        after: { poolSize: mockPoolSize },
+        refusal: null,
+        confirmation: {
+          status: 'pending',
+          findingId: origin.findingId,
+          observeVia: 'GET /api/healthscan/findings',
+          expectedWithinSeconds: 120,
+          directEvidence: false,
+        },
+      };
     },
 
     currentScenario: () => pinned ?? scenarioAt(served),
