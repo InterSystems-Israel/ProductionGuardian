@@ -8,6 +8,8 @@
  */
 
 import type { HealthScanApi } from './HealthScanApi';
+import type { InvestigationView, ResolveActionView, ResolveMode, ResolveView } from '../types/mvp2';
+import { parseInvestigation, parseResolve } from './mvp2Guards';
 import { parseFindings, parseHosts } from './guards';
 import type { FindingView, HostView } from '../types/healthscan';
 
@@ -82,6 +84,66 @@ async function getJson(path: string, signal?: AbortSignal): Promise<unknown> {
   }
 }
 
+/**
+ * POST for the two MVP 2 endpoints.
+ *
+ * SEPARATE FROM getJson BECAUSE THE 404 MAPPING WOULD BE WRONG HERE. getJson turns 404 into `[]`,
+ * which is a deliberate belt-and-braces for the list endpoints. On a write endpoint a 404 means the
+ * route or the IRIS dispatcher is missing -- exactly the failure that took the whole MVP 2 write
+ * path down until `/labdemo/agent` was registered at boot -- and swallowing it would hide that.
+ *
+ * `baseUrl()` points at `/api/healthscan`, so these strip back one level: the MVP 2 endpoints are
+ * siblings of it (`/api/investigate`, `/api/resolve`), not children.
+ */
+async function postJson(path: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
+  const root = baseUrl().replace(/\/healthscan\/?$/, '');
+  let response: Response;
+  try {
+    response = await fetch(`${root}${path}`, {
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
+    throw new HealthScanRequestError('Cannot reach the Health Scan API', null);
+  }
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    /* The engine answers 503 for an endpoint that exists in this build but is not configured on
+       this deployment -- "no agent wired here" -- and that is a different fact from a fault. Named
+       explicitly so the panel can say which, rather than showing a generic failure for a stack
+       that is working as configured. */
+    if (response.status === 503) {
+      throw new HealthScanRequestError(
+        'This deployment has no AI agent configured (the engine answered 503)',
+        503,
+      );
+    }
+    /* A 400 carries a reason worth surfacing verbatim: the engine returns
+       `{"error":"bad request: ..."}` for a malformed action, and that message names the field. */
+    let detail = '';
+    try {
+      const parsed = JSON.parse(text) as { error?: unknown };
+      if (typeof parsed.error === 'string') detail = parsed.error;
+    } catch {
+      detail = '';
+    }
+    throw new HealthScanRequestError(
+      detail.length > 0 ? detail : `Health Scan API returned ${response.status}`.trim(),
+      response.status,
+    );
+  }
+
+  try {
+    return await response.json();
+  } catch {
+    throw new HealthScanRequestError('Health Scan API returned malformed JSON', response.status);
+  }
+}
+
 export function createLiveClient(): HealthScanApi {
   return {
     async getHosts(signal?: AbortSignal): Promise<HostView[]> {
@@ -90,6 +152,32 @@ export function createLiveClient(): HealthScanApi {
 
     async getFindings(signal?: AbortSignal): Promise<FindingView[]> {
       return parseFindings(await getJson('/findings', signal));
+    },
+
+    async investigate(findingId: string, signal?: AbortSignal): Promise<InvestigationView> {
+      const parsed = parseInvestigation(await postJson('/investigate', { findingId }, signal));
+      if (parsed === null) {
+        throw new HealthScanRequestError('The investigation response could not be read', null);
+      }
+      return parsed;
+    },
+
+    async resolve(
+      mode: ResolveMode,
+      action: ResolveActionView,
+      origin: { findingId: string },
+      signal?: AbortSignal,
+    ): Promise<ResolveView> {
+      /* `requestedBy` is an advisory label recorded NEXT TO the server-resolved actor, never in
+         place of it (resolve-api.md §8) -- a caller cannot name itself. Sent so the audit row shows
+         which surface asked, which is the only thing the browser can honestly contribute. */
+      const parsed = parseResolve(
+        await postJson('/resolve', { mode, action, origin, requestedBy: 'dashboard' }, signal),
+      );
+      if (parsed === null) {
+        throw new HealthScanRequestError('The resolve response could not be read', null);
+      }
+      return parsed;
     },
   };
 }
