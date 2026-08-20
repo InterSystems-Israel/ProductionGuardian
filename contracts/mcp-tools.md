@@ -25,7 +25,7 @@ silently disagrees with its neighbour is worse than one that is wrong out loud:
 | | `resolve-api.md` | here | Why they differ |
 |---|---|---|---|
 | dry-run | a `mode` on the endpoint | **no flag on the tool** | The endpoint's dry-run calls `get_pool_size` and never invokes the write tool. §3.6 |
-| `size` range | `2..8` | `1..8` | The tool must be able to express the reversal to `1`. §3.6 |
+| `size` range | `2..8` | `2..8` | **Agreed since 2026-08-20 (#100)** — the `1..8` asymmetry was withdrawn. §3.6 |
 | role names | `Guardian_Resolve`, "illustrative, not ratified" | **ratified here** | §5.3 is the naming authority; the values match its examples |
 
 `investigation-api.md` is the other consumer: its `evidence[].tool` values are names from §1, and its
@@ -455,7 +455,7 @@ Set the configured pool size of one host and apply it to the running production.
 | Field | Type | Req | Notes |
 |---|---|---|---|
 | `host` | string | **required** | Must be `Cloud API`. Whitelist of one. |
-| `size` | integer | **required** | `1..8` inclusive — see bounds below. |
+| `size` | integer | **required** | `2..8` inclusive — see bounds below. |
 
 **There is no `dryRun` parameter, deliberately.** This tool always writes. Preview is
 `get_pool_size`, a *read* tool. That is a reconciliation with `resolve-api.md` §2, which guarantees
@@ -509,7 +509,7 @@ partial-apply mode being added without a discriminator.
    would otherwise make this method a silent no-op that reports success, and `CheckProduction()` does
    not catch it because it compares only the production *name*. **A write tool that reports applied
    and applied nothing is the worst failure in this file.**
-3. **Bounds.** `host` must be `Cloud API`; `size` must be an integer in `1..8`. Anything else is an
+3. **Bounds.** `host` must be `Cloud API`; `size` must be an integer in `2..8`. Anything else is an
    error, not a clamp — clamping `40` to `8` would apply a change nobody approved, report it as
    applied, and be indistinguishable in the audit log from someone deliberately choosing `8`.
 4. **Reversibility is returned, not remembered.** `previousSize` and `reversal` are in the response
@@ -522,13 +522,27 @@ partial-apply mode being added without a discriminator.
    copying it here would add an `Ens.Config.Setting` row named `PoolSize` that changes nothing while
    reporting success — #66's failure mode in a new place.
 
-**Why `1..8`, and why the tool's range is wider than the endpoint's.** This is deliberate and the
-asymmetry is the point:
+**Why `2..8` at both layers — the asymmetry was withdrawn on 2026-08-20 (#100).**
 
 | Layer | Range | Why |
 |---|---|---|
 | `POST /api/resolve` (`resolve-api.md` §3) | `2..8` | An operator-facing action. `1` is the shipped value, so approving it is a no-op dressed as a fix. |
-| `set_pool_size` (here) | `1..8` | Must be able to express the **reversal**. `previousSize` is `1`, so a tool that refuses `1` cannot undo its own first call. |
+| `set_pool_size` (here) | `2..8` | Same reason. The tool is LLM-callable, so `1` is the *worst* value to accept: it reports success and changes nothing. |
+
+This section previously ratified `1..8` here against `2..8` at the endpoint, on the grounds that "a
+tool that refuses `1` cannot undo its own first call". **The premise was true and the conclusion did
+not follow**, which is the third time on this contract set that shape has cost us something (see the
+`%`-prefix paragraph and §5.5's audit claim).
+
+Two things it missed. `Tools.Resolve` has shipped `MINSIZE = 2` since the tools landed and its own
+comment rejects the reversal argument by name — *"Reversal to `1` is `Reset()`'s job, through a path
+that is not LLM-callable"* — so the ratified range never described the implementation. And
+`resolve-api.md` §4 promised the caller could POST the reversal body back to undo, while §3 refused
+exactly that body: the undo path the wider bound existed to serve **did not work at either layer**.
+
+`resolve-api.md` §4.1 now records reversal as a *record of the prior value* rather than a request, and
+restoring the pool is an operator action through `Triggers.Reset()`. With no POST-the-reversal path,
+nothing needs `1`, and accepting it in an LLM-callable tool is a liability rather than a capability.
 
 `8` is the shared ceiling, for `resolve-api.md`'s reason: every pool job is a real IRIS process, and
 an unbounded `size` lets one fat-fingered digit — or one hallucinated number — spawn hundreds of jobs
@@ -1032,7 +1046,7 @@ owner does not match its actual one is how a review gets skipped.
 `README.md` in this directory does not yet list this file in its owner table. Adding it belongs to
 the same PR as publishing this file.
 
-**These changes are contract changes, not configuration:** the `1..8` bound on `size`, the
+**These changes are contract changes, not configuration:** the `2..8` bound on `size`, the
 `Cloud API` whitelist, the `PG_Read` / `PG_Resolve` split, the listable-but-not-executable decision
 in §5.3, the `get_recent_errors` allowlist and its catalogue policy, and any widening of what a tool
 may return under §6. Each is written here specifically so that changing it requires review rather

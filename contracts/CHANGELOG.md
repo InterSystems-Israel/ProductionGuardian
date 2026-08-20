@@ -5,6 +5,64 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-20 — `reversal` is a record, not a request; the `1..8` asymmetry withdrawn (Dev A)
+
+Closes #100. **Two files, no field added and none removed that anything emitted.** `resolve-api.md`
+§4 and the field table; `mcp-tools.md` §3.6 and three bound references. `validate.mjs` unchanged and
+passing — neither contract has a sample for it to check, which is the gap the entry above records.
+
+### The contradiction
+
+§4 told the caller *"Dev C can POST it back verbatim to undo"*, with `reversal.action.size` set to the
+shipped pool size — `1`. §3 bounds `action.size` at `2..8`, and §5 lists exactly that as
+`out_of_bounds`.
+
+**So the endpoint handed the caller an undo request and then refused it.** That is internal to one
+document and needed no implementation to be wrong.
+
+### The resolution: reversal is documentation
+
+`1` stays unapprovable, because §3.6's reason is sound — it is the shipped value, so approving it is a
+no-op dressed as a fix that reports success and changes nothing. Widening the bound to make the undo
+POSTable would trade a real safety property for a convenience.
+
+Restoring the pool is an operator action through `Triggers.Reset()`, which is deliberately not
+LLM-callable. **"Reversible" now means the prior value is measured, recorded and restorable** — which
+is true, provable, and what the demo does. A second write path would need its own spec under root
+`CLAUDE.md` §2.
+
+### The contract was the outlier, not the code
+
+Worth recording because it is the reverse of the usual direction and is why this survived a week.
+`reversal` was specified as `{action: {...}, capturedFrom, automatic}`; `Tools.Resolve`, the engine and
+the mock all shipped flat `{host, size, capturedFrom}` and **nothing ever emitted `automatic`**. Four
+components agreed with each other and disagreed with the document.
+
+The shape is now flat, matching them. `action` existed to make a body dispatchable and this body is not
+dispatched. **No consumer loses a field it read or emitted.**
+
+### And `set_pool_size` was never `1..8`
+
+§3.6 ratified `1..8` for the tool against `2..8` for the endpoint, arguing "a tool that refuses `1`
+cannot undo its own first call". The premise was true and the conclusion did not follow — **the third
+time that shape has cost us something here**, after the `%`-prefix paragraph and §5.5's audit claim.
+
+`Tools.Resolve` has shipped `MINSIZE = 2` since the tools landed, and its own comment rejects the
+reversal argument by name: *"Reversal to `1` is `Reset()`'s job, through a path that is not
+LLM-callable."* So the ratified range never described the implementation, and the undo path the wider
+bound existed to serve did not work at either layer. Both are `2..8`.
+
+Also corrected: `capturedFrom` was `"live production"` in `Tools.Resolve` against `"live"` in the
+contract (#111) — a *value* drift in a correctly-shaped field, and the one that argues hardest for
+schemas, since only an `enum` catches it.
+
+### Not in this entry
+
+Both documents' headers still say Dev A has left and name Dev C as a consumer. That is the same stale
+premise root `CLAUDE.md` §3 carried until #113, and it is a separate change — kept out so this entry
+describes one decision.
+
+
 ## 2026-08-20 — MVP 2 shipped; the four contracts carry no machine-readable artefact (Dev B)
 
 **No contract text changed in this entry.** It records a gap that should be visible before anyone
