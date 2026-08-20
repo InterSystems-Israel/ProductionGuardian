@@ -8,8 +8,14 @@
  */
 
 import type { HealthScanApi } from './HealthScanApi';
-import type { InvestigationView, ResolveActionView, ResolveMode, ResolveView } from '../types/mvp2';
-import { parseInvestigation, parseResolve } from './mvp2Guards';
+import type {
+  HostProjectionView,
+  InvestigationView,
+  ResolveActionView,
+  ResolveMode,
+  ResolveView,
+} from '../types/mvp2';
+import { parseInvestigation, parseProjections, parseResolve } from './mvp2Guards';
 import { parseFindings, parseHosts } from './guards';
 import type { FindingView, HostView } from '../types/healthscan';
 
@@ -144,6 +150,28 @@ async function postJson(path: string, body: unknown, signal?: AbortSignal): Prom
   }
 }
 
+/** getJson, but for a path that is NOT under the healthscan base. Same error mapping. */
+async function getJsonAbsolute(url: string, signal?: AbortSignal): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch(url, { signal, headers: { Accept: 'application/json' } });
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
+    throw new HealthScanRequestError('Cannot reach the Health Scan API', null);
+  }
+  // 404 -> empty, matching getJson: an engine build without this endpoint should degrade to "no
+  // projections" rather than break the host grid it is decorating.
+  if (response.status === 404) return [];
+  if (!response.ok) {
+    throw new HealthScanRequestError(`Health Scan API returned ${response.status}`.trim(), response.status);
+  }
+  try {
+    return await response.json();
+  } catch {
+    throw new HealthScanRequestError('Health Scan API returned malformed JSON', response.status);
+  }
+}
+
 export function createLiveClient(): HealthScanApi {
   return {
     async getHosts(signal?: AbortSignal): Promise<HostView[]> {
@@ -152,6 +180,13 @@ export function createLiveClient(): HealthScanApi {
 
     async getFindings(signal?: AbortSignal): Promise<FindingView[]> {
       return parseFindings(await getJson('/findings', signal));
+    },
+
+    async getProjections(signal?: AbortSignal): Promise<HostProjectionView[]> {
+      /* Sibling of /api/healthscan, not a child -- same one-level strip as the POSTs. Uses getJson
+         so an engine that has not warmed up yet yields [] rather than an error banner. */
+      const root = baseUrl().replace(/\/healthscan\/?$/, '');
+      return parseProjections(await getJsonAbsolute(`${root}/earlywarning`, signal));
     },
 
     async investigate(findingId: string, signal?: AbortSignal): Promise<InvestigationView> {

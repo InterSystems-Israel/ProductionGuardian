@@ -1159,3 +1159,43 @@ button {
   margin: var(--pg-space-1) 0 0;
   color: var(--pg-text);
 }
+
+/* ─── Early Warning (MVP 2) ──────────────────────────────────────────────────────────
+   Info-toned, NOT warning-toned. A projection is a heads-up about something that has
+   not happened, and colouring it like a breach would put two hosts at the same visual
+   weight when only one of them is actually in trouble. */
+
+.pg-forecast {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: var(--pg-space-3);
+  padding: var(--pg-space-2) var(--pg-space-3);
+  border-left: 3px solid var(--pg-info);
+  border-radius: 0 var(--pg-radius) var(--pg-radius) 0;
+  background: var(--pg-info-bg);
+}
+
+/* The pending variant says "not yet", so it reads as inert rather than as information. */
+.pg-forecast--pending {
+  border-left-color: var(--pg-border);
+  background: var(--pg-surface-sunk);
+}
+
+.pg-forecast__label {
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--pg-info);
+}
+
+.pg-forecast--pending .pg-forecast__label {
+  color: var(--pg-text-muted);
+}
+
+.pg-forecast__body {
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--pg-text);
+}

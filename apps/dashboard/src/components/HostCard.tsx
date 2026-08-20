@@ -10,6 +10,8 @@ import type { HostView } from '../types/healthscan';
 import type { Severity } from '../types/healthscan';
 import { formatCount, formatDuration, formatRate, formatRelative } from '../lib/format';
 import { StatusDot } from './StatusDot';
+import { EarlyWarning } from './EarlyWarning';
+import type { HostProjectionView } from '../types/mvp2';
 
 interface MetricRowProps {
   label: string;
@@ -46,9 +48,22 @@ export interface HostCardProps {
   findingCount: number;
   /** Injected so every card's relative time re-renders on the same tick. */
   now: number;
+  /**
+   * This host's Early Warning projection, or null when there is none.
+   *
+   * Optional so the card renders unchanged without it -- the MVP 1 grid, and any test that does not
+   * care about forecasting, need no new prop.
+   */
+  projection?: HostProjectionView | null;
 }
 
-export function HostCard({ host, worst, findingCount, now }: HostCardProps): JSX.Element {
+export function HostCard({
+  host,
+  worst,
+  findingCount,
+  now,
+  projection = null,
+}: HostCardProps): JSX.Element {
   const severityClass = worst === null ? '' : ` pg-host--${worst}`;
 
   return (
@@ -75,6 +90,11 @@ export function HostCard({ host, worst, findingCount, now }: HostCardProps): JSX
         <MetricRow label="Avg queueing" value={formatDuration(host.avgQueueingTime)} />
         <MetricRow label="Last activity" value={formatRelative(host.lastActivity, now)} />
       </div>
+
+      {/* Between the metrics and the finding count: it is derived FROM the metrics above and is
+          about what has not happened yet, so it reads after the readings and before the count of
+          things already wrong. */}
+      <EarlyWarning projection={projection} />
 
       {findingCount > 0 && (
         <footer className="pg-host__footer">

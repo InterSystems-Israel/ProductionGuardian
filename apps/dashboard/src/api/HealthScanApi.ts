@@ -12,11 +12,25 @@
  */
 
 import type { FindingView, HostView } from '../types/healthscan';
-import type { InvestigationView, ResolveActionView, ResolveMode, ResolveView } from '../types/mvp2';
+import type {
+  HostProjectionView,
+  InvestigationView,
+  ResolveActionView,
+  ResolveMode,
+  ResolveView,
+} from '../types/mvp2';
 
 export interface HealthScanApi {
   getHosts(signal?: AbortSignal): Promise<HostView[]>;
   getFindings(signal?: AbortSignal): Promise<FindingView[]>;
+
+  /**
+   * Early Warning — GET /api/earlywarning. One entry per reported host.
+   *
+   * Empty is a legitimate answer (no host has a projectable metric yet), so this resolves with `[]`
+   * rather than raising, same as the two list endpoints.
+   */
+  getProjections(signal?: AbortSignal): Promise<HostProjectionView[]>;
 
   /**
    * AI Detective — POST /api/investigate. Resolves for every outcome including failure: the

@@ -19,6 +19,8 @@
 
 import type {
   EvidenceItemView,
+  HostProjectionView,
+  ProjectionDeclineReason,
   EvidenceSource,
   InvestigationSource,
   InvestigationState,
@@ -236,4 +238,77 @@ export function parseResolve(payload: unknown): ResolveView | null {
     requestedAt: str(payload['requestedAt']),
     completedAt: str(payload['completedAt']),
   };
+}
+
+const DECLINE_REASONS: readonly string[] = [
+  'disabled',
+  'metric_unmeasurable',
+  'warming',
+  'insufficient_samples',
+  'already_crossed',
+  'not_rising',
+  'beyond_horizon',
+];
+
+/**
+ * Early Warning projections.
+ *
+ * `projection` IS ONLY BUILT WHEN IT IS WHOLE. A partially-read projection is the defect this
+ * contract's shape exists to prevent -- a slope with no threshold, or a `secondsToThreshold` the
+ * engine never sent, would render as a forecast nobody made. So a missing or non-numeric `slope`
+ * drops the whole object to null rather than filling in a default.
+ */
+export function parseProjections(payload: unknown): HostProjectionView[] {
+  if (!Array.isArray(payload)) return [];
+  const out: HostProjectionView[] = [];
+
+  for (const entry of payload) {
+    if (!isRecord(entry)) continue;
+    const host = nullableStr(entry['host']);
+    if (host === null) continue;
+
+    const rawThreshold = entry['threshold'];
+    const threshold = isRecord(rawThreshold)
+      ? {
+          value: nullableNum(rawThreshold['value']),
+          basis: str(rawThreshold['basis'], 'unknown'),
+          baselineValue: nullableNum(rawThreshold['baselineValue']),
+          findingType: str(rawThreshold['findingType']),
+        }
+      : null;
+
+    const rawProjection = entry['projection'];
+    let projection: HostProjectionView['projection'] = null;
+    if (isRecord(rawProjection)) {
+      const slope = nullableNum(rawProjection['slope']);
+      if (slope !== null) {
+        projection = {
+          kind: 'projection',
+          slope,
+          slopeUnit: str(rawProjection['slopeUnit'], 'items/minute'),
+          secondsToThreshold: nullableNum(rawProjection['secondsToThreshold']),
+          crossesAt: nullableStr(rawProjection['crossesAt']),
+        };
+      }
+    }
+
+    const rawReason = entry['projectionUnavailable'];
+    const reason =
+      typeof rawReason === 'string' && DECLINE_REASONS.includes(rawReason)
+        ? (rawReason as ProjectionDeclineReason)
+        : null;
+
+    out.push({
+      host,
+      metric: str(entry['metric'], 'queued'),
+      currentValue: nullableNum(entry['currentValue']),
+      measuredAt: str(entry['measuredAt']),
+      fitSampleCount: nullableNum(entry['fitSampleCount']) ?? 0,
+      fitSpanSeconds: nullableNum(entry['fitSpanSeconds']) ?? 0,
+      threshold,
+      projection,
+      projectionUnavailable: reason,
+    });
+  }
+  return out;
 }

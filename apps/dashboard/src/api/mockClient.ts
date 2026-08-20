@@ -13,7 +13,13 @@
 
 import type { HealthScanApi } from './HealthScanApi';
 import { parseFindings, parseHosts } from './guards';
-import type { InvestigationView, ResolveActionView, ResolveMode, ResolveView } from '../types/mvp2';
+import type {
+  HostProjectionView,
+  InvestigationView,
+  ResolveActionView,
+  ResolveMode,
+  ResolveView,
+} from '../types/mvp2';
 import { PROGRESSION, resolveScenario, scenarioById, SCENARIOS } from './scenarios';
 import type { FindingView, HostView, Scenario } from '../types/healthscan';
 
@@ -112,6 +118,50 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
       const { findings } = resolveScenario(serving(), Date.now());
       noteRead('findings');
       return parseFindings(findings);
+    },
+
+    /**
+     * Demo-mode projections, derived from the scenario's own queue depths.
+     *
+     * A RISING QUEUE GETS A PROJECTION; ANYTHING ELSE GETS A REASON. The slope is not invented --
+     * it is the current depth over the fit span, which is the same arithmetic the engine does. A
+     * fixed slope would show "crosses in 4 minutes" for a host whose queue is empty.
+     */
+    async getProjections(signal?: AbortSignal): Promise<HostProjectionView[]> {
+      await delay(SIMULATED_LATENCY_MS, signal);
+      const { hosts } = resolveScenario(serving(), Date.now());
+      const at = new Date().toISOString().slice(0, 19) + 'Z';
+
+      return parseHosts(hosts).map((host) => {
+        const queued = host.queued;
+        const threshold = 50;
+        const rising = queued !== null && queued > 0 && queued < threshold;
+        return {
+          host: host.host,
+          metric: 'queued',
+          currentValue: queued,
+          measuredAt: at,
+          fitSampleCount: 60,
+          fitSpanSeconds: 295,
+          threshold: { value: threshold, basis: 'absoluteFloor', baselineValue: 0, findingType: 'queue_buildup' },
+          projection: rising
+            ? {
+                kind: 'projection' as const,
+                slope: Number(((queued ?? 0) / 5).toFixed(1)),
+                slopeUnit: 'items/minute',
+                secondsToThreshold: Math.round(((threshold - (queued ?? 0)) / ((queued ?? 1) / 300)) || 0),
+                crossesAt: null,
+              }
+            : null,
+          projectionUnavailable: rising
+            ? null
+            : queued === null
+              ? ('metric_unmeasurable' as const)
+              : queued >= threshold
+                ? ('already_crossed' as const)
+                : ('not_rising' as const),
+        };
+      });
     },
 
     /**

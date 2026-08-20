@@ -12,6 +12,7 @@ import { createLiveClient } from './api/liveClient';
 import { createMockClient, type MockClient } from './api/mockClient';
 import { useHealthScan } from './hooks/useHealthScan';
 import { useInvestigation } from './hooks/useInvestigation';
+import { useProjections } from './hooks/useProjections';
 import { pollIntervalMs, usePolling } from './hooks/usePolling';
 import { AppShell } from './components/AppShell';
 import { ConnectionBanner, type ConnectionState } from './components/ConnectionBanner';
@@ -62,6 +63,12 @@ export function App(): JSX.Element {
   );
 
   const { failureCount, pollNow } = usePolling({ onTick, intervalMs });
+
+  /* Early Warning rides the SAME tick as the findings poll rather than its own timer: a projection
+     shown next to a queue depth from a different moment would be two readings pretending to be one,
+     and two independent intervals would drift apart within minutes. Failures are swallowed inside
+     the hook -- a missing forecast must never blank a host card that has real metrics on it. */
+  const projections = useProjections(api, failureCount);
 
   // One shared clock for every relative timestamp on the page.
   useEffect(() => {
@@ -227,6 +234,7 @@ export function App(): JSX.Element {
             Hosts
           </h2>
           <HostGrid
+            projections={projections}
             hosts={hosts}
             findings={findings}
             now={now}

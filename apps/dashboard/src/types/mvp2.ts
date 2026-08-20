@@ -122,3 +122,48 @@ export interface ResolveView {
   requestedAt: string;
   completedAt: string;
 }
+
+/**
+ * Early Warning — `contracts/earlywarning-api.md`.
+ *
+ * A PROJECTION IS NOT A MEASUREMENT, and the shape enforces it: every forecast number is nested
+ * inside `projection`, which is **null** whenever one cannot honestly be made. The measured values
+ * (`currentValue`, `threshold`) sit outside it and are always present. So a consumer cannot read a
+ * forecast by accident — it has to reach into an object that may not be there.
+ *
+ * `projectionUnavailable` then says WHY, from a closed set. Rendering the reason rather than hiding
+ * the row is the point: "not rising" and "still warming up" are different facts, and a blank space
+ * means neither.
+ */
+export type ProjectionDeclineReason =
+  | 'disabled'
+  | 'metric_unmeasurable'
+  | 'warming'
+  | 'insufficient_samples'
+  | 'already_crossed'
+  | 'not_rising'
+  | 'beyond_horizon';
+
+export interface HostProjectionView {
+  host: string;
+  metric: string;
+  currentValue: number | null;
+  measuredAt: string;
+  fitSampleCount: number;
+  fitSpanSeconds: number;
+  threshold: {
+    value: number | null;
+    basis: string;
+    baselineValue: number | null;
+    findingType: string;
+  } | null;
+  /** Null when no honest projection exists. Never partially populated. */
+  projection: {
+    kind: 'projection';
+    slope: number;
+    slopeUnit: string;
+    secondsToThreshold: number | null;
+    crossesAt: string | null;
+  } | null;
+  projectionUnavailable: ProjectionDeclineReason | null;
+}
