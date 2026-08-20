@@ -19,6 +19,7 @@
 
 import type {
   EvidenceItemView,
+  ManualRemediationView,
   HostProjectionView,
   ProjectionDeclineReason,
   EvidenceSource,
@@ -106,6 +107,43 @@ function parseRecommendedAction(value: unknown): RecommendedActionView | null {
   };
 }
 
+/**
+ * Read a manual remediation, or return null.
+ *
+ * SAME STRICTNESS AS THE ENGINE'S PARSER, AND FOR THE SAME REASON: this text is followed by a human
+ * changing a live production by hand. A summary with no steps, or steps with no summary, is a partial
+ * instruction — and a partial instruction is followed rather than questioned. Dropped whole.
+ *
+ * `target` is built from three named keys, never a spread. The schema refuses extra keys server-side
+ * (§3.3a) and this refuses them again here, because a `messageBody` arriving alongside `setting`
+ * would be payload content rendered in a browser.
+ */
+function parseManualRemediation(value: unknown): ManualRemediationView | null {
+  if (!isRecord(value)) return null;
+  const summary = nullableStr(value['summary']);
+  const rawSteps = value['steps'];
+  const steps = Array.isArray(rawSteps)
+    ? rawSteps.filter((s): s is string => typeof s === 'string' && s.trim() !== '')
+    : [];
+  if (summary === null || steps.length === 0) return null;
+
+  let target: ManualRemediationView['target'] = null;
+  if (isRecord(value['target'])) {
+    const t = value['target'];
+    const host = nullableStr(t['host']);
+    const setting = nullableStr(t['setting']);
+    if (host !== null && setting !== null) {
+      target = { host, setting, currentValue: nullableStr(t['currentValue']) };
+    }
+  }
+
+  /* Defaults to `operator` rather than trusting the payload. The field's only legal value is
+     `operator`, and rendering anything else would tell an operator the system will act -- the one
+     capability this product does not have. */
+  const appliedBy = value['appliedBy'] === 'operator' ? 'operator' : 'operator';
+  return { summary, steps, target, appliedBy };
+}
+
 export function parseInvestigation(payload: unknown): InvestigationView | null {
   if (!isRecord(payload)) return null;
 
@@ -133,6 +171,7 @@ export function parseInvestigation(payload: unknown): InvestigationView | null {
     evidence: parseEvidence(payload['evidence']),
     confidence: nullableNum(payload['confidence']),
     recommendedAction: parseRecommendedAction(payload['recommendedAction']),
+    manualRemediation: parseManualRemediation(payload['manualRemediation']),
     diagnostics: {
       model: nullableStr(diagnostics['model']),
       toolCalls: nullableNum(diagnostics['toolCalls']),

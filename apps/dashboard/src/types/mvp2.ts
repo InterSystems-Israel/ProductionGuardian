@@ -59,6 +59,24 @@ export interface RecommendedActionView {
   summary: string;
 }
 
+/**
+ * A fix the system may NOT apply. Contract §3.3a, MVP 3.
+ *
+ * NO `action` FIELD, and that absence is the design. `RecommendedActionView` carries an `action` the
+ * UI sends to `POST /api/resolve`; this carries none, so the approve control has nothing to bind to
+ * and cannot be rendered by mistake. A single object with an `applyable: false` flag would make the
+ * wrong UI a forgotten `if` instead of an impossibility.
+ */
+export interface ManualRemediationView {
+  summary: string;
+  /** Rendered verbatim as an ordered list. The UI does not reword or merge them. */
+  steps: string[];
+  /** Configuration only, never message content. Null when the agent could not identify it. */
+  target: { host: string; setting: string; currentValue: string | null } | null;
+  /** Closed set, one member. Rendered as "you", not as a system capability. */
+  appliedBy: string;
+}
+
 export interface InvestigationView {
   requestId: string;
   findingId: string;
@@ -70,6 +88,8 @@ export interface InvestigationView {
   evidence: EvidenceItemView[];
   confidence: number | null;
   recommendedAction: RecommendedActionView | null;
+  /** MVP 3. Null when there is nothing manual to do. Both null is legal (§3.1). */
+  manualRemediation: ManualRemediationView | null;
   diagnostics: {
     model: string | null;
     toolCalls: number | null;

@@ -128,6 +128,11 @@ export function mockAgent(): InvestigateDeps['callAgent'] {
       recommendedAction: {
         action: { type: 'set_pool_size', host, size: 4 },
       },
+      /* MVP 3: null on THIS scenario, because the pool-bottleneck finding has a governed action and
+         a manual remediation would be noise beside it. `mockMissingFolderAgent` below is the canned
+         agent for the scenario that has no action -- kept as a separate function rather than a flag,
+         so neither one can accidentally emit both. */
+      manualRemediation: null,
       model: null,
       toolCalls: null,
     };
@@ -228,5 +233,75 @@ export function mockResolveTool(initialPoolSize = 1): ResolveDeps['callTool'] {
     }
     pool = action.size;
     return { outcome: 'applied', before: { poolSize: before }, after: { poolSize: pool }, reversal, audit };
+  };
+}
+
+/**
+ * Canned agent for MVP 3's missing-folder scenario — the finding with NO governed action.
+ *
+ * WHY A SECOND FUNCTION RATHER THAN A BRANCH IN `mockAgent`. The two scenarios differ in what the
+ * system is permitted to do, not in their narrative: one yields a `recommendedAction`, the other a
+ * `manualRemediation`, and they are never both. A single mock with an `if` on the finding type would
+ * make "emits both" reachable, which is the state contract §3.3a's two-shape design exists to make
+ * unrepresentable. Two functions cannot drift into it.
+ *
+ * `source: "canned"` still applies — `investigate.ts` sets it from the caller's declared source, so
+ * this cannot present itself as a live agent.
+ */
+export function mockMissingFolderAgent(): InvestigateDeps['callAgent'] {
+  return async (request) => {
+    const snapshot = request.snapshot as Record<string, unknown>;
+    const host = String(snapshot['host'] ?? 'EMR Source');
+
+    /* The path is NOT invented and NOT read from a log message. In the live path it comes from the
+       host's configured adapter settings via `get_host_settings` (mcp-tools.md, MVP 3) -- the
+       catalogue string from §3.4a says a path is missing, and configuration says which. This mock
+       stands in for that read, which is why the value looks like a setting rather than prose. */
+    const configuredPath = String(snapshot['filePath'] ?? '/tmp/labdemo/hl7-in-missing/');
+
+    return {
+      rootCause:
+        `${host} is configured to poll a directory that does not exist, so every poll fails before ` +
+        `it can read a message. The host is not overloaded and its downstream is healthy — it has ` +
+        `nowhere to read from.`,
+      evidence: [
+        {
+          label: 'Host status',
+          detail: `${host} is in Error`,
+          source: 'mcp_tool',
+          tool: 'get_host_status',
+        },
+        {
+          label: 'Recent errors',
+          detail: '#5021 — a configured directory or file path does not exist',
+          source: 'mcp_tool',
+          tool: 'get_recent_errors',
+        },
+        {
+          label: 'Configured path',
+          detail: `FilePath = ${configuredPath}`,
+          source: 'mcp_tool',
+          tool: 'get_host_settings',
+        },
+      ],
+      confidence: 0.95,
+      // NO recommendedAction. There is no governed action for this condition, and inventing one --
+      // even a plausible-looking `set_pool_size` -- would put an approve button in front of an
+      // operator for a change that would not fix anything.
+      recommendedAction: null,
+      manualRemediation: {
+        summary: `${host} polls a directory that does not exist`,
+        steps: [
+          `Create ${configuredPath} on the IRIS host, or`,
+          `point ${host}'s FilePath setting at an existing directory`,
+        ],
+        target: { host, setting: 'FilePath', currentValue: configuredPath },
+        // Set here, not chosen: the contract enumerates one member, and a mock that could emit
+        // anything else would be modelling a capability the product does not have.
+        appliedBy: 'operator',
+      },
+      model: null,
+      toolCalls: null,
+    };
   };
 }

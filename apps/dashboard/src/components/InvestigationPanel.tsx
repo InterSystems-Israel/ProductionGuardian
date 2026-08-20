@@ -19,6 +19,12 @@
  *    measured. Each bullet carries its source, because a reader deciding whether to approve needs
  *    to know which is which.
  *
+ * 4. A RECOMMENDATION THE SYSTEM CANNOT APPLY MUST NOT LOOK APPLIABLE. MVP 3's `manualRemediation`
+ *    renders as instructions with NO Preview and NO Approve, because there is no `action` to send.
+ *    The acceptance criterion is the ABSENCE of a control (§3.3a), which is the kind of thing every
+ *    check passes while the defect is present -- so it is rendered from a separate branch that has
+ *    no access to `onResolve` rather than from the same branch with a disabled button.
+ *
  * APPROVE IS DELIBERATELY THE SECOND STEP. Preview first, then approve, and the preview's own
  * response is what populates the before/after the approve button is labelled with — so the operator
  * approves a change they have already seen the shape of. `resolve-api.md` §1.1 requires the mode to
@@ -78,6 +84,7 @@ export function InvestigationPanel({
   onResolve,
 }: InvestigationPanelProps): JSX.Element {
   const recommended = investigation?.recommendedAction ?? null;
+  const manual = investigation?.manualRemediation ?? null;
   const canned = investigation?.source === 'canned';
   const unavailable = investigation !== null && investigation.rootCause === null;
 
@@ -176,6 +183,50 @@ export function InvestigationPanel({
                 </li>
               ))}
             </ul>
+          )}
+
+          {manual !== null && (
+            /* SEPARATE BRANCH, NOT A VARIANT OF THE RESOLVE PANEL. This JSX never references
+               `onResolve`, `resolving` or `resolve`, so an approve control cannot appear here by
+               editing a condition -- the handler is not in scope. That is the structural version of
+               §3.3a's argument: the wrong UI is unrepresentable rather than forbidden. */
+            <div className="pg-manual">
+              <h3 className="pg-investigate__heading">What to do</h3>
+              <p className="pg-manual__summary">{manual.summary}</p>
+
+              <ol className="pg-manual__steps">
+                {manual.steps.map((step, index) => (
+                  /* Verbatim, in order. The panel does not reword, merge or renumber -- these are
+                     instructions someone will follow against a live production. */
+                  <li key={`${index}-${step.slice(0, 24)}`}>{step}</li>
+                ))}
+              </ol>
+
+              {manual.target !== null && (
+                <dl className="pg-facts">
+                  <div className="pg-facts__row">
+                    <dt>Setting</dt>
+                    <dd className="pg-facts__mono">
+                      {manual.target.host} · {manual.target.setting}
+                    </dd>
+                  </div>
+                  {manual.target.currentValue !== null && (
+                    <div className="pg-facts__row">
+                      <dt>Current value</dt>
+                      <dd className="pg-facts__mono">{manual.target.currentValue}</dd>
+                    </div>
+                  )}
+                </dl>
+              )}
+
+              {/* Says plainly that the product will not do this. Without it, an operator who has
+                  just used Approve on the other scenario may wait for a button that never comes. */}
+              <p className="pg-manual__gate">
+                Production Guardian cannot make this change for you — it is outside the one action
+                the system is permitted to apply. Do it on the IRIS host, then the finding clears on
+                its own once the host recovers.
+              </p>
+            </div>
           )}
 
           {recommended !== null && (
@@ -323,6 +374,16 @@ export function InvestigationPanel({
                 </div>
               )}
             </div>
+          )}
+          {recommended === null && manual === null && !unavailable && (
+            /* §3.1: an investigation with no recommendation of either kind is COMPLETE, not broken.
+               Said explicitly, because an empty space below a root cause reads as a panel that
+               failed to load -- which is the same defect as Early Warning rendering nothing for
+               `already_crossed` and looking unbuilt. */
+            <p className="pg-investigate__note">
+              The agent explained the condition and recommended no action. Nothing here is applied
+              automatically, and no fix is being withheld — there is simply none it could name.
+            </p>
           )}
         </>
       )}
