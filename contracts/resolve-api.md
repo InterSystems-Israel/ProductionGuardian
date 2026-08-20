@@ -125,9 +125,9 @@ renders from one type rather than from a status code.
   "before": { "poolSize": 1, "readAt": "2026-08-18T14:06:41Z" },
   "after":  { "poolSize": 4, "readAt": "2026-08-18T14:06:43Z" },
   "reversal": {
-    "action": { "type": "set_pool_size", "host": "Cloud API", "size": 1 },
-    "capturedFrom": "live",
-    "automatic": false
+    "host": "Cloud API",
+    "size": 1,
+    "capturedFrom": "live"
   },
   "refusal": null,
   "failure": null,
@@ -163,7 +163,7 @@ renders from one type rather than from a status code.
 | `action` | object | Echoed **as evaluated**, not as sent. If the request was refused for being out of bounds, this still shows what was asked for. |
 | `before` | object \| null | Live state read immediately before the write. `null` only when nothing could be read (`wrong_production`, `host_not_in_production`, `not_authorized`). |
 | `after` | object \| null | Live state read back **after** the update. `null` for `previewed` and for refusals. **Populated even on `failed`** — see §4. |
-| `reversal` | object \| null | How to undo. `null` unless `outcome` is `applied`. See §4. |
+| `reversal` | object \| null | **A record of the prior value, not a request** — `{host, size, capturedFrom}`. `null` unless `outcome` is `applied`. It is not POSTable: `size` is the shipped value and §3 bounds `action.size` at `2..8`. See §4.1. |
 | `refusal` | object \| null | Non-null **iff** `outcome` is `refused`. See §5. |
 | `failure` | object \| null | Non-null **iff** `outcome` is `failed`. See §5.2. |
 | `confirmation` | object | Always present. `status: "not_applicable"` for everything except `applied`. See §7. |
@@ -317,20 +317,51 @@ calling the tool directly. If the two disagree, IRIS wins and the response repor
 ## 4. Reversibility — capture the actual prior value
 
 `before.poolSize` is read from the **live** `Ens.Config.Item.PoolSize` immediately before the
-write, inside the same call, and returned. `reversal.action` is then a fully formed request body
-naming that measured value:
+write, inside the same call, and returned. `reversal` then records that measured value:
 
 ```json
 "reversal": {
-  "action": { "type": "set_pool_size", "host": "Cloud API", "size": 1 },
-  "capturedFrom": "live",
-  "automatic": false
+  "host": "Cloud API",
+  "size": 1,
+  "capturedFrom": "live"
 }
 ```
 
-Dev C can POST it back verbatim to undo. `capturedFrom` is always `"live"`; the field exists so
-that a future value like `"assumed"` would be visible rather than inferred, and so a mock that
-cannot read the live value has to say so instead of emitting a plausible `1`.
+`capturedFrom` is always `"live"`; the field exists so that a future value like `"assumed"` would be
+visible rather than inferred, and so a mock that cannot read the live value has to say so instead of
+emitting a plausible `1`.
+
+### 4.1 `reversal` is a record, not a request — corrected 2026-08-20 (#100)
+
+**This section previously said "Dev C can POST it back verbatim to undo", and wrapped the value in an
+`action` object plus an `automatic` flag to make that possible. Both were withdrawn, because the
+endpoint would refuse that body.**
+
+`reversal.size` is the *shipped* pool size, which for `Cloud API` is `1` — and §3 bounds `action.size`
+at `2..8`, with §5 listing exactly that as `out_of_bounds`. So the contract handed the caller an undo
+request and then declined it. That is a self-contradiction inside this document, independent of any
+implementation.
+
+**The resolution is that reversal is documentation.** It answers *what was the value before* so an
+operator can restore it, and it is deliberately not a body anything POSTs:
+
+- **`1` must stay unapprovable.** §3.6's reason is sound — `1` is the shipped value, so approving it
+  is a no-op dressed as a fix that would report success, change nothing, and leave an operator
+  believing the problem was addressed. Widening the bound to `1..8` to make the undo POSTable would
+  trade a real safety property for a convenience.
+- **Restoring the pool is an operator action**, through `Triggers.Reset()`, which is deliberately not
+  LLM-callable. "Reversible" means *the prior value is measured, recorded and restorable* — which is
+  true, provable and what the demo actually does.
+- **A second write path is out of scope.** MVP 2 §1.3 puts a generalised action catalogue in later
+  work, and root `CLAUDE.md` §2 now requires a spec before anything beyond the one action is built.
+
+**The shape is now flat, matching what every component already shipped.** `Tools.Resolve`, the engine
+and the mock all emitted `{host, size, capturedFrom}` and nothing ever emitted `automatic` — so here
+the *contract* was the outlier rather than the code, which is the reverse of the usual direction and
+is why it went unnoticed for a week. `action` and `automatic` are removed: an `action` wrapper exists
+to make a body dispatchable, and this body is not dispatched.
+
+**Consumer impact: none.** No component is losing a field it emitted or read.
 
 **Never hardcode the restore value.** This is not a hypothetical — it is a bug that was found and
 fixed in the exact write path this tool wraps. `Triggers.ErrorRate()` points `Cloud API` at a
@@ -973,9 +1004,9 @@ load-bearing parts:
   "before": { "poolSize": 1, "readAt": "2026-08-18T14:06:41Z" },
   "after":  { "poolSize": 4, "readAt": "2026-08-18T14:06:43Z" },
   "reversal": {
-    "action": { "type": "set_pool_size", "host": "Cloud API", "size": 1 },
-    "capturedFrom": "live",
-    "automatic": false
+    "host": "Cloud API",
+    "size": 1,
+    "capturedFrom": "live"
   },
   "confirmation": { "status": "pending", "findingId": "f-1042" },
   "audit": { "actor": "guardian_resolve", "auditId": "pg-audit-44812", "source": "live" }
