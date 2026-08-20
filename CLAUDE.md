@@ -4,10 +4,10 @@ Rules that apply to **every developer**. Deep, area-specific instructions live i
 
 | Area | File |
 |---|---|
-| Dashboard / UI (Dev C) | `apps/dashboard/CLAUDE.md` |
+| Dashboard / UI (Dev B) | `apps/dashboard/CLAUDE.md` |
 | Detection engine + findings API (Dev B) | `services/detection-engine/CLAUDE.md` |
-| Metrics proxy (Dev B, was Dev A) | `services/metrics-proxy/CLAUDE.md` |
-| IRIS, LABDEMO, triggers (Dev B, was Dev A) | `iris/CLAUDE.md` |
+| Metrics proxy (Dev A) | `services/metrics-proxy/CLAUDE.md` |
+| IRIS, LABDEMO, triggers (Dev A) | `iris/CLAUDE.md` |
 
 **Keep this file stable.** Every edit here is a merge conflict for everyone else. Area-specific rules belong in an area file, not here.
 
@@ -47,7 +47,7 @@ boundary was written down first.
 |---|---|---|
 | **Early Warning** | Projects a building condition forward: "queue rising ~N/min, crosses threshold in ~M minutes" | Dev B (detection-engine) |
 | **AI Detective** | An AI Hub agent that explains root cause with evidence and a confidence score, and recommends an action | Dev B (orchestration) + `iris/**` (agent, MCP tools) |
-| **Smart Resolve** | Applies one governed, human-approved, reversible action to the live production and confirms the condition clears | `iris/**` (write tool) + Dev B (endpoint) + Dev C (approval UI) |
+| **Smart Resolve** | Applies one governed, human-approved, reversible action to the live production and confirms the condition clears | `iris/**` (write tool) + Dev B (endpoint and approval UI) |
 
 **MVP 2 is one scenario, end to end, not a general capability.** `Cloud API` runs at
 `PoolSize 1` against a ~1s-per-message downstream dispatcher, so it clears ~1 msg/sec; inbound
@@ -103,16 +103,33 @@ already exists for MVP 2's scenario to build on.
 
 ## 3. Ownership — stay in your own directory
 
+**Two developers since 2026-08-20**, corrected below. Dev C left the project; `apps/dashboard/**` and
+`docs/demo/**` pass to Dev B, who has been the only author in that directory since MVP 2's UI landed.
+
 | Path | Owner |
 |---|---|
-| `iris/**`, `services/metrics-proxy/**` | Dev B (was Dev A) |
-| `services/detection-engine/**` | Dev B |
-| `apps/dashboard/**`, `docs/demo/**` | Dev C |
+| `iris/**`, `services/metrics-proxy/**` | Dev A |
+| `services/detection-engine/**`, `apps/dashboard/**`, `docs/demo/**` | Dev B |
 | `contracts/**` | see §4 — **nobody edits without a PR** |
 | `tools/**`, root config, `.github/**` | shared, PR + review |
 | `docs/*` source material (brochure, deck, MVP docx, demo html) | read-only |
 
 **Reading another area for context is encouraged. Writing to it is not.** If a task seems to require editing outside your area, stop and say so.
+
+**The two rows above were both wrong until 2026-08-20**, and one had been wrong for a week — which is
+why the MVP 3 spec makes amending this table its first task rather than an afterthought, exactly as §2
+had to be amended before MVP 2 (#85).
+
+- `iris/**` and `services/metrics-proxy/**` read "Dev B (was Dev A)". That was the reverse of the
+  truth: `iris/CLAUDE.md` has said "Developer A owns" throughout, the MVP 2 spec §5.2 assigns Dev A
+  "everything inside `iris/**`", and Dev A authored 7 of the 9 `iris/` commits in MVP 2 while Dev B
+  reviewed them as the consumer. A table nobody followed is worse than no table, because it is the one
+  a newcomer trusts.
+- `apps/dashboard/**` read "Dev C" after Dev C left, so MVP 3's dashboard work had **no owner at all**.
+
+**The whole directory moves to one developer rather than splitting by file.** Splitting `apps/dashboard/**`
+between two people would create exactly the seam MVP 2's retrospective indicts — every expensive defect
+in MVP 2 was at a boundary between owners, not inside one.
 
 Full explanation and rationale: `CONTRIBUTING.md`.
 
@@ -122,22 +139,23 @@ Full explanation and rationale: `CONTRIBUTING.md`.
 
 - **Never edit a file in `contracts/`** as part of an implementation task.
 - Never add a field to a local type to make code compile — that is a **contract change request** to the owning developer.
-- A contract change is its own PR, with a `contracts/CHANGELOG.md` entry, reviewed by **every other developer**. Two remain since 2026-08-12 (Dev A moved off; Dev B took their areas), so in practice that is one other person — and GitHub will not let an author approve their own PR, which is the point.
+- A contract change is its own PR, with a `contracts/CHANGELOG.md` entry, reviewed by **every other developer**. Two remain (Dev C left on 2026-08-20; Dev B took their areas — see §3), so in practice that is one other person — and GitHub will not let an author approve their own PR, which is the point. The parenthetical here said "Dev A moved off" until 2026-08-20 and was the source of §3's reversed row.
 
 ## 5. Ports and conventions
 
 | Service | Port | Owner |
 |---|---|---|
-| Metrics proxy | `3001` | Dev B (was Dev A) |
+| Metrics proxy | `3001` | Dev A |
 | Findings API (`/api/healthscan/*`) | `3002` | Dev B |
-| Dashboard dev server | `5173` | Dev C |
+| Dashboard dev server | `5173` | Dev B |
 
-Branches: `devA/…`, `devB/…`, `devC/…`. Commit subjects scoped to the area: `feat(dashboard): …`, `fix(detection-engine): …`. Never commit `.env`, `node_modules/`, `dist/`, `.claude/settings.local.json`, or video files.
+Branches: `devA/…`, `devB/…`. Commit subjects scoped to the area: `feat(dashboard): …`, `fix(detection-engine): …`. Never commit `.env`, `node_modules/`, `dist/`, `.claude/settings.local.json`, or video files.
 
 ## 6. Working rules for Claude Code
 
 - **Never invent data.** No placeholder hosts, no fabricated metrics or findings outside a declared fixtures directory. Demo data uses the LABDEMO application components and the eight real finding types. The authoritative host list is the `<Item>` set in `iris/labdemo/Production.cls` — do not restate it, because a copied host list is what went stale when `FHIR Transform` was removed.
-- **Mock-first is the plan, not a fallback.** Dev B builds against a mock of Dev A's proxy; Dev C builds against a mock of Dev B's findings API. Never block on another developer's service being up.
+- **Mock-first is the plan, not a fallback.** Dev B builds against a mock of Dev A's proxy, and the dashboard against a mock of the findings API. Never block on another developer's service being up.
+  **With two developers the engine↔dashboard boundary is now inside one person, so mock-first there is a discipline rather than a necessity** — nothing forces the contract to be real when the same author owns both sides. Keep the mock anyway: MVP 2's two costliest UI defects were at that seam (the WHY/FIX endpoints served for two days behind a UI that never called them, and nginx proxying only `/api/healthscan/` so every other endpoint returned HTML with a 200). Both were found by driving the UI's own path, which is what the mock exists to make cheap.
 - **No new dependencies** without stating why and what it replaces.
 - **Match the surrounding code** — same naming, file shape, and comment density. Comment the non-obvious, not the obvious.
 - **Verify before claiming done.** Run the area's build/typecheck/tests. If something fails or is unverified, say which and show the actual output. A green claim over a red build costs the team more than the bug did.
