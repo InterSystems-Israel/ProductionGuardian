@@ -125,7 +125,19 @@ ClassMethod SetPoolSize(host As %String, size As %Integer, dryRun As %Boolean = 
     // had tuned.
     set before = +item.PoolSize
     set out.before = { "poolSize": (before) }
-    set out.reversal = { "host": (host), "size": (before), "capturedFrom": "live production" }
+    // `capturedFrom` IS "live", NOT "live production". `resolve-api.md` §4 states it is always
+    // `"live"`, and this emitted `"live production"` until 2026-08-20 -- a value drift found by
+    // diffing the two documents field by field for #110, after reading the line several times
+    // without seeing it. An `enum: ["live", "mock"]` in a schema catches this at validation time and
+    // review demonstrably does not, which is the argument that CHANGELOG entry is making.
+    //
+    // THE SHAPE IS STILL WRONG AND IS DELIBERATELY LEFT ALONE. The contract specifies
+    // `{"action": {"type", "host", "size"}, "capturedFrom", "automatic"}` and this is flat with no
+    // `automatic`. Fixing that means deciding what `reversal` is FOR -- #100 is open on exactly
+    // that, because the contract hands the caller a body with `size: 1` and then refuses it against
+    // its own `2..8` bound. Changing the shape before that decision would be guessing at an
+    // interface, so only the value that is wrong under every option is corrected here.
+    set out.reversal = { "host": (host), "size": (before), "capturedFrom": "live" }
 
     if before = size {
         // Not an error and not a refusal: the requested state is already true. A demo will hit
