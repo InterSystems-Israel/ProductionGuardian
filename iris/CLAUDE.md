@@ -148,12 +148,46 @@ returns PHI, it lands in `Audit.Entry.Result` in plain text.
 | Every call appears in the audit log | met for executions and for authorization denials |
 | RBAC roles and resources exist from a clean boot | met, and **verified from a real boot** rather than inferred: the four security objects were deleted and `docker compose restart iris` recreated them through step 9. `Audit/` compiled on the way through, including its SQL table, so the recursive load picks up a new subdirectory |
 | A principal can actually *use* the roles | needs `%DB_%DEFAULT` **as well**, from the invocation path — the `Guardian_*` roles stay minimal and grant only `PG_*`. Without it you get `<PROTECT>` before any policy is consulted |
-| LLM credential in the vault | **not met on the compose stack** — needs a key, and the current one must be rotated |
+| LLM credential in the vault | met — `Setup.AIHub.CreateProvider()` provisions the wallet entry and the `AI.LLM.pgdetective` config from `PG_LLM_API_KEY` at boot (#106), verified on a cold-provisioned instance. **No key, no default:** absent, the boot says `SKIPPED` and AI Detective degrades to a labelled `source: "canned"` |
+| One live investigation returns `source: "agent"` | **standing pre-demo check, not a one-off** — see #108 and below |
 
 ```objectscript
 do ##class(ProductionGuardian.Setup.AIHub).Status()          // what is and is not in place
 do ##class(ProductionGuardian.LabDemo.Audit.Entry).Purge()   // reset the log between rehearsals
 ```
+
+### Before a demo: prove the agent is live, not canned (#108)
+
+`source: "canned"` builds a plausible narrative **from real measured values**, so a rehearsal looks
+correct while demonstrating nothing about the agent. The three fields that cannot be faked:
+
+```
+POST /api/investigate  ->  state: complete
+                           source: agent        <- NOT "canned"
+                           model: non-null      <- e.g. gpt-4o-mini
+                           toolCalls: > 0       <- evidence was gathered, not guessed
+```
+
+**Run it after any change to the provider path** — `CreateProvider()`, the wallet, the ConfigStore
+entry, `REST.AgentDispatcher`, or the compose variables.
+
+`source: "agent"` is the cheapest assertion that covers the whole chain at once, because it cannot be
+produced unless the compose variable, the provider config, the wallet entry, the web application and
+the agent are *all* correct simultaneously. That matters because three defects in this path were each
+invisible to the check that preceded them, and each failed at a different link:
+
+| Defect | Where it broke | Found in |
+|---|---|---|
+| `/labdemo/agent` never registered — every MVP 2 write `404`d | web application | #106 |
+| `CreateProvider()` never ran — the variable was not passed to the `iris` service | compose | `f4e6561` |
+| the wallet restore was inert — `%Wallet.KeyValue.Secret` is `transient=1` | error path | `4a0fb8e` |
+
+The common gap: **a mechanism that works and a mechanism that is reached are different claims**, and
+only the second is what a demo depends on.
+
+Not automatable in CI — it needs a real API key and costs a metered call, so it is a human check. If
+it is ever scripted it belongs in `tools/` and run on request, for the same reason
+`Test.GovernanceProof` is hand-run rather than compiled at boot.
 
 ### Every row above means "on a boot", so test with `compose down -v`
 
