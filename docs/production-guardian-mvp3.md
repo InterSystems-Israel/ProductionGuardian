@@ -127,15 +127,33 @@ So on its own the agent can say "a configured directory does not exist" and cann
 Two pieces close that without weakening the boundary, and **both are configuration or catalogue data,
 never log content**:
 
-**(a) `summary`, which the contract already specifies and the code does not emit.** `mcp-tools.md`
-§3.4 defines each `get_recent_errors` entry as `occurredAt`, `errorCode`, `sourceClass`, `summary` —
-where `summary` is "a **catalogue** string keyed by `errorCode`", written by us. The implementation
-emits only `errorCode` and `count`.
+**(a) `summary`, and the response shape it has nowhere to live in.** This started as "the contract
+specifies `summary` and the code does not emit it." It is larger than that — the two response shapes
+differ **in kind**, not by one field (@Ari-Glikman, #112 review). Verified field by field:
 
-That is a **pre-existing contract divergence**, in the same family as the three in
-`contracts/CHANGELOG.md` (2026-08-20) and the fourth fixed in #111. Implementing `summary` is closing
-a gap, not new scope — and `#5021 → "a configured directory or file path does not exist"` is exactly
-the catalogue entry this scenario needs.
+| | `mcp-tools.md` §3.4 | `Tools/Read.cls` (`GetRecentErrors`) |
+|---|---|---|
+| window | `windowMinutes` | `sinceMinutes` — **renamed** |
+| `truncated` | present | absent |
+| array | `errors[]` of `{occurredAt, errorCode, sourceClass, summary}` | `byCode[]` of `{errorCode, count}` |
+
+The contract describes **per-error rows with timestamps and a catalogue string**; the implementation
+returns **an aggregated histogram**. The `errors[]` array does not exist at all. An agent written
+against the contract looks for occurrences and finds counts.
+
+**That makes the shape change mandatory rather than incidental**, which is the part to understand
+before anyone estimates this: `summary` is a property of an error *occurrence*, not of a *code count*,
+so there is no field you can add to a `byCode` entry that would carry it. Implementing `summary` means
+implementing `errors[]`.
+
+This is a **pre-existing divergence** — the fifth to reach `main` in a shape no schema covered, after
+the three in `contracts/CHANGELOG.md` (2026-08-20) and the one fixed in #111. Closing it is not MVP 3
+scope creep; it is what this scenario happens to walk into first. `#5021 → "a configured directory or
+file path does not exist"` is exactly the catalogue entry needed.
+
+**It is also the strongest available argument for §6's question 3.** Four of the five were findable
+only by reading two documents side by side, and the one in #111 took four readings of the same line.
+Schemas for these four contracts turn all five into validation failures instead of archaeology.
 
 **(b) The host's configured paths.** No current tool returns them: `get_host_status` gives status and
 enabled, `get_pool_size` gives `PoolSize`. A new read tool — `get_host_settings(host)`, returning the
@@ -172,9 +190,19 @@ governed action.
 | `recommendedAction` | structured, machine-consumable, input to Smart Resolve | yes |
 | `manualRemediation` | prose, for a human to act on outside the product | **never** |
 
-Keeping them separate is the whole point: it makes "there is a fix and you may apply it" and "there is
-a fix and it is not ours to apply" different shapes rather than different values of one field. A UI
-cannot accidentally render an approve button for the second.
+Keeping them separate is the whole point. **The two states are not "a fix with a button" and "a fix
+without one" — they are "we may act" and "we may not", which is a claim about authority rather than
+about UI** (@Ari-Glikman, #112 review). Encoding a claim about authority as two *shapes* means a
+consumer cannot render an approve control for the second by accident.
+
+**Which is why this must not be a flag on one object.** The obvious cheaper design — keep
+`recommendedAction` and add `applyable: false` — fails by omission: the defect is someone forgetting
+to check a boolean, and the result is an approve button on an action the product has no authority to
+take. A field that does not exist cannot be forgotten. That is the same reasoning as
+`Tools.Resolve`'s allow-list of one: fail closed by construction rather than by remembering.
+
+It also leaves §3.3's "structured object, never prose" intact for the field that *is* applyable, which
+is the one where it matters for safety.
 
 **Subject to the data boundary like everything else** — it names configuration and an operator action,
 never message content. And it is additive and nullable, so no MVP 2 consumer changes.
@@ -187,11 +215,25 @@ never message content. And it is additive and nullable, so no MVP 2 consumer cha
 | `dead_host` fires on `EMR Source` | the finding appears in `/api/healthscan/findings` |
 | The agent names the directory | investigation `rootCause` contains the configured path, with `evidence[].source = mcp_tool` |
 | No log text crosses the boundary | the investigation contains no `Ens_Util.Log` message text; evidence is config values and `summary` strings |
-| **No approve control is rendered** | `recommendedAction` is `null` and the panel shows the recommendation with no button — the criterion is the *absence* of a control |
+| **No approve control is rendered** | **Observed on screen, not asserted:** with a `manualRemediation` finding open, the drawer shows the recommendation text and **no Preview and no Approve control** |
 | It is a live agent, not canned | #108's standing check: `source: agent`, non-null `model`, `toolCalls > 0` |
 
-The fifth row is the one worth writing a test for, because a missing negative is invisible: a panel
-that renders an approve button for a null `recommendedAction` looks fine until someone clicks it.
+**The fifth row is stated as an observation deliberately, and it is the most important row in this
+table.** A missing negative is invisible: a panel that renders an approve button for a null
+`recommendedAction` looks entirely fine until someone clicks it, and a test suite only catches it if
+somebody remembered to write the negative case.
+
+@Ari-Glikman's #112 review is the evidence, and it is worth quoting because it is three occurrences in
+one week rather than a hypothetical:
+
+- Early Warning rendered nothing for `already_crossed`, so the module looked unbuilt
+- the WHY and FIX endpoints worked for two days behind a UI that never called them
+- the provider provisioned correctly and was never reached, because compose did not pass the variable
+
+**Each time the checks passed and the absence was the defect.** So this criterion is phrased as
+something a person confirms by looking, in five seconds, before a demo — with a test as reinforcement
+rather than as the primary evidence. Where a test exists it should assert the *absence* of the control
+for a null `recommendedAction`, which is the case nobody writes unprompted.
 
 ---
 
@@ -327,7 +369,7 @@ the first task, not an afterthought.
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| An approve button renders for a null `recommendedAction` | Medium | High | The acceptance criterion is the *absence* of a control (§2.6); assert it in a test, because a missing negative is invisible |
+| An approve button renders for a null `recommendedAction` | Medium | High | §2.6 states the criterion as an **on-screen observation**, with a test asserting the *absence* of the control as reinforcement. Three defects in one week were exactly this shape — the checks passed and the absence was the defect |
 | Pressure to add "just create the folder" as an action | Medium | High | §1.2. Creating directories is a different risk class from a bounded pool change; MVP 3's value is a specific diagnosis with an honest refusal to act |
 | The `#5021` message text gets returned "just for this code" | Medium | Critical | §2.4. The allowlist exists because an exception is a rule an implementer widens; `summary` + configuration reaches the same answer |
 | The architecture slides go stale | High | Medium | Author as SVG/components that restate as little as possible and point at `docker-compose.yml` and `mcp-tools.md` as the authority (#84) |
