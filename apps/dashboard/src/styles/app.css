@@ -1199,3 +1199,15 @@ button {
   line-height: 1.4;
   color: var(--pg-text);
 }
+
+/* The spent variant: the window has closed and a finding covers the state now. Warning-toned
+   rather than info-toned, because unlike a pending projection this one is reporting that the
+   thing being watched for has actually happened. */
+.pg-forecast--spent {
+  border-left-color: var(--pg-warning);
+  background: var(--pg-warning-bg);
+}
+
+.pg-forecast--spent .pg-forecast__label {
+  color: var(--pg-warning);
+}

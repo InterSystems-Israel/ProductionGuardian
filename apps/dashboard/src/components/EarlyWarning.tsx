@@ -6,18 +6,28 @@
  * §1.4 makes it a boundary condition: a forecast presented as a reading is the same defect class as
  * the coerced `lastActivity` in #58, and it is worse here because the number is about the future.
  *
- * IT RENDERS NOTHING WHEN THERE IS NOTHING TO SAY, and that is deliberate rather than lazy. Of the
- * seven decline reasons only three are worth a host card's vertical space:
+ * WHAT IT RENDERS, AND THE ONE CASE THAT CHANGED. Measured on the live stack: a projection exists
+ * for roughly 100 seconds of a queue_buildup run — from the queue starting to rise until it crosses
+ * the threshold. Before that the slope is too flat to fit; after it, `already_crossed`.
  *
- *  - `already_crossed` — the threshold is behind us. That is the state a FINDING covers, and the
- *    card already shows the finding count, so repeating it would be noise.
- *  - `not_rising` / `warming` / `insufficient_samples` / `disabled` / `metric_unmeasurable` —
- *    nothing is projected and nothing is wrong. A row saying "no projection available" on every
- *    healthy host would make the grid unreadable for information the operator does not need.
+ *     q=9    (not_rising)
+ *     q=19   slope=1.5/min  eta=1240s     <- strip appears
+ *     q=49   slope=8.6/min  eta=7s
+ *     q=58   (already_crossed)            <- strip used to vanish here
  *
- * So the strip appears only when a projection exists, or when the reason is one an operator would
- * otherwise mistake for silence: `warming` and `insufficient_samples`, which mean "ask again
- * shortly" rather than "there is nothing coming".
+ * The first version hid `already_crossed` entirely, reasoning that the state is covered by a
+ * FINDING and repeating it would be noise. That reasoning is sound and the consequence was not:
+ * **an operator looking at the grid a minute later saw nothing at all**, and reasonably concluded
+ * Early Warning was not implemented. Reported by the user, who could not find it on screen.
+ *
+ * So `already_crossed` now renders as a spent forecast — "threshold reached, see the finding" —
+ * which is honest about there being no forecast left to make while leaving evidence that the module
+ * exists and was watching. A feature nobody can find is indistinguishable from a missing one.
+ *
+ * Still silent for `not_rising`, `disabled` and `metric_unmeasurable`: those are steady states on a
+ * healthy host, and a row saying "no projection available" on every card would make the grid
+ * unreadable for information nobody needs. `warming` and `insufficient_samples` render because they
+ * mean "ask again shortly" rather than "nothing is coming".
  */
 
 import type { HostProjectionView } from '../types/mvp2';
@@ -26,10 +36,16 @@ export interface EarlyWarningProps {
   projection: HostProjectionView | null;
 }
 
-/** The two reasons worth surfacing: both mean "not yet", not "nothing". */
-const PENDING_REASONS: Record<string, string> = {
+/**
+ * The reasons worth a row, and what each says.
+ *
+ * `already_crossed` is the one that earns its place by NOT being a forecast: it marks the module as
+ * present and watching after the window has closed. The other two mean "ask again shortly".
+ */
+const SHOWN_REASONS: Record<string, string> = {
   warming: 'Baseline still warming — no projection yet',
   insufficient_samples: 'Not enough samples yet for a projection',
+  already_crossed: 'Threshold reached — see the finding below',
 };
 
 /**
@@ -53,12 +69,16 @@ export function EarlyWarning({ projection }: EarlyWarningProps): JSX.Element | n
   const { projection: forecast, projectionUnavailable: reason } = projection;
 
   if (forecast === null) {
-    const pending = reason === null ? null : PENDING_REASONS[reason];
-    if (pending === undefined || pending === null) return null;
+    const shown = reason === null ? undefined : SHOWN_REASONS[reason];
+    if (shown === undefined) return null;
+    /* `already_crossed` reads as spent rather than pending -- it is not waiting for anything, it is
+       reporting that the thing it was watching for has happened. The other two are genuinely
+       "not yet", so they keep the muted pending styling. */
+    const spent = reason === 'already_crossed';
     return (
-      <div className="pg-forecast pg-forecast--pending">
+      <div className={`pg-forecast ${spent ? 'pg-forecast--spent' : 'pg-forecast--pending'}`}>
         <span className="pg-forecast__label">Early warning</span>
-        <span className="pg-forecast__body">{pending}</span>
+        <span className="pg-forecast__body">{shown}</span>
       </div>
     );
   }
