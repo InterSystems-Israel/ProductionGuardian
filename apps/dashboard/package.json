@@ -3,14 +3,15 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Health Scan dashboard — MVP 1 operator frontend for Production Guardian",
+  "description": "Health Scan dashboard \u2014 MVP 1 operator frontend for Production Guardian",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && npm run copy-assets",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "validate:fixtures": "node tools/validate-fixtures.mjs && node tools/validate-fixture-claims.mjs",
-    "validate:fixtures:strict": "node tools/validate-fixtures.mjs --strict && node tools/validate-fixture-claims.mjs --strict"
+    "validate:fixtures:strict": "node tools/validate-fixtures.mjs --strict && node tools/validate-fixture-claims.mjs --strict",
+    "copy-assets": "node tools/copy-assets.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

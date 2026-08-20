@@ -12,10 +12,16 @@ FROM node:22-alpine AS build
 WORKDIR /app
 
 # package files first so `npm ci` is cached independently of source edits.
-COPY package.json package-lock.json ./
+# Paths are relative to the REPOSITORY ROOT since MVP 3 -- see the context note in
+# docker-compose.yml. The brochure is copied in separately because it lives outside this app.
+COPY apps/dashboard/package.json apps/dashboard/package-lock.json ./
 RUN npm ci
 
-COPY . .
+COPY apps/dashboard/ ./
+# docs/ is read-only source material (root CLAUDE.md §3); this reads it, never writes it. The build
+# script copies it into dist/assets/, so there is one brochure in the repository and no committed
+# duplicate to go stale (#84).
+COPY docs/Brochure.png /repo/docs/Brochure.png
 
 # `npm run build` runs `tsc --noEmit` first, so a type error fails the image build
 # rather than producing one that serves a stale bundle.
@@ -40,8 +46,11 @@ ENV HEALTHSCAN_UPSTREAM=detection-engine:3002
 ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
 ENV NGINX_ENVSUBST_FILTER="HEALTHSCAN_UPSTREAM|NGINX_LOCAL_RESOLVERS"
 
-COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY apps/dashboard/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist/index.html /usr/share/nginx/html/index.html
+# The served brochure. Without this line the view renders its own "could not be loaded" fallback --
+# honest, but the asset exists and should be here.
+COPY --from=build /app/dist/assets/brochure.png /usr/share/nginx/html/assets/brochure.png
 
 EXPOSE 80
 

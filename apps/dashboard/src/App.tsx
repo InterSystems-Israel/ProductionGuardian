@@ -14,7 +14,9 @@ import { useHealthScan } from './hooks/useHealthScan';
 import { useInvestigation } from './hooks/useInvestigation';
 import { useProjections } from './hooks/useProjections';
 import { pollIntervalMs, usePolling } from './hooks/usePolling';
-import { AppShell } from './components/AppShell';
+import { AppShell, type View } from './components/AppShell';
+import { ArchitectureView, type Slide } from './components/ArchitectureView';
+import { BrochureView } from './components/BrochureView';
 import { ConnectionBanner, type ConnectionState } from './components/ConnectionBanner';
 import { SeveritySummary } from './components/SeveritySummary';
 import { HostGrid } from './components/HostGrid';
@@ -34,6 +36,11 @@ const STALE_AFTER_INTERVALS = 3;
 export function App(): JSX.Element {
   const [mode, setMode] = useState<Mode>(() => readMode());
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /* Which view is showing. Deliberately NOT a router: two extra views in a single-file artefact that
+     must also run from file:// (CLAUDE.md §6), where a history-based router has no server to fall
+     back to. Local state keeps the file:// fallback working and adds no dependency. */
+  const [view, setView] = useState<View>('dashboard');
+  const [slide, setSlide] = useState<Slide>(1);
   const [now, setNow] = useState(() => Date.now());
 
   const intervalMs = useMemo(() => pollIntervalMs(), []);
@@ -216,7 +223,16 @@ export function App(): JSX.Element {
   const contentClass = connectionState === 'ok' ? '' : 'pg-stale';
 
   return (
-    <AppShell headerActions={headerActions}>
+    <AppShell headerActions={headerActions} view={view} onView={setView}>
+      {/* The two MVP 3 views replace the dashboard body rather than sitting beside it, and the
+          polling hooks keep running underneath -- so returning to the dashboard shows current data
+          rather than a stale render, and a finding that clears while the brochure is open is already
+          gone when you come back. Cheaper and less surprising than tearing the poll down. */}
+      {view === 'brochure' && <BrochureView />}
+      {view === 'architecture' && <ArchitectureView slide={slide} onSlide={setSlide} />}
+
+      {view !== 'dashboard' ? null : (
+        <>
       <ConnectionBanner
         state={connectionState}
         error={error}
@@ -281,6 +297,8 @@ export function App(): JSX.Element {
           )
         }
       />
+        </>
+      )}
     </AppShell>
   );
 }

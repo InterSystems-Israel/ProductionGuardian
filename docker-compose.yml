@@ -266,7 +266,13 @@ services:
   # `file://` fallback is verified against, nginx serves it and proxies /api/healthscan.
   dashboard:
     build:
-      context: ./apps/dashboard
+      # CONTEXT IS THE REPOSITORY ROOT, not apps/dashboard, since MVP 3. The brochure view serves
+      # docs/Brochure.png as a static asset, and a narrower context cannot see it -- the build
+      # would succeed and the view would 404, which is the invisible-failure shape #106 was about.
+      #
+      # The cost is a larger context upload; .dockerignore keeps node_modules and dist out of it.
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
     container_name: pg-dashboard
     ports:
       # 5173:80 -- the container listens on 80, not 8080. Keeping 5173 on the host so the

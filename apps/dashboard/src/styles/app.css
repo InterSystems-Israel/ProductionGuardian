@@ -1254,3 +1254,168 @@ button {
   line-height: 1.5;
   color: var(--pg-text);
 }
+
+/* ─── MVP 3 views: brochure and architecture ─────────────────────────────────────────
+   These replace the dashboard body, so they get the same outer rhythm as `pg-section`
+   rather than a new one. */
+
+.pg-view {
+  padding: var(--pg-space-5);
+}
+
+.pg-view__title {
+  margin: 0 0 var(--pg-space-2);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--pg-text);
+}
+
+.pg-view__question {
+  margin: 0 0 var(--pg-space-4);
+  font-size: 0.875rem;
+  color: var(--pg-text-muted);
+}
+
+/* Points at the file that owns the detail this diagram deliberately omits. Muted and
+   monospaced so it reads as a reference rather than as part of the picture. */
+.pg-view__authority {
+  margin: var(--pg-space-4) 0 0;
+  font-family: var(--pg-font-mono);
+  font-size: 0.6875rem;
+  color: var(--pg-text-muted);
+}
+
+.pg-view__fallback {
+  padding: var(--pg-space-4);
+  border-radius: var(--pg-radius);
+  background: var(--pg-surface-sunk);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--pg-text);
+}
+
+.pg-brochure {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-radius);
+  background: var(--pg-surface);
+}
+
+.pg-diagram {
+  display: block;
+  width: 100%;
+  max-width: 860px;
+  height: auto;
+  background: var(--pg-surface);
+  border: 1px solid var(--pg-border-soft);
+  border-radius: var(--pg-radius);
+}
+
+.pg-diagram__box {
+  fill: var(--pg-surface);
+  stroke: var(--pg-border);
+  stroke-width: 1.5;
+}
+
+/* IRIS is tinted because it CONTAINS things -- the production and AI Hub are drawn inside
+   it, and an untinted container reads as another peer box. */
+.pg-diagram__box--iris {
+  fill: var(--pg-surface-sunk);
+}
+
+/* The gate through which every tool call passes. Warning-toned: it is the thing that
+   refuses, and the only element on either slide that can say no. */
+.pg-diagram__box--gate {
+  fill: var(--pg-warning-bg);
+  stroke: var(--pg-warning);
+}
+
+/* The write tool, distinguished from the five reads because it is the only one that
+   changes a production. */
+.pg-diagram__box--write {
+  fill: var(--pg-critical-bg);
+  stroke: var(--pg-critical);
+}
+
+/* The LLM, drawn as the one element outside the instance. Dashed, because the boundary
+   it sits behind is the point of the slide. */
+.pg-diagram__box--external {
+  fill: var(--pg-surface);
+  stroke: var(--pg-info);
+  stroke-dasharray: 5 3;
+}
+
+.pg-diagram__inner {
+  fill: var(--pg-surface);
+  stroke: var(--pg-border-soft);
+  stroke-width: 1.5;
+}
+
+.pg-diagram__label {
+  fill: var(--pg-text);
+  font-family: var(--pg-font);
+  font-size: 13px;
+  font-weight: 600;
+  text-anchor: middle;
+}
+
+.pg-diagram__label--sm {
+  font-size: 12px;
+}
+
+.pg-diagram__sub {
+  fill: var(--pg-text-muted);
+  font-family: var(--pg-font);
+  font-size: 11px;
+  text-anchor: middle;
+}
+
+.pg-diagram__sub--note {
+  font-size: 11.5px;
+}
+
+.pg-diagram__flow line,
+.pg-diagram__flow path {
+  stroke: var(--pg-navy-600);
+  stroke-width: 1.5;
+  fill: none;
+}
+
+/* The governed call, and the write edge. Dashed so it reads as a different kind of edge
+   from the polls -- it is a request that may be refused. */
+.pg-diagram__flow--dashed {
+  stroke: var(--pg-warning);
+  stroke-dasharray: 5 3;
+}
+
+.pg-diagram__arrowhead {
+  fill: var(--pg-navy-600);
+  stroke: none;
+}
+
+.pg-slides {
+  display: flex;
+  gap: var(--pg-space-2);
+  margin-top: var(--pg-space-4);
+}
+
+/* The rail's real buttons. Same look as the inert spans by design -- but they are
+   buttons, so they focus, and the focus ring is what tells a keyboard user which of the
+   nine entries actually do something. */
+.pg-rail__item--action {
+  width: 100%;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pg-rail__divider {
+  display: block;
+  height: 1px;
+  margin: var(--pg-space-3) var(--pg-space-4);
+  background: var(--pg-navy-700);
+}
