@@ -5,6 +5,57 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-20 — MVP 2 shipped; the four contracts carry no machine-readable artefact (Dev B)
+
+**No contract text changed in this entry.** It records a gap that should be visible before anyone
+starts MVP 3, because the honest answer to "are the MVP 2 contracts done" is *the prose is, the
+enforcement is not*.
+
+All four MVP 2 contracts are implemented and verified end to end from an empty volume. Three say
+`Status: published`; `earlywarning-api.md` still says `proposed`. **None of the four has a
+`.schema.json`, a `.d.ts`, or a captured sample**, and each says so in its own text — so
+`validate.mjs` does not know these endpoints exist, and its counts (15 accept / 19 reject / 7
+capture claims) are entirely MVP 1.
+
+### What that costs, measured rather than asserted
+
+Two drifts got through in a week, both in shapes no schema covered:
+
+1. **`refusal` field names.** `Tools.Resolve`, the engine's type and the mock all emitted
+   `{code, detail}` against a contract specifying `{reason, message, checkedBy}` (#99). It
+   type-checked because the parser *cast* rather than read; §5 tells consumers to render
+   `refusal.message` verbatim, so the UI would have shown `undefined`.
+2. **`reversal` shape.** The contract specifies `{action: {...}, capturedFrom, automatic}`; every
+   component ships flat `{host, size, capturedFrom}` and nothing emits `automatic` (#100). The
+   implementation is self-consistent and the *contract* is the outlier — the reverse of the usual
+   direction, and only findable by reading both.
+
+`healthscan-api.md` has had a schema and a drift test since Day 1 and has produced neither class of
+defect. That is the argument, and it is the reason this entry exists rather than a note in a PR.
+
+### The stopgap that exists
+
+`services/detection-engine/test/mvp2-contract-drift.test.ts` greps the contract *prose* for field
+names. It caught nothing retroactively — it was written after both drifts — and its own header says
+it should be **replaced** by schema validation rather than extended. A prose grep is weaker than a
+schema and the risk is that a weak check gets trusted like a strong one.
+
+### Before MVP 3 builds on these
+
+Whoever specs MVP 3 should decide, explicitly, whether the four MVP 2 contracts get schemas and
+captured samples first. Two reasons to do it before rather than after:
+
+- MVP 3's modules (Health Score, Health Summary, Ask Guardian, Performance Coach — §2.2) all
+  *consume* investigation and resolve output. A shape that is only enforced by review is a shape
+  every new consumer re-litigates.
+- `#100` is an open contract self-contradiction: the endpoint hands back `reversal` with `size: 1`
+  and then refuses that exact body, because the bound is `2..8`. It needs a decision either way, and
+  it is cheaper to settle while the four documents are being made machine-readable than afterwards.
+
+Not proposing the work here — this is the record that it is outstanding, so it is a decision rather
+than a discovery.
+
+
 ## 2026-08-19 — audit and RBAC: four corrections from implementing them (Dev A raised, Dev B wrote)
 
 **Two files, no shape change.** `mcp-tools.md` §4/§5/§5.5 and `resolve-api.md` §8. No field added,
