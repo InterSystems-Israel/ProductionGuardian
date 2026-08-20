@@ -15,7 +15,7 @@ Rules that apply to **every developer**. Deep, area-specific instructions live i
 
 ## 1. What this project is
 
-**Production Guardian** is an AI-powered production health and optimization layer for InterSystems Health Connect. Eight modules are planned. **MVP 1 (Health Scan) is shipped; MVP 2 adds Early Warning, AI Detective and Smart Resolve.**
+**Production Guardian** is an AI-powered production health and optimization layer for InterSystems Health Connect. Eight modules are planned. **MVP 1 (Health Scan) and MVP 2 (Early Warning, AI Detective, Smart Resolve) are both shipped.**
 
 Health Scan reads production metrics from the built-in IRIS `/api/monitor/` API, compares them to a rolling baseline, and surfaces findings — dead jobs, hung processes, queue buildup, elevated error rates, slow processing, system alerts. MVP 2 turns one of those findings into a closed loop: **WHAT** (project it forward) → **WHY** (explain it) → **FIX** (apply a governed, approved action and confirm it clears).
 
@@ -23,12 +23,23 @@ Specs: `docs/production-guardian-healthscan-mvp1.docx`, `docs/production-guardia
 
 ## 2. Hard scope boundary
 
-**MVP 1 (Health Scan) is complete and shipped.** We are now building **MVP 2**, which
-deliberately crosses three of the boundaries MVP 1 held. This section is the record of what is
-in and out *now*; the MVP 1 boundary is kept below it because the reasoning still governs the
-five modules that remain out.
+**MVP 1 and MVP 2 are both complete and shipped.** MVP 2 deliberately crossed three of the
+boundaries MVP 1 held. This section is the record of what is in and out *now*; the MVP 1
+boundary is kept below it because the reasoning still governs the five modules that remain out.
 
 Spec: `docs/production-guardian-mvp2.docx`.
+
+**MVP 2 shipped on 2026-08-20**, verified from an empty volume in one `compose up`: Early
+Warning projected the crossing (`eta` tightening 820s -> 23s), `queue_buildup` fired, a live
+`gpt-4o-mini` agent explained it with all evidence read through governed tools, and one approved
+`set_pool_size 1 -> 4` drained the queue to zero. Six audit rows for six tool calls. The
+standing pre-demo check is #108 and `iris/CLAUDE.md`'s acceptance table.
+
+**What shipped is one scenario, not a general capability** — that was the §2.1 bargain and it
+held. `set_pool_size` on `Cloud API` within `2..8` is still the only action, and the five
+modules in §2.2 are still out. **Anything beyond that is MVP 3 scope and needs its own spec
+before it is built**, for the same reason MVP 2 had one: three modules landed because the
+boundary was written down first.
 
 ### 2.1 In scope for MVP 2 — three modules, one scenario
 
