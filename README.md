@@ -1,4 +1,4 @@
-# Production Guardian — Health Scan (MVP 1)
+# Production Guardian — Health Scan (MVP 1) + Early Warning, AI Detective, Smart Resolve (MVP 2)
 
 An AI-powered production health layer for InterSystems Health Connect. MVP 1 is **Health
 Scan**: it reads production metrics from IRIS, compares them to a rolling baseline, and
@@ -156,6 +156,118 @@ still waiting for. Full table in `iris/labdemo/README.md`.
 alert from the proxy. Read `http://localhost:3001/proxy/alerts` instead.
 
 The Management Portal is at **http://localhost:52773/csp/sys/UtilHome.csp**.
+
+## The MVP 2 demo — WHAT, WHY, FIX
+
+One scenario, end to end: a queue builds on `Cloud API`, an AI agent explains why, and one
+governed, approved, reversible action clears it.
+
+### It runs without a key, and says so
+
+`AGENT_MODE` defaults to `mock`, so a fresh clone demonstrates the **shape** of the loop with no
+credential: the investigation is a canned narrative built from the live measured values, and the
+resolve is applied against an in-memory pool size. Both are labelled — `source: "canned"`, and the
+audit id reads `mock-audit-N`.
+
+**The mock resolve reports `applied` and does not change the production.** That is deliberate and it
+is the one thing to know before demonstrating from a clone: the pool stays at 1 and the queue keeps
+growing. If the queue does not drain after an apply, check which mode you are in before looking for
+a bug.
+
+### For a live agent and a real write
+
+```bash
+export PG_LLM_API_KEY=sk-...          # OpenAI key; goes into the AI Hub wallet, never the repo
+export PG_AGENT_MODE=live             # engine calls IRIS instead of its own mock
+docker compose up -d
+```
+
+`PG_LLM_API_KEY` is read at first boot by `Setup.AIHub`, which creates the wallet entry and the
+`AI.LLM.pgdetective` config that references it as `secret://PGSecrets.openai#apikey`. The key is
+never written to the configuration, the repo, or a log line — the boot prints its length and that it
+was stored. Rotating it is: change the variable, restart. `PG_LLM_MODEL` overrides the model
+(default `gpt-4o-mini`).
+
+Without the key the boot says so plainly and the loop still runs, canned:
+
+```
+4b. LLM provider: SKIPPED -- PG_LLM_API_KEY is not set
+    AI Detective will serve a CANNED investigation (source "canned"), which is
+    labelled and correct but is not a live agent. Set the variable to enable it.
+```
+
+### Driving it
+
+```bash
+docker compose exec iris iris session IRIS -U LABDEMO
+```
+
+```objectscript
+// Arm: throttles the downstream to ~1s/message and raises inflow, after warming the baseline
+// at zero. Takes about 2 minutes to produce a confirmed finding.
+do ##class(ProductionGuardian.LabDemo.Triggers).PoolBottleneck()
+do ##class(ProductionGuardian.LabDemo.Triggers).Status()   // what is armed, and the queue cap
+do ##class(ProductionGuardian.LabDemo.Triggers).Reset()    // undo, including the pool size
+```
+
+Then, against the dashboard's own API path so it is the same route the UI uses:
+
+```bash
+# WHAT -- the finding
+curl -s localhost:5173/api/healthscan/findings
+
+# WHY -- root cause, evidence, a recommended action
+curl -s -XPOST localhost:5173/api/investigate \
+  -H 'Content-Type: application/json' -d '{"findingId":"<id from above>"}'
+
+# FIX -- preview first, then apply
+curl -s -XPOST localhost:5173/api/resolve -H 'Content-Type: application/json' \
+  -d '{"mode":"dry_run","action":{"type":"set_pool_size","host":"Cloud API","size":4}}'
+
+curl -s -XPOST localhost:5173/api/resolve -H 'Content-Type: application/json' \
+  -d '{"mode":"apply","requestedBy":"you@laptop",
+       "action":{"type":"set_pool_size","host":"Cloud API","size":4},
+       "origin":{"findingId":"<id>"}}'
+```
+
+A live run looks like this — the queue drains because four workers clear ~4/sec against ~2/sec
+inbound:
+
+```
+queue_buildup at 147  ->  investigate: gpt-4o-mini, 5 tool calls, recommends set_pool_size 4
+apply -> applied 1 -> 4, audit pg-audit-2
+queue 80 -> 42 -> 14 -> 0,  findings (all clear)
+```
+
+**If `investigate` returns `state: "unavailable"` with `note: "agent returned HTTP 500"`, the key is
+wrong or expired.** That is the honest failure and worth recognising: `rootCause` is `null` and
+`evidence` is empty rather than a plausible narrative, because a fabricated root cause is worse than
+none when a human approves a production write on the strength of it. The FIX half is unaffected — it
+does not use the LLM — so a bad key costs you WHY and nothing else.
+
+### What the safety model actually enforces
+
+- **One action, one host, bounded.** `set_pool_size` on `Cloud API`, size `2`–`8`. Anything else is
+  refused by the tool with a named reason — including size `1`, because `1` is the shipped value and
+  "setting it to 1" is a no-op dressed as a fix.
+- **Dry run first, and it cannot mutate** — that path returns before the write.
+- **Reversible.** Every response carries the prior value in `reversal`, captured live. Undo with
+  `Triggers.Reset()`.
+- **RBAC-gated and audited.** Every tool call, read and write, becomes a row in
+  `ProductionGuardian.LabDemo.Audit.Entry` naming the actor. An unauthorized caller is refused with
+  `200` and `refusal.reason: "not_authorized"`, and *the refusal is audited too*.
+- **Metrics and configuration only ever leave the instance.** Never message content, never PHI.
+
+```objectscript
+do ##class(ProductionGuardian.Setup.AIHub).Status()          // roles, tools, provider
+do ##class(ProductionGuardian.LabDemo.Audit.Entry).Purge()   // reset the log between rehearsals
+```
+
+**One caveat, stated rather than buried:** the engine authenticates to IRIS as `superuser`, which
+holds `%All`, and under `%All` a resource check passes for everything — so the RBAC boundary is
+proven by `iris/test/GovernanceProof.cls` with a purpose-made unprivileged principal rather than by
+the running demo. See issue #104 for why that is not fixed yet (this image has no `%Ens_*`
+privileges to grant).
 
 ## Running without IRIS
 

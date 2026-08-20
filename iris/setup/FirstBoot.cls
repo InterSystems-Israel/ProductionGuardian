@@ -185,9 +185,10 @@ ClassMethod MakeDirectories()
     }
 }
 
-/// BOTH web applications. Registering only /labdemo/monitor -- which is what had happened
+/// ALL THREE web applications. Registering only /labdemo/monitor -- which is what had happened
 /// on the instance -- leaves Cloud API POSTing into a 404 while EMR Source and Lab Router
-/// look healthy, so nothing points at the cause.
+/// look healthy, so nothing points at the cause. The same omission for /labdemo/agent takes out
+/// every MVP 2 write with `HTTP 404` from a component the caller never names.
 ///
 /// AutheEnabled 96 is unauthenticated(32) OR password(64), so both work. Through an
 /// external web gateway an unauthenticated GET is refused with 403 regardless, which is
@@ -196,6 +197,15 @@ ClassMethod RegisterWebApps()
 {
     set apps("/labdemo") = "ProductionGuardian.LabDemo.REST.PatientDispatcher"
     set apps("/labdemo/monitor") = "ProductionGuardian.LabDemo.REST.HostStatusDispatcher"
+    // THREE, not two. /labdemo/agent was missing until 2026-08-19 and the comment above already
+    // described what that costs -- it was written about /labdemo/monitor and applies unchanged.
+    //
+    // Measured on a TRUE cold start (compose down -v, then up) from a fresh clone: every MVP 2
+    // write returned `failed / tool_call / write tool returned HTTP 404`, because AgentDispatcher
+    // had no application mapped to it. It never showed up on any instance either of us had used,
+    // because we both registered it by hand while building it -- the same "deployed interactively
+    // once" state #97 found for iris/test/.
+    set apps("/labdemo/agent") = "ProductionGuardian.LabDemo.REST.AgentDispatcher"
     set ns = $namespace
 
     new $namespace
