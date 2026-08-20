@@ -252,12 +252,15 @@ ClassMethod CreateProvider() As %Status
             // and this runs on every boot from FirstBoot, so one transient failure takes out a demo
             // that was working. The old value is captured first and restored if the rewrite fails,
             // so the worst case is the key the instance already had.
+            // GetSecretValue(name), NOT %OpenId(...).Secret. `Secret` is transient=1, so a
+            // reopened entry reports it as "" -- verified: GetSecretValue returns 180 chars for the
+            // same entry whose .Secret reads 0. The earlier version captured .Secret, so `previous`
+            // was always empty, the restore guard below could never fire, and the comment claiming
+            // the old value was preserved was false (@kskubach, #106). An inert safety net is worse
+            // than none, because it stops anyone looking.
             set previous = ""
             try {
-                set existing = ##class(%Wallet.KeyValue).%OpenId(..#WALLETENTRY)
-                if $isobject(existing) {
-                    set previous = existing.Secret
-                }
+                set previous = ##class(%Wallet.KeyValue).GetSecretValue(..#WALLETENTRY)
             } catch {
                 set previous = ""
             }
@@ -267,6 +270,10 @@ ClassMethod CreateProvider() As %Status
                 // Put back what was there. Reported, because a boot that silently reverted to an
                 // older key would present as the provider rejecting a good one.
                 do ##class(%Wallet.KeyValue).Delete(..#WALLETENTRY)
+                // `previous` is the STORED shape -- the JSON object GetSecretValue returns, e.g.
+                // {"apikey":"..."} -- so it is passed through as Secret rather than re-wrapped.
+                // Double-wrapping would restore a secret whose apikey is itself a JSON string, and
+                // the URI would then resolve to something that looks like a key and is not.
                 set restore = ##class(%Wallet.KeyValue).Create(..#WALLETENTRY, {"Usage": "CUSTOM", "Secret": (previous)})
                 write "4b. wallet entry rewrite FAILED; previous value ",
                     $select(restore: "restored", 1: "COULD NOT BE RESTORED"), !
