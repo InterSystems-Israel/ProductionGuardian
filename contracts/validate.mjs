@@ -30,11 +30,80 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_ID = 'https://production-guardian/contracts/healthscan.schema.json';
 const PROXY_SCHEMA_ID = 'https://production-guardian/contracts/proxy.schema.json';
+const INVESTIGATION_SCHEMA_ID = 'https://production-guardian/contracts/investigation.schema.json';
 
 /** Each sample is validated against ONE named definition, never "either". */
 const CASES = [
   { file: 'samples/hosts-response.json', definition: 'HostsResponse' },
   { file: 'samples/findings-response.json', definition: 'FindingsResponse' },
+];
+
+/**
+ * The MVP 2/3 investigation shape, validated against its own schema.
+ *
+ * `samples/investigation-response.json` is CAPTURED from a live run against a real LLM
+ * (`source: "agent"`, gpt-4o-mini, 5 tool calls) with only the ids and timestamp pinned so the
+ * fixture does not move. Same rule as the MVP 1 samples: a hand-written sample proves the schema
+ * accepts what its author imagined, and a captured one proves it accepts what the system emits.
+ */
+const INVESTIGATION_CASES = [
+  { file: 'samples/investigation-response.json', definition: 'InvestigationResponse' },
+];
+
+/**
+ * Investigation cases that must FAIL, and each one is a defect that actually reached `main` or a
+ * safety property the schema exists to hold.
+ *
+ * The first two are the reason `manualRemediation` is a separate shape rather than a flag: a
+ * consumer must not be able to receive something that looks approvable when it is not.
+ */
+const INVESTIGATION_MUST_REJECT = [
+  {
+    name: 'manualRemediation carrying an action object — a UI could render Approve for it',
+    definition: 'ManualRemediation',
+    data: {
+      summary: 'EMR Source polls a directory that does not exist',
+      steps: ['create the directory'],
+      target: null,
+      appliedBy: 'operator',
+      action: { type: 'set_pool_size', host: 'EMR Source', size: 4 },
+    },
+  },
+  {
+    name: "appliedBy 'system' — autonomous remediation, which root CLAUDE.md §2.1 forbids",
+    definition: 'ManualRemediation',
+    data: { summary: 'x', steps: ['y'], target: null, appliedBy: 'system' },
+  },
+  {
+    name: 'target carrying a message-content key — the data boundary in schema form',
+    definition: 'ManualRemediation',
+    data: {
+      summary: 'x',
+      steps: ['y'],
+      appliedBy: 'operator',
+      target: { host: 'EMR Source', setting: 'FilePath', currentValue: '/x', messageBody: 'PID|...' },
+    },
+  },
+  {
+    name: 'steps: [] — a manual remediation with no steps says nothing',
+    definition: 'ManualRemediation',
+    data: { summary: 'x', steps: [], target: null, appliedBy: 'operator' },
+  },
+  {
+    name: "evidence source 'tool' instead of 'mcp_tool' — the enum that keeps provenance honest",
+    definition: 'EvidenceItem',
+    data: { label: 'a', detail: 'b', source: 'tool', tool: null },
+  },
+  {
+    name: 'action with a fourth key — resolve-api.md §1.1 refuses unknown keys inside action',
+    definition: 'ResolveAction',
+    data: { type: 'set_pool_size', host: 'Cloud API', size: 4, force: true },
+  },
+  {
+    name: "action.type 'restart_host' — one action type in MVP 2, enumerated so a second is a decision",
+    definition: 'ResolveAction',
+    data: { type: 'restart_host', host: 'Cloud API', size: 4 },
+  },
 ];
 
 /**
@@ -498,6 +567,7 @@ const ajv = new Ajv({ strict: false, allErrors: true });
 addFormats(ajv);
 ajv.addSchema(JSON.parse(readFileSync(join(here, 'healthscan.schema.json'), 'utf8')));
 ajv.addSchema(JSON.parse(readFileSync(join(here, 'proxy.schema.json'), 'utf8')));
+ajv.addSchema(JSON.parse(readFileSync(join(here, 'investigation.schema.json'), 'utf8')));
 
 const validatorFor = (definition) => {
   const validate = ajv.getSchema(`${SCHEMA_ID}#/definitions/${definition}`);
@@ -508,6 +578,12 @@ const validatorFor = (definition) => {
 const proxyValidatorFor = (definition) => {
   const validate = ajv.getSchema(`${PROXY_SCHEMA_ID}#/definitions/${definition}`);
   if (validate === undefined) throw new Error(`no such proxy definition: ${definition}`);
+  return validate;
+};
+
+const investigationValidatorFor = (definition) => {
+  const validate = ajv.getSchema(`${INVESTIGATION_SCHEMA_ID}#/definitions/${definition}`);
+  if (validate === undefined) throw new Error(`no such investigation definition: ${definition}`);
   return validate;
 };
 
@@ -530,6 +606,18 @@ for (const { name, definition, data } of MUST_ACCEPT) {
   const ok = validate(data);
   report(ok, `accepts: ${name}`);
   if (!ok) console.log(`      ${ajv.errorsText(validate.errors)}`);
+}
+
+for (const { file, definition } of INVESTIGATION_CASES) {
+  const validate = investigationValidatorFor(definition);
+  const data = JSON.parse(readFileSync(join(here, file), 'utf8'));
+  report(validate(data), `${file} validates as ${definition}`);
+  if (validate.errors) console.log(JSON.stringify(validate.errors, null, 2));
+}
+
+for (const { name, definition, data } of INVESTIGATION_MUST_REJECT) {
+  const validate = investigationValidatorFor(definition);
+  report(!validate(data), `rejects: ${name}`);
 }
 
 for (const { name, definition, data } of MUST_REJECT) {
@@ -556,8 +644,8 @@ for (const { name, re } of CAPTURE_CLAIMS) {
 
 console.log(
   failures === 0
-    ? `\nall checks passed (${CASES.length} samples, ${MUST_ACCEPT.length + PROXY_MUST_ACCEPT.length} accept, `
-      + `${MUST_REJECT.length + PROXY_MUST_REJECT.length} reject, ${CAPTURE_CLAIMS.length} capture claims)`
+    ? `\nall checks passed (${CASES.length + INVESTIGATION_CASES.length} samples, ${MUST_ACCEPT.length + PROXY_MUST_ACCEPT.length} accept, `
+      + `${MUST_REJECT.length + PROXY_MUST_REJECT.length + INVESTIGATION_MUST_REJECT.length} reject, ${CAPTURE_CLAIMS.length} capture claims)`
     : `\n${failures} check(s) failed`,
 );
 process.exit(failures === 0 ? 0 : 1);

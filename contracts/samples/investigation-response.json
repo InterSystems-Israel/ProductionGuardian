@@ -1,0 +1,62 @@
+{
+  "requestId": "inv-queue_buildup:Cloud API-1755691200000",
+  "findingId": "f-1042",
+  "state": "complete",
+  "source": "agent",
+  "investigatedAt": "2026-08-20T10:00:00Z",
+  "rootCause": "The Cloud API host has a configured pool size of 1, which means it can only process one message at a time. With a current queue depth of 67 and an average queueing time of over 35 seconds, the host is unable to keep up with incoming messages, leading to a significant backlog.",
+  "evidence": [
+    {
+      "label": "Host Status",
+      "detail": "The host is OK and enabled.",
+      "source": "mcp_tool",
+      "tool": "GetHostStatus"
+    },
+    {
+      "label": "Pool Size",
+      "detail": "Configured pool size is 1.",
+      "source": "mcp_tool",
+      "tool": "GetPoolSize"
+    },
+    {
+      "label": "Average Processing Time",
+      "detail": "Average processing time is 1.01 seconds.",
+      "source": "mcp_tool",
+      "tool": "GetProcessingTime"
+    },
+    {
+      "label": "Average Queueing Time",
+      "detail": "Average queueing time is 35.35 seconds.",
+      "source": "mcp_tool",
+      "tool": "GetProcessingTime"
+    },
+    {
+      "label": "Current Queue Depth",
+      "detail": "Current queue depth is 67.",
+      "source": "mcp_tool",
+      "tool": "GetQueueDepth"
+    }
+  ],
+  "confidence": 0.9,
+  "recommendedAction": {
+    "action": {
+      "type": "set_pool_size",
+      "host": "Cloud API",
+      "size": 2
+    },
+    "currentValue": null,
+    "bounds": {
+      "min": 2,
+      "max": 8
+    },
+    "reversible": true,
+    "requiresApproval": true,
+    "summary": "increase Cloud API pool ? -> 2"
+  },
+  "diagnostics": {
+    "model": "gpt-4o-mini",
+    "toolCalls": 5,
+    "durationMs": 8472,
+    "note": null
+  }
+}
