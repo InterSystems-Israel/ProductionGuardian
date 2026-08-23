@@ -8,14 +8,23 @@
 # artefact the file:// fallback is verified against (CLAUDE.md §6), so the container
 # and the fallback cannot drift apart.
 
+# BUILD CONTEXT IS THE REPO ROOT, not this directory — see docker-compose.yml's dashboard
+# service. `BrochureView.tsx` imports ../../../../docs/Brochure.png so the 1.7 MB asset has one
+# copy in git; that import cannot resolve from a context rooted here. Every COPY below is
+# therefore repo-relative, and the source tree is reproduced at the same depth so the relative
+# import resolves inside the image exactly as it does on a host.
 FROM node:22-alpine AS build
-WORKDIR /app
+WORKDIR /repo/apps/dashboard
 
 # package files first so `npm ci` is cached independently of source edits.
-COPY package.json package-lock.json ./
+COPY apps/dashboard/package.json apps/dashboard/package-lock.json ./
 RUN npm ci
 
-COPY . .
+COPY apps/dashboard/ ./
+
+# Only the one asset the bundle imports, not all of docs/ — that directory holds the deck, the
+# MVP docx files and the concept demo, none of which belong in a build layer.
+COPY docs/Brochure.png /repo/docs/Brochure.png
 
 # `npm run build` runs `tsc --noEmit` first, so a type error fails the image build
 # rather than producing one that serves a stale bundle.
@@ -40,8 +49,8 @@ ENV HEALTHSCAN_UPSTREAM=detection-engine:3002
 ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
 ENV NGINX_ENVSUBST_FILTER="HEALTHSCAN_UPSTREAM|NGINX_LOCAL_RESOLVERS"
 
-COPY nginx.conf.template /etc/nginx/templates/default.conf.template
-COPY --from=build /app/dist/index.html /usr/share/nginx/html/index.html
+COPY apps/dashboard/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=build /repo/apps/dashboard/dist/index.html /usr/share/nginx/html/index.html
 
 EXPOSE 80
 

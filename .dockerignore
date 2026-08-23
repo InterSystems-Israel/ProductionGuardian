@@ -1,0 +1,47 @@
+# Build-context exclusions for the REPO ROOT context.
+#
+# WHY THIS FILE EXISTS AT THE ROOT. Docker reads `.dockerignore` from the build context
+# directory, nowhere else. The dashboard's context moved from `./apps/dashboard` to `.` for
+# MVP 3 Track B (see docker-compose.yml), which silently stopped
+# `apps/dashboard/.dockerignore` from applying — and the first symptom was not "the image is
+# large" but a hard failure:
+#
+#   invalid file request apps/dashboard/node_modules/.bin/baseline-browser-mapping
+#
+# a dangling symlink inside a locally-installed node_modules that was never meant to be sent
+# to the daemon. The per-app file is kept so a `docker build ./apps/dashboard` still behaves,
+# but this one is what the compose build obeys.
+
+# Dependencies — reinstalled inside the image by `npm ci`, never copied in.
+**/node_modules
+
+# Build output. Copying a host-built dist/ in would let a stale bundle ship behind a
+# green image build, which is the whole reason the Dockerfile builds it itself.
+**/dist
+
+# Secrets. Root CLAUDE.md §5 forbids committing these; excluding them here means an
+# untracked local .env cannot reach a layer either.
+**/.env
+**/.env.*
+!**/.env.example
+.claude/settings.local.json
+
+# Repo metadata and history — large, and no build step reads it.
+.git
+.github
+
+# Everything under docs/ EXCEPT the one asset the bundle imports. Brochure.png is
+# `COPY`-ed explicitly by apps/dashboard/Dockerfile; the deck, the MVP .docx files and the
+# concept demo are source material (root CLAUDE.md §3) with no place in a build layer.
+docs/*
+!docs/Brochure.png
+
+# Other services' trees. Each has its own build context; none is read by the dashboard
+# build, and sending them makes every dashboard rebuild wait on unrelated file churn.
+iris
+services
+tools
+contracts
+
+**/*.log
+**/*.mp4
