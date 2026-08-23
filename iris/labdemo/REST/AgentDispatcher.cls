@@ -60,6 +60,22 @@ Parameter LLMCONFIG = "AI.LLM.pgdetective";
 /// and an unbounded loop against a metered API is a cost incident rather than a better diagnosis.
 Parameter MAXITERATIONS = 8;
 
+/// Error codes that mean "the downstream could not be reached". Same list the prompt names.
+///
+/// ONE COPY, referenced by both the guard below and (by name) the prompt above. Read from
+/// `Tools.Read`'s catalogue when it was written; a code here that the catalogue does not classify
+/// would simply never match, which fails closed.
+Parameter CONNECTIVITYCODES = {$listbuild("#6059", "<Ens>ErrConnectionLost", "<Ens>ErrHTTPStatus", "<Ens>ErrFailureTimeout", "<Ens>ErrTCPTerminatedReadTimeoutExpired")};
+
+/// Seconds after which a connectivity error describes history rather than the present.
+///
+/// DERIVED, NOT PICKED. A host failing to reach a closed target retries continuously -- Cloud API
+/// against a closed port wrote 12 errors/minute, i.e. one every five seconds. The engine confirms a
+/// finding after two polls at a 5s cadence, so anything it currently reports has been true for ~10s.
+/// Two minutes of silence from a host that would be erroring every five seconds is therefore the
+/// fault being OVER, not a gap in the data.
+Parameter CONNECTIVITYMAXAGE = 120;
+
 XData UrlMap [ XMLNamespace = "http://www.intersystems.com/urlmap" ]
 {
 <Routes>
@@ -106,6 +122,16 @@ ClassMethod Investigate() As %Status
         set parsed.toolCalls = $select($isobject(stats): stats."total_tool_calls", 1: "")
 
         do ..DropUnapplicableAction(parsed)
+        // Host from the REQUEST's finding, never from the model's reply: a guard that trusted the
+        // reply for the thing it is checking could be steered by the reply.
+        if $isobject(body.%Get("finding")) {
+            set findingHost = body.finding.%Get("host", "")
+            // Order matters only in that both read the same evidence; they are mutually exclusive by
+            // construction -- one fires when a connectivity error is recent, the other when it is
+            // not, so they cannot both act on one reply.
+            do ..DropPoolFixDuringOutage(parsed, findingHost)
+            do ..DropStaleConnectivityClaim(parsed, findingHost)
+        }
 
         write parsed.%ToJSON()
         return $$$OK
@@ -167,6 +193,148 @@ ClassMethod DropUnapplicableAction(parsed As %DynamicObject) [ Private ]
     // filter is indistinguishable from a model that behaved. The engine ignores unknown keys.
     set parsed.droppedAction = { "type": (action.%Get("type", "")), "host": (host),
         "reason": "not_whitelisted_host", "detail": (detail) }
+}
+
+/// Drop a pool recommendation while the host is CURRENTLY failing to reach its target. Private.
+///
+/// THE MIRROR OF DropStaleConnectivityClaim, and it exists because adding recency to the prompt
+/// regressed the case recency was not about. Measured on a live closed-port scenario with
+/// `#6059 secondsAgo 3` -- unambiguously current -- across three runs:
+///
+///     action=null       <- correct
+///     action=pool->2    <- wrong
+///     action=pool->2    <- wrong
+///
+/// Two in three. Explaining `secondsAgo` gave the model a reason to discount errors and it applied
+/// that reason to errors three seconds old. The previous wording held 3/3 on this case but caused the
+/// stale-error defect; the new wording fixes stale and breaks current. **A prompt cannot hold both
+/// ends** -- which is the fifth time on this class that a behaviour needed a guard rather than
+/// wording, so both ends are now checked in code and the prompt only has to explain.
+///
+/// SAFE BY CONSTRUCTION ANYWAY, and that is worth being clear about: `set_pool_size` on a host in
+/// this state would be *applied* successfully -- it is `Cloud API`, within 2..8 -- and would make
+/// things worse, four workers failing to reach a closed port instead of one. So unlike
+/// `DropUnapplicableAction`, where the tool refused the action regardless, here nothing downstream
+/// would have stopped it. This is the guard, not a tidier presentation of one.
+ClassMethod DropPoolFixDuringOutage(parsed As %DynamicObject, host As %String) [ Private ]
+{
+    if '$isobject(parsed.%Get("recommendedAction")) {
+        quit
+    }
+    set action = parsed.recommendedAction.%Get("action")
+    if '$isobject(action) {
+        quit
+    }
+    // Only the pool action. If the catalogue ever gains an action that IS right during an outage,
+    // this must not silently drop it.
+    if action.%Get("type", "") '= "set_pool_size" {
+        quit
+    }
+
+    set errors = ##class(ProductionGuardian.LabDemo.Tools.Read).GetRecentErrors(host, 60)
+    set freshest = ..FreshestConnectivityAge(errors)
+    // "" means no connectivity error in the window, or an unmeasurable age. Either way there is no
+    // evidence of a current outage, so the recommendation stands -- this guard only ever fires on
+    // POSITIVE evidence, never on absent evidence.
+    if (freshest = "") || (freshest > ..#CONNECTIVITYMAXAGE) {
+        quit
+    }
+
+    set parsed.recommendedAction = ""
+    set detail = "a connectivity error occurred " _ freshest _ "s ago, so more workers would fail faster rather than drain the queue"
+    set parsed.droppedAction = { "type": "set_pool_size", "host": (host),
+        "reason": "downstream_unreachable", "detail": (detail) }
+}
+
+/// Age in seconds of the newest CONNECTIVITY error in a get_recent_errors reply, or "". Private.
+///
+/// Shared by both guards so they cannot disagree about which codes count or how age is read -- a
+/// second copy of this loop is exactly the drift that produced the original defect.
+ClassMethod FreshestConnectivityAge(errors As %DynamicObject) As %String [ Private ]
+{
+    set freshest = ""
+    if '$isobject(errors) {
+        quit ""
+    }
+    set list = errors.%Get("byCode")
+    if '$isobject(list) {
+        quit ""
+    }
+    set it = list.%GetIterator()
+    while it.%GetNext(.i, .entry) {
+        if '$listfind(..#CONNECTIVITYCODES, entry.%Get("errorCode", "")) {
+            continue
+        }
+        set age = entry.%Get("secondsAgo")
+        if age = "" {
+            continue
+        }
+        if (freshest = "") || (age < freshest) {
+            set freshest = age
+        }
+    }
+    quit freshest
+}
+
+/// Strip a connectivity claim the evidence does not support. Private.
+///
+/// WHY A CHECK AND NOT JUST A BETTER PROMPT. Fifth time on this class: every behaviour this project
+/// actually depends on has needed a deterministic guard, not politer wording. The prompt now explains
+/// `secondsAgo` and states the 120-second threshold; this makes the threshold true.
+///
+/// THE NARROW CLAIM IT REFUTES. Only one: "the downstream is unreachable" asserted while the host has
+/// logged no connectivity error recently. That is checkable from a number the tool now returns, so it
+/// is checked. Everything else the model says stands -- this method has no opinion on a queue depth,
+/// a pool size, or whether the recommendation is wise.
+///
+/// AND IT ONLY EVER REMOVES. It cannot add a `recommendedAction`, because "the model was wrong to
+/// blame connectivity" does not establish that a pool increase is right -- the live numbers might
+/// support neither. A diagnosis narrowed to "no fix named" is honest; one where the dispatcher
+/// invented the fix would make it a second author, which is the same line `DropUnapplicableAction`
+/// draws.
+ClassMethod DropStaleConnectivityClaim(parsed As %DynamicObject, host As %String) [ Private ]
+{
+    set manual = parsed.%Get("manualRemediation")
+    if '$isobject(manual) {
+        quit
+    }
+
+    // Only a claim that NAMES connectivity. A manualRemediation about a missing directory or an
+    // invalid setting is untouched, so this cannot silently eat MVP 3's scenario.
+    set summary = $zconvert(manual.%Get("summary", ""), "L")
+    set claimsConnectivity = 0
+    for term = "unreachable", "connectivity", "downstream host", "cannot be reached", "connection" {
+        if summary [ term {
+            set claimsConnectivity = 1
+        }
+    }
+    if 'claimsConnectivity {
+        quit
+    }
+
+    // The evidence, read fresh rather than taken from the model's own account of it. A model that
+    // misread the age would also misreport it.
+    set errors = ##class(ProductionGuardian.LabDemo.Tools.Read).GetRecentErrors(host, 60)
+    set newest = errors.%Get("newestSecondsAgo")
+
+    // No errors at all in an hour, or an unmeasurable age -- either way there is nothing supporting
+    // a connectivity claim. "" is the tool's unmeasurable marker and must not read as "just now".
+    // The newest CONNECTIVITY code specifically, not the newest error of any kind: an
+    // ErrProductionSettingInvalid a second ago says nothing about reachability. Shared helper, so
+    // this guard and DropPoolFixDuringOutage cannot drift apart on the definition.
+    set freshest = ..FreshestConnectivityAge(errors)
+    set unsupported = (freshest = "") || (freshest > ..#CONNECTIVITYMAXAGE)
+
+    if 'unsupported {
+        quit
+    }
+
+    set parsed.manualRemediation = ""
+    set detail = "no connectivity error on this host within " _ ..#CONNECTIVITYMAXAGE _ "s"
+        _ $select(newest = "": " (none in the last hour)", 1: "; newest error of any kind " _ newest _ "s ago")
+    // Recorded, not silent -- same reasoning as droppedAction. A reviewer needs to see that the
+    // model claimed something and that we refused it, or this looks like a model that behaved.
+    set parsed.droppedRemediation = { "reason": "stale_connectivity_claim", "detail": (detail) }
 }
 
 /// Invoke the governed write tool. Every guard is the tool's, not this class's.
@@ -378,15 +546,46 @@ ClassMethod SystemPrompt() As %String [ Private ]
     // the rule for reading what is there. Stated as a hard precondition rather than a caution,
     // since a caution is what the previous version effectively was.
     set p = p _ "A LARGER POOL ONLY HELPS A QUEUE THAT IS PROCESSING SLOWLY, never one that is "
-    set p = p _ "failing. If get_recent_errors shows connectivity or downstream failures -- codes "
-    set p = p _ "#6059, <Ens>ErrConnectionLost, <Ens>ErrHTTPStatus, <Ens>ErrFailureTimeout, "
-    set p = p _ "<Ens>ErrTCPTerminatedReadTimeoutExpired -- then the queue is the SYMPTOM and the "
-    set p = p _ "unreachable target is the cause. More workers would only fail faster, so "
-    set p = p _ "recommendedAction MUST be null and the fix belongs in manualRemediation: the "
-    set p = p _ "operator repoints the host at a reachable target or restores the downstream. "
-    set p = p _ "Recommend set_pool_size only when the host is processing successfully and simply "
-    set p = p _ "cannot keep up -- messages completing, few or no errors, and work accumulating "
-    set p = p _ "behind a single worker. "
+    set p = p _ "failing. The connectivity codes are #6059, <Ens>ErrConnectionLost, "
+    set p = p _ "<Ens>ErrHTTPStatus, <Ens>ErrFailureTimeout and "
+    set p = p _ "<Ens>ErrTCPTerminatedReadTimeoutExpired. "
+
+    // RECENCY, NOT PRESENCE, and this is the correction. The rule above said "if get_recent_errors
+    // SHOWS connectivity failures", which is a statement about the window rather than about the
+    // host -- so a pool bottleneck armed after a closed-port scenario was diagnosed as a
+    // connectivity failure from 22-minute-old rows still inside the 60-minute window. Reported by
+    // @Ari-Glikman. Measured, same host, same second:
+    //
+    //     sinceMinutes 15  ->  count 0
+    //     sinceMinutes 60  ->  count 134, newest #6059 secondsAgo 1315
+    //
+    // The two directives were in direct conflict: BuildGoal tells the model to use a 60-minute
+    // window (because the missing-folder scenario logs once and goes quiet), and this rule then read
+    // anything in that window as current. `secondsAgo` is what resolves it -- the window can stay
+    // wide enough to see a one-shot fault while the CONCLUSION keys on how recent the fault is.
+    //
+    // 120 seconds is the threshold and it is derived rather than picked: the engine confirms a
+    // finding after `sustainedSamples` polls at a 5s cadence, so anything it is currently reporting
+    // has been true for at least ~10s, and a failing host retries continuously -- Cloud API against
+    // a closed port wrote 12 errors/minute. Two minutes of silence from a host that would be
+    // erroring every five seconds is therefore not a gap in the data; it is the fault being over.
+    set p = p _ "Each byCode entry carries secondsAgo, the age of that code's NEWEST occurrence, and "
+    set p = p _ "the reply carries newestSecondsAgo for the host overall. USE THEM: a connectivity "
+    set p = p _ "code with secondsAgo above 120 is a fault that has ENDED, and its errors describe "
+    set p = p _ "the backlog's history rather than the present. Do not diagnose a current "
+    set p = p _ "connectivity problem from it, and do not let it stop you recommending a pool "
+    set p = p _ "increase that the live numbers support. "
+    set p = p _ "Say so explicitly when you rely on this -- for example that the host errored 20 "
+    set p = p _ "minutes ago, is no longer erroring, and is now simply outnumbered. "
+
+    set p = p _ "So: connectivity codes with secondsAgo at or under 120 mean the queue is the "
+    set p = p _ "SYMPTOM and the unreachable target is the cause -- more workers would only fail "
+    set p = p _ "faster, recommendedAction MUST be null, and the fix belongs in manualRemediation, "
+    set p = p _ "where the operator repoints the host or restores the downstream. "
+    set p = p _ "Recommend set_pool_size when the host is processing successfully and simply cannot "
+    set p = p _ "keep up: work accumulating behind a single worker, and no RECENT connectivity "
+    set p = p _ "errors. A host with a queue, a normal processing time and only stale errors is the "
+    set p = p _ "pool case, not the connectivity case. "
 
     // MVP 3. The two fields are described as MUTUALLY EXCLUSIVE and as differing in AUTHORITY rather
     // than in format, because that is the distinction the model has to get right: one is a change we
@@ -458,6 +657,11 @@ ClassMethod BuildGoal(body As %DynamicObject) As %String [ Private ]
     set g = g _ " Call get_recent_errors with sinceMinutes 60, not the default: a host logs its"
     set g = g _ " error once on entering Error and then stops, so a short window can come back"
     set g = g _ " empty while the fault is still present. An empty result does not mean healthy."
+    // The other half of the same instruction, and it was missing. Telling the model to widen the
+    // window without telling it the window contains history is what made a stale fault look current.
+    set g = g _ " A WIDE WINDOW CONTAINS HISTORY. Check secondsAgo on each code before treating it as"
+    set g = g _ " current: errors from 20 minutes ago on a host that is no longer erroring describe"
+    set g = g _ " a fault that has ended, and the backlog draining behind it is a different problem."
     quit g
 }
 
