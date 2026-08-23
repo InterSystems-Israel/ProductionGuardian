@@ -335,6 +335,38 @@ Each `byCode` entry:
 | `errorCode` | string | The IRIS error token only — `<Ens>ErrFailureTimeout`, `#6059`, `#5021`, or `unclassified`. |
 | `count` | integer | Occurrences of this code in the window. |
 | `summary` | string \| null | A **catalogue** string keyed by `errorCode`, from the table in §3.4a. `null` when unclassified. |
+| `secondsAgo` | integer \| null | Age of this code's **newest** occurrence, in whole seconds. `null` when unmeasurable — never `0`, which would read as "just now". |
+
+Plus one field on the reply itself:
+
+| Field | Type | Notes |
+|---|---|---|
+| `newestSecondsAgo` | integer \| null | Age of the newest error of **any** code, so a consumer need not scan `byCode` to ask "is this still happening". `null` when there are no errors at all. |
+
+**WHY AGE, WHEN THE WINDOW ALREADY BOUNDS IT (added 2026-08-23).** A count inside a window cannot
+distinguish *happening* from *happened*, and that distinction decides the diagnosis. Measured on one
+host in one second:
+
+```
+sinceMinutes 15  ->  count 0,   byCode []
+sinceMinutes 60  ->  count 134, byCode [#6059 x63 ...], newest 1315s ago
+```
+
+Both true. A queue building behind a single worker was diagnosed as a **connectivity failure** from
+22-minute-old `#6059` rows still inside the 60-minute window — the host had stopped erroring entirely.
+The window cannot settle it either way: narrow it and the MVP 3 missing-folder scenario disappears,
+because that host logs `#5021` once on entering `Error` and then goes quiet. So the window stays wide
+enough to see a one-shot fault and the **conclusion** keys on age.
+
+**A TIMESTAMP IS NOT CONTENT.** `secondsAgo` is a duration derived from a row's own clock field. It
+carries nothing typed by a person and nothing derived from a message, so it sits on the metrics side
+of root `CLAUDE.md` §2.1 — unlike the message text, which remains unreturnable for the reasons in
+§3.4a. Emitting the absolute timestamp instead was considered and rejected: an elapsed count answers
+the only question asked of it and cannot be correlated against anything outside the instance.
+
+Consumers must treat `null` as **unmeasurable, not recent** — §2.1's nullability rule in the time
+dimension, and the third shape of the same defect this project has hit (#33, #49, #58 were the value
+dimension).
 
 **RECONCILED WITH THE IMPLEMENTATION 2026-08-20, and the contract moved further than the code.** This
 table specified something the tool has never emitted, and the two shapes differed in kind rather than

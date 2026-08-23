@@ -5,6 +5,51 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-23 — `get_recent_errors` reports HOW RECENT, not only how many (Dev B)
+
+**`mcp-tools.md` §3.4 only.** Two additive nullable fields, no schema change, no sample change —
+`validate.mjs` stays at 3 samples / 26 reject.
+
+- `byCode[].secondsAgo` — age of that code's newest occurrence, in whole seconds
+- `newestSecondsAgo` — age of the newest error of any code, on the reply itself
+
+### Why a count inside a window was not enough
+
+A count cannot distinguish *happening* from *happened*, and that distinction decides the diagnosis.
+A queue building behind one worker was diagnosed as a **connectivity failure** from 22-minute-old
+`#6059` rows still inside the 60-minute window — the host had stopped erroring entirely. Measured,
+same host, same second:
+
+```
+sinceMinutes 15  ->  count 0,   byCode []
+sinceMinutes 60  ->  count 134, newest #6059 1315s ago
+```
+
+Both true, and neither answers the question. **The window cannot settle it in either direction:**
+narrow it and MVP 3's missing-folder scenario disappears, because that host logs `#5021` once on
+entering `Error` and then goes quiet. So the window stays wide enough to see a one-shot fault and the
+conclusion keys on age.
+
+### A timestamp is not content
+
+`secondsAgo` is a duration derived from a row's own clock field — nothing typed by a person, nothing
+derived from a message, so it is on the metrics side of root `CLAUDE.md` §2.1. The message **text**
+remains unreturnable for §3.4a's reasons, unchanged. Emitting an absolute timestamp instead was
+rejected: an elapsed count answers the only question asked of it and cannot be correlated against
+anything outside the instance.
+
+`null` means **unmeasurable, not recent** — §2.1's nullability rule in the time dimension, and the
+third shape of a defect this project has now hit four times (#33, #49, #58 were the value dimension).
+
+### What this does NOT do
+
+It does not change the window, the codes, the catalogue, or what may be returned. Two consumers of
+the new fields — the recency rules in `AgentDispatcher` — live outside `contracts/` and are described
+in that class rather than here, because *how* a diagnosis reads the evidence is not a contract term.
+
+---
+
+
 ## 2026-08-23 — `get_host_settings`, and an optional argument does not default (Dev B)
 
 **`mcp-tools.md` only.** No schema change, no sample change — `validate.mjs` stays at 3 samples /

@@ -217,7 +217,23 @@ ClassMethod GetRecentErrors(host As %String, sinceMinutes As %Integer = 15) As %
         set secs = secs + 86400
     }
     set since = $zdatetime(days _ "," _ secs, 3)
-    set sql = "SELECT Text FROM Ens_Util.Log WHERE ConfigName = ? AND Type <= 2 AND TimeLogged >= ?"
+    // TimeLogged IS SELECTED TOO, so each code can report HOW RECENT it is and not only how many.
+    // A count alone is what produced the reported defect: a queue building behind one worker was
+    // diagnosed as a connectivity failure because 20-minute-old #6059 rows were still inside the
+    // window. Measured on the same host in the same second:
+    //
+    //     sinceMinutes 15  ->  count 0,   byCode []
+    //     sinceMinutes 60  ->  count 134, byCode [#6059 x63, ErrFailureTimeout x63, ...]
+    //
+    // Both true. Neither says whether the failure is HAPPENING or merely HAPPENED, and that is the
+    // whole distinction between "the target is unreachable" and "the target was unreachable and the
+    // backlog is now draining slowly". The window cannot settle it either: a short window hides the
+    // missing-folder scenario, where a host logs #5021 once on entering Error and then goes quiet.
+    //
+    // A TIMESTAMP IS NOT CONTENT. `secondsAgo` is a duration derived from a row's own clock field,
+    // carries nothing typed by a person and nothing derived from a message, so it is on the metrics
+    // side of the §2.1 boundary. The message TEXT stays unreturnable, as below.
+    set sql = "SELECT Text, TimeLogged FROM Ens_Util.Log WHERE ConfigName = ? AND Type <= 2 AND TimeLogged >= ?"
     set rs = ##class(%SQL.Statement).%ExecDirect(, sql, host, since)
     if rs.%SQLCODE < 0 {
         set out.reason = "log unreadable (SQLCODE " _ rs.%SQLCODE _ ")"
@@ -228,22 +244,82 @@ ClassMethod GetRecentErrors(host As %String, sinceMinutes As %Integer = 15) As %
 
     set total = 0
     kill codes
+    kill newest
     while rs.%Next() {
         set total = total + 1
         set code = ..ClassifyError(rs.%Get("Text"))
         set codes(code) = $get(codes(code), 0) + 1
+        // Newest per code, as an ODBC timestamp string. String comparison is correct for this
+        // format -- "2026-08-23 10:47:54" sorts identically as text and as time, because the fields
+        // are fixed-width and most-significant-first.
+        set stamp = rs.%Get("TimeLogged")
+        if stamp ] $get(newest(code), "") {
+            set newest(code) = stamp
+        }
     }
     set out.count = total
+
+    // `now` once, outside the loop, so every secondsAgo in one reply is measured against the same
+    // instant. Computed per entry it would drift by the loop's own duration, and two codes logged
+    // together could report different ages.
+    set nowH = $ztimestamp
     set code = ""
     for {
         set code = $order(codes(code), 1, n)
         quit:code=""
+        set ago = ..SecondsSince($get(newest(code), ""), nowH)
         // `summary` lives on the byCode entry because it is keyed by `errorCode` -- a property of
         // the CODE, not of an occurrence. That is what made the aggregate shape sufficient and the
         // per-event `errors[]` array unnecessary (@kskubach's correction on #116).
-        do out.byCode.%Push({ "errorCode": (code), "count": (n), "summary": (..ErrorSummary(code)) })
+        //
+        // `secondsAgo` is the newest occurrence of THIS code, so a reply can carry one code that is
+        // seconds old and another that is an hour old -- which is exactly the case a single
+        // `count` collapses and a diagnosis needs.
+        do out.byCode.%Push({ "errorCode": (code), "count": (n), "summary": (..ErrorSummary(code)),
+            "secondsAgo": (ago) })
     }
+
+    // ONE SUMMARY FIELD FOR THE WHOLE REPLY, because a model reasoning about "is this still
+    // happening" should not have to scan an array to find the minimum. Null when there are no
+    // errors at all -- not 0, which would read as "an error just now".
+    set overall = ""
+    set code = ""
+    for {
+        set code = $order(newest(code))
+        quit:code=""
+        if newest(code) ] overall {
+            set overall = newest(code)
+        }
+    }
+    set out.newestSecondsAgo = $select(overall = "": "", 1: ..SecondsSince(overall, nowH))
     quit out
+}
+
+/// Whole seconds between an ODBC timestamp and a $ztimestamp value. Private.
+///
+/// Returns "" for an unparseable or absent input, which the caller emits as JSON null -- an
+/// unmeasurable age must not read as "just now", which is §2.1's nullability rule applied to time.
+ClassMethod SecondsSince(stamp As %String, nowH As %String) As %String [ Private ]
+{
+    if stamp = "" {
+        quit ""
+    }
+    // $zdatetimeh with format 3 is the inverse of the $zdatetime(...,3) used to build the window
+    // bound above. It throws on malformed input rather than returning a wrong number, so the
+    // try/catch is the guard rather than a validation pass.
+    try {
+        set h = $zdatetimeh(stamp, 3)
+    } catch {
+        // Return, not Quit: `Quit value` inside a Try is #1043. Third time in this codebase, so it
+        // is worth the note -- $$$OK expands to 1 and hits the same rule.
+        return ""
+    }
+    set d = ($piece(nowH, ",", 1) - $piece(h, ",", 1)) * 86400
+    set d = d + ($piece(nowH, ",", 2) - $piece(h, ",", 2))
+    // Clamped at zero. A row stamped a second in the future -- clock skew, or a timestamp written by
+    // a different process -- must not report a negative age, which a consumer would render as
+    // nonsense rather than recognise as skew.
+    quit $select(d < 0: 0, 1: d \ 1)
 }
 
 /// Report average processing and queueing time in seconds for one interoperability host.
