@@ -1486,3 +1486,109 @@ button {
   line-height: 1.5;
   color: var(--pg-text);
 }
+
+/* ── Demo triggers in the rail (opt-in, see TriggerRail.tsx) ─────────────────── */
+
+/* Pushed to the bottom of the rail and separated by a rule, because this is scaffolding
+   rather than product: an audience should read the navigation above it first. `margin-top:
+   auto` works because .pg-rail is already a flex column. */
+.pg-triggers {
+  margin-top: auto;
+  padding-top: var(--pg-space-4);
+  border-top: 1px solid rgb(255 255 255 / 12%);
+}
+
+/* WARNING tone, not brand. These buttons make the production worse on purpose, and the rail
+   already uses brand colours for things that are safe to press. */
+.pg-rail__brand--triggers {
+  display: flex;
+  align-items: center;
+  gap: var(--pg-space-2);
+  color: var(--pg-warning);
+}
+
+.pg-triggers__caption {
+  margin: 0 0 var(--pg-space-2);
+  padding: 0 var(--pg-space-4);
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgb(255 255 255 / 55%);
+}
+
+.pg-rail__item--trigger {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: rgb(255 255 255 / 78%);
+  cursor: pointer;
+}
+
+.pg-rail__item--trigger:hover:not(:disabled) {
+  background: var(--pg-navy-700);
+  color: var(--pg-text-invert);
+}
+
+.pg-rail__item--trigger:focus-visible {
+  outline: 2px solid var(--pg-teal-500);
+  outline-offset: -2px;
+}
+
+/* Disabled while any trigger is in flight. Reduced opacity AND not-allowed, because a rail
+   item that merely stops responding reads as broken. */
+.pg-rail__item--trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pg-rail__trigger-label {
+  display: flex;
+  align-items: center;
+  gap: var(--pg-space-2);
+}
+
+/* Armed is signalled by a dot AND the word "armed" below it — never by colour alone (§7.3). */
+.pg-rail__armed-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--pg-radius-pill);
+  background: var(--pg-warning);
+  flex-shrink: 0;
+}
+
+.pg-rail__item--armed {
+  color: var(--pg-text-invert);
+}
+
+.pg-rail__trigger-state {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--pg-teal-200);
+}
+
+.pg-rail__item--reset {
+  color: rgb(255 255 255 / 62%);
+  font-style: italic;
+}
+
+.pg-triggers__error,
+.pg-triggers__note {
+  margin: var(--pg-space-2) 0 0;
+  padding: 0 var(--pg-space-4);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.pg-triggers__error {
+  color: var(--pg-warning);
+}
+
+.pg-triggers__note {
+  color: rgb(255 255 255 / 55%);
+}

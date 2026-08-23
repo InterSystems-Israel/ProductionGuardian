@@ -185,7 +185,7 @@ ClassMethod MakeDirectories()
     }
 }
 
-/// ALL THREE web applications. Registering only /labdemo/monitor -- which is what had happened
+/// ALL FOUR web applications. Registering only /labdemo/monitor -- which is what had happened
 /// on the instance -- leaves Cloud API POSTing into a 404 while EMR Source and Lab Router
 /// look healthy, so nothing points at the cause. The same omission for /labdemo/agent takes out
 /// every MVP 2 write with `HTTP 404` from a component the caller never names.
@@ -206,6 +206,13 @@ ClassMethod RegisterWebApps()
     // because we both registered it by hand while building it -- the same "deployed interactively
     // once" state #97 found for iris/test/.
     set apps("/labdemo/agent") = "ProductionGuardian.LabDemo.REST.AgentDispatcher"
+    // FOUR. The demo trigger surface, registered unconditionally while the DISPATCHER itself
+    // returns 404 on every route unless PG_DEMO_TRIGGERS is set. Registering the application is
+    // not what enables it -- putting the flag check here instead would mean the routes exist or
+    // not depending on the environment at FIRST BOOT, and a named volume makes that state
+    // permanent: an instance booted once without the flag could never gain the routes, and one
+    // booted with it could never lose them. The check belongs at request time.
+    set apps("/labdemo/trigger") = "ProductionGuardian.LabDemo.REST.TriggerDispatcher"
     set ns = $namespace
 
     new $namespace

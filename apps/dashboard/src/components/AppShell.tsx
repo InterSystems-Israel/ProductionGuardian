@@ -33,6 +33,7 @@ import {
   IconShield,
   type IconProps,
 } from './icons';
+import { TriggerRail } from './TriggerRail';
 
 /** Which top-level view is on screen. */
 export type View = 'dashboard' | 'brochure' | 'architecture';
@@ -149,6 +150,11 @@ export function AppShell({ headerActions, view, onNavigate, children }: AppShell
             </li>
           ))}
         </ul>
+
+        {/* Renders nothing unless the deployment enables it — see TriggerRail. Placed last in the
+            rail so an audience reads the product's own navigation first and the demo scaffolding
+            after it, and so its absence leaves the rail visually unchanged. */}
+        <TriggerRail />
       </nav>
 
       <header className="pg-header">

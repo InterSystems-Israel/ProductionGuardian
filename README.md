@@ -295,6 +295,29 @@ Also in MVP 3, and needing no setup: two rail entries under **Production Guardia
 dashboard — **Architecture** (two slides, drawn as SVG from the design tokens) and **Brochure**.
 Both are static documents about the product; no API, no engine, no IRIS.
 
+### Driving it from the dashboard instead of a terminal
+
+The rail can carry buttons for the three scenarios plus **Reset all**, which is usually easier on
+stage than a second window. **Off by default** — the flag is what enables it:
+
+```bash
+export PG_DEMO_TRIGGERS=1
+docker compose up -d
+```
+
+Without it every trigger route answers **404** and the rail looks exactly as it does now. That is
+deliberate rather than tidy: the buttons deliberately break the production, which is the opposite of
+the governed, bounded, audited Smart Resolve write, so nothing in the shipped default can arm a
+fault from a browser. Set it only on a throwaway demo instance.
+
+The trigger's own explanation of what it armed comes back with the response, so the panel shows the
+same text the terminal prints — which findings to expect, and which deliberately will not fire.
+Armed state is read from IRIS on each poll, so driving the terminal at the same time stays correct.
+
+**Reset all** is always available when the flag is on, and it is the same `Triggers.Reset()`
+described above, with the same one caveat: a `system_alert` finding outlives it, because the alert
+sits in the metrics proxy's in-memory buffer where IRIS cannot reach.
+
 ### Before a rehearsal: three things that will bite
 
 - **`AGENT_MODE` defaults to `mock`.** Rebuild or restart the engine without `PG_AGENT_MODE=live`
