@@ -131,6 +131,10 @@ ClassMethod Investigate() As %Status
             // not, so they cannot both act on one reply.
             do ..DropPoolFixDuringOutage(parsed, findingHost)
             do ..DropStaleConnectivityClaim(parsed, findingHost)
+            // AFTER the two drop guards, deliberately: there is no point sizing a recommendation
+            // that is about to be removed, and running it first would emit a `resizedAction` for an
+            // action the response does not contain.
+            do ..RaiseUndersizedPool(parsed, body.%Get("snapshot"))
         }
 
         write parsed.%ToJSON()
@@ -193,6 +197,70 @@ ClassMethod DropUnapplicableAction(parsed As %DynamicObject) [ Private ]
     // filter is indistinguishable from a model that behaved. The engine ignores unknown keys.
     set parsed.droppedAction = { "type": (action.%Get("type", "")), "host": (host),
         "reason": "not_whitelisted_host", "detail": (detail) }
+}
+
+/// Raise a pool recommendation that is at or below break-even. Private.
+///
+/// SEVENTH TIME ON THIS CLASS that a behaviour needed a guard rather than wording, and this one is
+/// the most user-visible of them: the model reliably suggested `current + 1`, which on the demo
+/// scenario is exactly the pool at which the queue stops growing and never shrinks. Measured live at
+/// pool 2, 2 msg/sec, 1.01s per message -- queue 112, 112, 114 across 50 seconds. The operator
+/// approves a change and watches nothing happen, which is worse than being told no fix exists.
+///
+/// RAISES, NEVER LOWERS, and never invents a recommendation where the model made none. If the model
+/// asked for MORE than this floor it is left alone -- it may be reading something this arithmetic
+/// does not, and the bound that actually protects the production is `Tools.Resolve`'s 2..8, not this.
+///
+/// THE FLOOR IS BREAK-EVEN PLUS ONE, not a full drain target. Break-even is
+/// `messagesPerSec x avgProcessingTime`; one spare worker is the minimum that makes the backlog
+/// shrink at all, and choosing how FAST to drain is a judgement about how much capacity to spend,
+/// which is the model's to make. This guard only refuses the sizes that cannot work.
+///
+/// SILENT WHEN IT CANNOT COMPUTE. An absent or zero rate, or an unmeasurable processing time, leaves
+/// the recommendation untouched -- a fabricated floor from missing inputs would be the
+/// unmeasurable-is-not-zero defect (§2.1) in a new place.
+ClassMethod RaiseUndersizedPool(parsed As %DynamicObject, snapshot As %DynamicObject) [ Private ]
+{
+    if '$isobject(parsed.%Get("recommendedAction")) {
+        quit
+    }
+    set action = parsed.recommendedAction.%Get("action")
+    if '$isobject(action) || (action.%Get("type", "") '= "set_pool_size") {
+        quit
+    }
+    if '$isobject(snapshot) {
+        quit
+    }
+
+    set rate = snapshot.%Get("messagesPerSec")
+    set perMsg = snapshot.%Get("avgProcessingTime")
+    // Both must be present AND positive. A zero rate means nothing is arriving, so there is no
+    // break-even to compute; a zero service time means the work is free and no pool size is wrong.
+    if (rate = "") || (perMsg = "") || (+rate <= 0) || (+perMsg <= 0) {
+        quit
+    }
+
+    // Break-even, rounded UP: 2.02 workers means 3 to have any spare capacity at all, not 2.
+    set breakEven = +rate * +perMsg
+    set floor = $select(breakEven = (breakEven \ 1): breakEven \ 1, 1: (breakEven \ 1) + 1) + 1
+    if floor > ##class(ProductionGuardian.LabDemo.Tools.Resolve).#MAXSIZE {
+        set floor = ##class(ProductionGuardian.LabDemo.Tools.Resolve).#MAXSIZE
+    }
+
+    set asked = +action.%Get("size", 0)
+    if asked >= floor {
+        quit
+    }
+
+    do action.%Set("size", floor)
+    // Recorded on the response, like the other guards: a silently corrected number is
+    // indistinguishable from a model that got it right, and the arithmetic is exactly what a
+    // presenter wants to be able to point at.
+    set detail = "break-even is " _ $fnumber(breakEven, "", 2) _ " workers ("
+        _ $fnumber(+rate, "", 2) _ " msg/sec x " _ $fnumber(+perMsg, "", 2) _ "s), so "
+        _ asked _ " would hold the queue steady rather than drain it"
+    set parsed.resizedAction = { "requested": (asked), "applied": (floor),
+        "reason": "at_or_below_break_even", "detail": (detail) }
 }
 
 /// Drop a pool recommendation while the host is CURRENTLY failing to reach its target. Private.
@@ -586,6 +654,31 @@ ClassMethod SystemPrompt() As %String [ Private ]
     set p = p _ "keep up: work accumulating behind a single worker, and no RECENT connectivity "
     set p = p _ "errors. A host with a queue, a normal processing time and only stale errors is the "
     set p = p _ "pool case, not the connectivity case. "
+
+    // SIZE THE POOL, DO NOT DOUBLE IT. The model reliably suggested `current + 1` -- 1 -> 2 -- which
+    // on the demo scenario is EXACTLY break-even and therefore fixes nothing. Measured live at pool 2
+    // with 2 msg/sec arriving and 1.01s of work each: queue 112, 112, 114 over 50 seconds. It was not
+    // draining, it was creeping up, and the approve button appeared to do nothing.
+    //
+    // The arithmetic is Little's law and every term is already in the snapshot the goal carries, so
+    // this needs no new tool:
+    //
+    //     workers to keep up   = messagesPerSec x avgProcessingTime
+    //     workers to also drain = enough spare capacity to clear `queued` in a few minutes
+    //
+    // Stated as an explicit calculation rather than "choose a sensible size", because a model asked
+    // for a judgement produces a round number and a model asked for a computation shows its working
+    // -- and the working is what a presenter needs to justify the number on screen.
+    set p = p _ "SIZE THE POOL FROM THE NUMBERS, never by simply doubling or adding one. Work it out: "
+    set p = p _ "workersToKeepUp = messagesPerSec x avgProcessingTime, which is the pool that merely "
+    set p = p _ "stops the queue growing -- at that size the backlog NEVER clears. Then add capacity "
+    set p = p _ "to drain what is already queued within a few minutes, and round UP. So a host taking "
+    set p = p _ "1s per message with 2 arriving per second needs 2 just to break even, and 4 to break "
+    set p = p _ "even and drain a backlog at about 2 per second. "
+    set p = p _ "State the arithmetic in rootCause or in an evidence entry, including the break-even "
+    set p = p _ "figure, so a reader can see why that size and not a smaller one. "
+    set p = p _ "If the computed size exceeds the permitted maximum, recommend the maximum and say in "
+    set p = p _ "rootCause that it will reduce the backlog rather than clear it. "
 
     // MVP 3. The two fields are described as MUTUALLY EXCLUSIVE and as differing in AUTHORITY rather
     // than in format, because that is the distinction the model has to get right: one is a change we
