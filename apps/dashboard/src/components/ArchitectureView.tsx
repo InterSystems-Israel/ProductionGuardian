@@ -6,10 +6,29 @@
  * that goes stale silently, which is #84's whole subject. Drawn from tokens, so a
  * brand change moves the diagram with the rest of the UI.
  *
- * DELIBERATELY SPARSE. Ports, service names and tool names already live in
- * `docker-compose.yml`, root `CLAUDE.md` §5 and `contracts/mcp-tools.md`. Anything
- * restated here is a copy that can disagree with them, so the diagram carries
- * structure and the caption points at the authority.
+ * DELIBERATELY SPARSE. Ports, service names and tool names live in the deployment
+ * configuration and the tool contracts. Anything restated here is a copy that can
+ * disagree with them, so the diagram carries structure and nothing operational.
+ *
+ * CLIENT-FACING. These slides are shown to customers, so they carry no milestone
+ * numbers, no internal service counts and no repository paths — an audience does not
+ * care which release added which capability, and a slide that talks about our
+ * delivery plan is talking about the wrong thing. What it does carry is the four
+ * claims a customer actually needs to believe:
+ *
+ *   1. metrics and configuration leave the instance; message content never does
+ *   2. every action the agent takes is authorization-checked and audited
+ *   3. a person approves before anything is applied
+ *   4. the one change it may make is bounded and reversible
+ *
+ * ARROWS USE A ROUTING CHANNEL, and this is a layout invariant rather than taste. A
+ * vertical run that needs to cross the diagram travels in the clear corridor between
+ * the instance band and the middle column (x 196..248), never through a box. Before
+ * this, `metrics` ran from the metrics endpoint straight up through BOTH the detection
+ * engine and the findings box on its way to the proxy, and `finding + snapshot` cut
+ * through the authorization policy — reported as "the arrows turn and hit boxes that
+ * are not related". `tools/validate-architecture.mjs` now checks every path segment
+ * against every node box and fails the build, so this cannot regress quietly.
  */
 
 import { useState } from 'react';
@@ -85,51 +104,51 @@ function Flow({ d, label, lx, ly, dashed = false }: FlowProps): JSX.Element {
 function Overview(): JSX.Element {
   return (
     <svg className="pg-arch__svg" viewBox="0 0 640 360" role="img"
-      aria-label="Five services: IRIS with AI Hub, the metrics proxy, the detection engine, and the dashboard.">
+      aria-label="Production Guardian: an agent and its governed tools run inside the IRIS instance
+        alongside the production; a metrics proxy and a detection engine watch it from outside; an
+        external language model reasons over metrics and configuration only.">
       <defs>
         <marker id="pg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
           <path d="M0 0 L10 5 L0 10 z" />
         </marker>
       </defs>
 
-      {/* The IRIS container holds both the production and AI Hub -- the single most
-          load-bearing fact on this slide, so it is drawn as containment. */}
+      {/* Containment, because "the agent runs inside your instance" is the single most
+          load-bearing fact on this slide and the one customers ask about first. */}
       <g className="pg-arch__group">
         <rect x="16" y="24" width="180" height="300" rx="8" />
-        <text x="106" y="46">IRIS container</text>
+        <text x="106" y="46">Your IRIS instance</text>
       </g>
-      <Node x={32} y={64} w={148} title="LABDEMO" sub="the production" tone="brand" />
-      <Node x={32} y={132} w={148} title="AI Hub" sub="agent · governed MCP tools" tone="accent" />
-      <Node x={32} y={200} w={148} title="RBAC · audit" sub="policies, one write tool" />
-      <Node x={32} y={264} w={148} title="/api/monitor" sub="built-in metrics" />
+      <Node x={32} y={60} w={148} title="Production" sub="your interfaces" tone="brand" />
+      <Node x={32} y={124} w={148} title="AI agent" sub="reads through tools" tone="accent" />
+      <Node x={32} y={188} w={148} title="Access control" sub="checked · audited" />
+      <Node x={32} y={252} w={148} title="Metrics API" sub="built in to IRIS" />
 
-      <Node x={248} y={64} w={136} title="Metrics proxy" sub="polls, aggregates" />
-      <Node x={248} y={160} w={136} title="Detection engine" sub="baseline · rules · agent" tone="brand" />
-      <Node x={248} y={264} w={136} title="Findings API" sub="/api/*" />
+      <Node x={256} y={60} w={136} title="Metrics collector" sub="polls, aggregates" />
+      <Node x={256} y={150} w={136} h={64} title="Detection engine" sub="baseline · rules" tone="brand" />
 
-      <Node x={452} y={160} w={148} h={60} title="Dashboard" sub="what the operator sees" tone="accent" />
+      <Node x={452} y={60} w={104} h={44} title="Language model" sub="external" />
+      <Node x={452} y={150} w={148} h={64} title="Dashboard" sub="what you see" tone="accent" />
 
-      {/* Labels sit just above the horizontal leg of each path, left-anchored from its start,
-          so they read along the line rather than crossing a node. Positions are checked against
-          every node box by test/architecture.test.ts -- a label placed by eye collided with
-          "Detection engine" and shipped that way (@Ari-Glikman). */}
-      <Flow d="M180 290 H248 V100" label="metrics" lx={186} ly={284} />
-      <Flow d="M316 116 V160" />
-      <Flow d="M316 212 V264" />
-      <Flow d="M384 190 H452" label="findings" lx={390} ly={184} />
-      {/* Dashed: the engine reaches back into IRIS only for WHY and FIX, and only
-          through the governed tool path. A solid line would imply a data feed.
+      {/* THE ROUTING CHANNEL, x 196..248. Every vertical run that has to cross the diagram
+          travels here. `metrics` previously went straight up from the metrics endpoint and
+          passed through both the engine and the findings box; it now steps into the channel
+          first. Checked by tools/validate-architecture.mjs. */}
+      <Flow d="M180 278 H228 V86 H256" label="metrics" lx={186} ly={272} />
+      <Flow d="M324 112 V150" />
+      <Flow d="M392 182 H452" label="findings" lx={398} ly={176} />
 
-          ly=148 rather than 180: at 180 this label is 124px wide starting at x=196, so it ran
-          straight through the Detection engine box (248..384). Moved above the row into the gap
-          between the AI Hub and Metrics proxy bands, where it still reads as belonging to the
-          dashed arrow beneath it. Shortening the text was the alternative and is worse -- the two
-          verbs ARE the MVP 2 loop, and "WHY · FIX" needs the caption to decode it. */}
-      <Flow d="M248 186 H196 V158" label="investigate · resolve" lx={196} ly={148} dashed />
+      {/* Dashed: the engine reaches back into the instance only to ask for an explanation or
+          to apply an approved change, and only through the governed tools. A solid line would
+          imply a continuous data feed, which would be the wrong claim. */}
+      <Flow d="M256 200 H212 V150 H180" label="ask · apply" lx={186} ly={144} dashed />
 
-      <text className="pg-arch__note" x="452" y="248">Five compose services.</text>
-      <text className="pg-arch__note" x="452" y="264">Ports and names live in</text>
-      <text className="pg-arch__note" x="452" y="280">docker-compose.yml.</text>
+      {/* Dashed and short: the model reasons, it does not receive a feed. */}
+      <Flow d="M392 86 H452" label="reason" lx={398} ly={80} dashed />
+
+      <text className="pg-arch__note" x="452" y="248">Metrics and configuration</text>
+      <text className="pg-arch__note" x="452" y="264">leave the instance.</text>
+      <text className="pg-arch__note" x="452" y="280">Message content never does.</text>
     </svg>
   );
 }
@@ -137,46 +156,48 @@ function Overview(): JSX.Element {
 function Investigation(): JSX.Element {
   return (
     <svg className="pg-arch__svg" viewBox="0 0 640 360" role="img"
-      aria-label="One investigation: the engine asks the agent, the agent reads evidence through governed tools, an external model reasons, and a human approves the one write.">
+      aria-label="One investigation: an operator asks, the agent reads evidence through
+        authorization-checked tools, an external model reasons over it, and the operator approves
+        before any change is applied.">
       <defs>
         <marker id="pg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
           <path d="M0 0 L10 5 L0 10 z" />
         </marker>
       </defs>
 
-      <Node x={16} y={150} w={120} title="Operator" sub="clicks Investigate" tone="accent" />
-      <Node x={168} y={150} w={120} title="Engine" sub="orchestrates" />
+      <Node x={16} y={150} w={116} title="Operator" sub="asks why" tone="accent" />
+      <Node x={168} y={150} w={116} title="Guardian" sub="orchestrates" />
 
       <g className="pg-arch__group">
-        <rect x={320} y={24} width={200} height={300} rx="8" />
-        <text x={420} y={46}>IRIS · AI Hub</text>
+        <rect x={332} y={24} width={196} height={300} rx="8" />
+        <text x={430} y={46}>Your IRIS instance</text>
       </g>
-      <Node x={336} y={64} w={168} title="Agent" sub="goal, iteration cap" tone="brand" />
-      <Node x={336} y={136} w={168} title="Authorization policy" sub="checked per call" />
-      <Node x={336} y={200} w={168} title="Read tools" sub="metrics · config only" />
-      <Node x={336} y={264} w={168} title="set_pool_size" sub="the one write" tone="accent" />
+      <Node x={348} y={60} w={164} title="AI agent" sub="gathers evidence" tone="brand" />
+      <Node x={348} y={124} w={164} title="Authorization" sub="checked per call" />
+      <Node x={348} y={188} w={164} title="Read tools" sub="metrics · config only" />
+      <Node x={348} y={252} w={164} title="One change" sub="bounded · reversible" tone="accent" />
 
-      <Node x={552} y={64} w={72} h={44} title="LLM" sub="external" />
-      <Node x={552} y={200} w={72} h={44} title="Audit" sub="every call" tone="brand" />
+      <Node x={556} y={60} w={68} h={44} title="Model" sub="external" />
+      <Node x={556} y={188} w={68} h={44} title="Audit" sub="every call" tone="brand" />
 
-      <Flow d="M136 176 H168" />
-      {/* ly=130, not 170: at 170 this 106px label starting at x=288 overlapped the Authorization
-          policy box (336..504). Sits above it instead, still alongside the vertical leg it
-          describes. */}
-      <Flow d="M288 176 H336 V108" label="finding + snapshot" lx={292} ly={130} />
-      <Flow d="M504 86 H552" label="reason" lx={506} ly={80} dashed />
-      <Flow d="M420 116 V136" />
-      {/* The two vertical labels are offset to the RIGHT of their arrow rather than centred on
-          it, since a centred label on a 12px vertical run would sit on the line itself. */}
-      <Flow d="M420 188 V200" label="evidence" lx={426} ly={197} />
-      <Flow d="M504 222 H552" />
-      <Flow d="M420 252 V264" label="after approval" lx={426} ly={261} />
+      <Flow d="M132 176 H168" />
 
-      <text className="pg-arch__note" x="16" y="240">The policy is asked before every</text>
-      <text className="pg-arch__note" x="16" y="256">call, and the audit row is written</text>
-      <text className="pg-arch__note" x="16" y="272">whether the call ran or was refused.</text>
-      <text className="pg-arch__note" x="16" y="296">No message content leaves the</text>
-      <text className="pg-arch__note" x="16" y="312">instance — metrics and config only.</text>
+      {/* THE CHANNEL on this slide is x 292..340. `finding + snapshot` used to run from the
+          orchestrator up and through the authorization box; it now steps into the channel and
+          arrives above it, which is also truer to the order things happen in. */}
+      <Flow d="M284 176 H312 V86 H348" label="the question" lx={276} ly={70} />
+
+      <Flow d="M512 82 H556" label="reason" lx={518} ly={76} dashed />
+      <Flow d="M430 112 V124" />
+      <Flow d="M430 176 V188" label="evidence" lx={436} ly={185} />
+      <Flow d="M512 210 H556" />
+      <Flow d="M430 240 V252" label="after approval" lx={436} ly={249} />
+
+      <text className="pg-arch__note" x="16" y="240">Authorization is checked</text>
+      <text className="pg-arch__note" x="16" y="256">before every call, and the</text>
+      <text className="pg-arch__note" x="16" y="272">audit records it either way —</text>
+      <text className="pg-arch__note" x="16" y="288">including a refusal.</text>
+      <text className="pg-arch__note" x="16" y="312">Nothing applies without you.</text>
     </svg>
   );
 }
@@ -209,8 +230,8 @@ export function ArchitectureView(): JSX.Element {
 
       <p className="pg-view__caption">
         {slide === 'overview'
-          ? 'MVP 1 detects. MVP 2 adds WHAT, WHY and FIX on one scenario, and MVP 3 adds the case where the honest answer is words for an operator rather than a button — the agent, its tools, its RBAC and its audit all run inside the same IRIS instance as the production.'
-          : 'Authorization is checked before execution and the audit row is written either way, so a refused attempt is as visible as an applied one.'}
+          ? 'The agent, its tools, its access control and its audit trail all run inside your own IRIS instance, alongside the production they watch. Only measurements and configuration are ever sent outside it — never the content of a message.'
+          : 'Authorization is checked before execution and the audit records it either way, so a refused attempt is as visible as an applied one. Guardian can recommend, but a person decides.'}
       </p>
     </section>
   );
