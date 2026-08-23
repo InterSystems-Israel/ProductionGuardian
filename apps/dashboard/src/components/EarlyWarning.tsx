@@ -24,13 +24,25 @@
  * which is honest about there being no forecast left to make while leaving evidence that the module
  * exists and was watching. A feature nobody can find is indistinguishable from a missing one.
  *
- * Still silent for `not_rising`, `disabled` and `metric_unmeasurable`: those are steady states on a
+ * Still silent for `disabled` and `metric_unmeasurable`: those are steady states on a
  * healthy host, and a row saying "no projection available" on every card would make the grid
  * unreadable for information nobody needs. `warming` and `insufficient_samples` render because they
- * mean "ask again shortly" rather than "nothing is coming".
+ * mean "ask again shortly" rather than "nothing is coming". `not_rising` renders too — see
+ * `SHOWN_REASONS` for why that changed, and why it is the only one that earns an icon.
+ *
+ * ONE REASON CARRIES AN ICON, AND ONLY ONE. `not_rising` is the sole state whose whole content is
+ * reassurance, so a tick makes it readable at a glance instead of as a line of grey text among five
+ * metric rows — asked for after the text-only version shipped, because grey prose next to a queue
+ * depth does not read as "this is fine". The other three states are deliberately left plain:
+ * `already_crossed` is a *spent* forecast reporting that the bad thing happened, and `warming` /
+ * `insufficient_samples` mean "not yet". A tick on any of them would assert something none of them
+ * claims, which is the same class of over-reassurance as the summary tile counting a host with three
+ * critical findings as OK. The icon is decorative only, `aria-hidden` through `icons.tsx`'s shared
+ * `svg()` wrapper; the sentence beside it stays the authoritative statement (§7.3).
  */
 
 import type { HostProjectionView } from '../types/mvp2';
+import { IconWatching } from './icons';
 
 export interface EarlyWarningProps {
   projection: HostProjectionView | null;
@@ -67,7 +79,13 @@ const SHOWN_REASONS: Record<string, string> = {
   not_rising: 'Watching — not trending toward a threshold',
 };
 
-/** Reasons that mean "nothing is happening", styled quieter than a pending forecast. */
+/**
+ * Reasons that mean "nothing is happening", styled quieter than a pending forecast.
+ *
+ * This set is also what earns the checkmark, deliberately as one condition rather than two: quiet
+ * and reassuring are the same property here, and a second set listing the same member would let the
+ * tone and the icon disagree the next time either changes.
+ */
 const QUIET_REASONS = new Set(['not_rising']);
 
 /**
@@ -106,7 +124,12 @@ export function EarlyWarning({ projection }: EarlyWarningProps): JSX.Element | n
     return (
       <div className={`pg-forecast ${tone}`}>
         <span className="pg-forecast__label">Early warning</span>
-        <span className="pg-forecast__body">{shown}</span>
+        <span className="pg-forecast__body">
+          {/* Inside the body rather than beside the label, so the tick sits against the sentence it
+              reinforces and wraps with it. Decorative reinforcement only — the text is the claim. */}
+          {quiet && <IconWatching size={13} className="pg-forecast__icon" />}
+          {shown}
+        </span>
       </div>
     );
   }

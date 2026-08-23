@@ -504,6 +504,11 @@ button {
   display: flex;
   align-items: center;
   gap: var(--pg-space-2);
+  /* The severity badge joined this row, and the grid's minimum card is 260px. Four items
+     (dot, name, badge, type) do not always fit one line at that width, so the row wraps
+     rather than squeezing the host name — the name is the card's identity and must stay
+     readable in full. */
+  flex-wrap: wrap;
 }
 
 .pg-host__name {
@@ -1263,6 +1268,16 @@ button {
 .pg-forecast--quiet .pg-forecast__label,
 .pg-forecast--quiet .pg-forecast__body {
   color: var(--pg-text-muted);
+}
+
+/* The watching tick. `--pg-ok` on the ICON only, while the sentence stays muted: the colour is
+   carried by the one element that is explicitly decorative and aria-hidden, so nothing a screen
+   reader or a colour-blind operator relies on depends on it (§7.3). Baseline-shifted rather than
+   flex-aligned so the tick sits on the text's own line and wraps with it. */
+.pg-forecast__icon {
+  margin-right: var(--pg-space-1);
+  vertical-align: -2px;
+  color: var(--pg-ok);
 }
 
 /* ── MVP 3: brochure and architecture views ───────────────────────────────── */
