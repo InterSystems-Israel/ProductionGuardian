@@ -162,10 +162,30 @@ ClassMethod GetHostSettings(host As %String) As %DynamicObject
 /// so this tool classifies rather than quotes.
 ClassMethod GetRecentErrors(host As %String, sinceMinutes As %Integer = 15) As %DynamicObject
 {
+    // AN OMITTED ARGUMENT IS NOT AN INVALID ONE, and the ObjectScript default above does not cover
+    // this. `%AI.ToolMgr.ExecuteTool` builds the argument list from the model's JSON and passes ""
+    // for a key the model did not send -- so the `= 15` default never applies on the tool path, ""
+    // fails `< 1` below, and the tool refused every call that omitted the parameter. Measured:
+    //
+    //   Invoke("GetRecentErrors", {"host":"EMR Source"})                 -> error, sinceMinutes
+    //   Invoke("GetRecentErrors", {"host":"EMR Source","sinceMinutes":15}) -> 3 errors, #5021
+    //
+    // Same host, same second, opposite answers. This was live from #106 and invisible because every
+    // hand-written check passed the argument -- the only caller that omits it is the model, whose
+    // schema marks it optional. It cost a live investigation: blinded to the error codes, the agent
+    // reasoned from the one number it could still see (PoolSize 1) and recommended enlarging the pool
+    // of a host whose directory did not exist.
+    if sinceMinutes = "" {
+        set sinceMinutes = 15
+    }
+
     // BOUNDED, and the bound is part of the data boundary rather than politeness. A count is not
     // content, but a count of one nearly is: "1 error for patient X in the last 5 seconds" is
     // identifying in a way "40 errors in 15 minutes" is not. 60 minutes is the ceiling because
     // this tool answers questions about a CONDITION, not a message search interface.
+    //
+    // Still rejects a value the model actually sent and got wrong -- `0` and `90` are refusals, and
+    // the refusal names the range. Only absence now means "use the default".
     if (sinceMinutes < 1) || (sinceMinutes > 60) {
         quit { "host": (host), "error": "sinceMinutes must be between 1 and 60", "sanitised": true }
     }

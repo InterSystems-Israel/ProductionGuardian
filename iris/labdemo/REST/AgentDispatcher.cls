@@ -289,9 +289,54 @@ ClassMethod SystemPrompt() As %String [ Private ]
     set p = p _ "evidence (array of {label, detail, source, tool} where source is ""mcp_tool"" for a value you read with a tool "
     set p = p _ "or ""snapshot"" for one given to you, and tool is the tool name or null), "
     set p = p _ "confidence (number 0-1, your own judgement), "
-    set p = p _ "recommendedAction ({action: {type, host, size}}) or null. "
-    set p = p _ "The only action type you may recommend is set_pool_size, with size between 2 and 8, "
-    set p = p _ "and host must be the host under investigation. Recommend nothing if no bounded action fits."
+    set p = p _ "recommendedAction ({action: {type, host, size}}) or null, "
+    set p = p _ "manualRemediation ({summary, steps, target}) or null. "
+    // The bounds are READ FROM THE TOOL rather than restated, because a prompt that disagrees with
+    // the guard produces a recommendation the guard then refuses -- which is what happened. The
+    // wording was "host must be the host under investigation", and on the missing-folder scenario the
+    // model dutifully recommended set_pool_size on `EMR Source`; a dry run came back
+    // `not_whitelisted_host`. The safety boundary held perfectly and the recommendation was still
+    // useless, so the UI would have offered an approve button for an action that cannot apply.
+    //
+    // Naming the one host it CAN change is also what makes manualRemediation reachable: told the
+    // action is unavailable here, the model has somewhere else to put a real fix. Told only that the
+    // action exists, it will reach for it.
+    set p = p _ "The only action type you may recommend is set_pool_size, with size between "
+        _ ##class(ProductionGuardian.LabDemo.Tools.Resolve).#MINSIZE _ " and "
+        _ ##class(ProductionGuardian.LabDemo.Tools.Resolve).#MAXSIZE _ ". "
+    set p = p _ "It can ONLY be applied to '" _ ##class(ProductionGuardian.LabDemo.Tools.Resolve).#ALLOWEDHOST
+        _ "', and only when that host is the one under investigation. "
+    set p = p _ "For any other host this action is unavailable and recommending it is an error -- "
+    set p = p _ "it will be refused before it applies. "
+
+    // MVP 3. The two fields are described as MUTUALLY EXCLUSIVE and as differing in AUTHORITY rather
+    // than in format, because that is the distinction the model has to get right: one is a change we
+    // may make, the other is a change only a person may make. A prompt that described them as "a
+    // structured fix or a written fix" would invite both, or the wrong one.
+    set p = p _ "Use recommendedAction ONLY for a bounded action from that list. "
+    set p = p _ "Use manualRemediation when the fix is real but outside what this system may do -- "
+    set p = p _ "for example a directory that must be created on the host, or a setting an operator "
+    set p = p _ "must repoint. Never both, and null for both if nothing can be recommended. "
+    set p = p _ "manualRemediation.summary is one line naming the condition; steps is an ordered array "
+    set p = p _ "of imperative strings, each independently actionable; target is "
+    set p = p _ "{host, setting, currentValue} identifying the CONFIGURATION to change, or null if you "
+    set p = p _ "cannot identify it. "
+
+    // The one thing the model must not be allowed to infer. `appliedBy` is set by the dispatcher, not
+    // read from the reply (investigate.ts does the same), so the prompt does not mention it -- a model
+    // told the field exists could assert "system", and autonomous remediation is what root
+    // CLAUDE.md §2.1 forbids outright. Naming a field only to forbid a value is weaker than not
+    // offering it.
+    set p = p _ "Never claim this system will apply a manual remediation itself; it will not. "
+
+    // Says where the path comes from, because the alternative is the model quoting an error message
+    // it should not have. get_recent_errors returns a catalogue `summary` and never log text, so the
+    // OFFENDING VALUE has to come from get_host_settings -- and a model that does not know that will
+    // either guess a path or ask for the log.
+    set p = p _ "To name a specific path or setting value, read it with get_host_settings. "
+    set p = p _ "get_recent_errors gives you the KIND of failure and never the message text. "
+
+    set p = p _ "Recommend nothing if no bounded action and no manual step fits."
     quit p
 }
 
