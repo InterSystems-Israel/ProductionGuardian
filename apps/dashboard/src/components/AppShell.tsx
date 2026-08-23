@@ -39,25 +39,35 @@ import { TriggerRail } from './TriggerRail';
 export type View = 'dashboard' | 'brochure' | 'architecture';
 
 /**
- * The IRIS Management Portal, for jumping from a finding to the production that produced it.
+ * The IRIS interoperability editor, for jumping from a finding to the production that produced it.
  *
- * DEFAULTS TO THE INTEROP PRODUCTION PAGE, not the portal home. An operator following a finding
- * wants the host list, and `EnsPortal.ProductionConfig.zen` is one click from every host's settings
- * — where `/csp/sys/UtilHome.csp` is three. Both verified 200 on the EAP image; the interop path is
- * under `/csp/healthshare/labdemo` because this is IRIS for Health, where `EnableNamespace` creates
- * the HealthShare-prefixed application rather than a bare `/csp/labdemo`.
+ * THE NEW ANGULAR UI, not the Zen page. `/ui/interop/interop-editor/` is what current IRIS builds
+ * ship and what an operator on this instance actually uses; the old
+ * `/csp/healthshare/labdemo/EnsPortal.ProductionConfig.zen` still answers 200 and remains a working
+ * fallback if anyone needs it, but landing an audience on the legacy portal from a modern dashboard
+ * is a jarring seam. Both verified 200 against the running instance before switching.
+ *
+ * THE QUERY STRING IS PERCENT-ENCODED AND MUST STAY THAT WAY. `%24` is `$`, and the editor expects
+ * `$NAMESPACE` / `$PRODUCTION` as literal parameter names. Writing them raw here works in some
+ * contexts and breaks in others depending on how the URL is parsed, so the encoded form is kept
+ * verbatim as verified — do not "tidy" it.
+ *
+ * NAMESPACE AND PRODUCTION ARE LABDEMO-SPECIFIC, exactly as the old path was. That is not a
+ * regression in generality: this whole default is a convenience for the demo instance, and
+ * `VITE_IRIS_PORTAL_URL` replaces the entire URL for anything else.
  *
  * ABSOLUTE AND CONFIGURABLE, unlike the API base, and the two differ for a real reason. The API is
  * reached through nginx on the dashboard's own origin, so a relative path is correct and keeps the
  * bundle environment-independent. The portal is a *different service on a different port* that
- * nothing proxies, so the browser must be told where it is. `VITE_IRIS_PORTAL_URL` overrides it for
- * a deployment where IRIS is not on localhost:52773.
+ * nothing proxies, so the browser must be told where it is.
  *
  * The port is not read from `docker-compose.yml`'s `PG_IRIS_WEB_PORT`: the bundle is built before
  * compose runs and the browser is on the host, so the build cannot know the mapping. A wrong
  * default is visible and one variable away from fixed, which is the honest trade.
  */
-const DEFAULT_PORTAL_URL = 'http://localhost:52773/csp/healthshare/labdemo/EnsPortal.ProductionConfig.zen';
+const DEFAULT_PORTAL_URL =
+  'http://localhost:52773/ui/interop/interop-editor/index.html' +
+  '?%24NAMESPACE=LABDEMO&%24PRODUCTION=ProductionGuardian.LabDemo.Production';
 
 function portalUrl(): string {
   const configured = import.meta.env.VITE_IRIS_PORTAL_URL;
@@ -179,7 +189,7 @@ export function AppShell({ headerActions, view, onNavigate, children }: AppShell
             href={portalUrl()}
             target="_blank"
             rel="noopener noreferrer"
-            title="Open the IRIS Management Portal's production page in a new tab"
+            title="Open this production in the IRIS interoperability editor, in a new tab"
           >
             <IconProductions size={14} />
             Management Portal
