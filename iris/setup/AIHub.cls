@@ -377,7 +377,15 @@ ClassMethod CreateRoles() As %Status
 /// every setup run so the regression is visible at boot rather than in a review.
 ClassMethod ReportTools()
 {
-    set expected = 6
+    // SEVEN since MVP 3, not six. GetHostSettings was added so the agent can name the directory in
+    // the missing-folder scenario from configuration rather than from log text (mcp-tools.md §3.4a).
+    //
+    // This number is moved DELIBERATELY and with the tool list read back, because the guard's whole
+    // value is that an unexpected count is loud: it fired on the first compile of the new tool --
+    // "7 -- EXPECTED 6, INVESTIGATE" -- which is exactly what it is for. Bumping it without reading
+    // the names would defeat it, so the names were checked: six reads plus one write, no helper left
+    // public.
+    set expected = 7
     set found = 0
     for class = "ProductionGuardian.LabDemo.Tools.Read", "ProductionGuardian.LabDemo.Tools.Resolve" {
         if '##class(%Dictionary.CompiledClass).%ExistsId(class) {
