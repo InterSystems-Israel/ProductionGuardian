@@ -1,6 +1,24 @@
-# CLAUDE.md — Health Scan Dashboard (**Developer C**)
+# CLAUDE.md — Production Guardian Dashboard (**Dev B**)
 
 Scoped to `apps/dashboard/`. The root `CLAUDE.md` carries the shared rules — scope boundary, ownership, ports — and applies here too. `CONTRIBUTING.md` at the repo root explains the working agreements in full.
+
+> **This file is MVP 1 era and parts of it are now false.** It is corrected only where it would
+> actively mislead; the rest is left for whoever next works here at length, because a rewrite by
+> someone who did not build MVP 2's UI would be worse than a stale document with its staleness marked.
+>
+> - **Ownership.** Written for Developer C, who left on 2026-08-20. `apps/dashboard/**` passed to
+>   **Dev B** — see root `CLAUDE.md` §3, which is the authority. MVP 3 Track B is Dev A's work in this
+>   directory, contributed by PR under §3's "reading is encouraged, writing needs a PR"; that does not
+>   move the row. The whole directory stays with one developer because splitting it by task is the seam
+>   MVP 3 §5 argues against and every expensive MVP 2 defect sat on.
+> - **§1.1's scope table is superseded.** It forbids root-cause narratives, confidence scores,
+>   forecasts and any "apply remediation" flow. **MVP 2 shipped all four** — `InvestigationPanel.tsx`,
+>   `EarlyWarning.tsx` and the Smart Resolve approve control are on `main`. Root `CLAUDE.md` §2 is the
+>   live boundary; that table describes MVP 1's, which §2.3 keeps as a record.
+> - **§3's file tree lists `public/favicon.svg`.** There is no `public/` directory.
+>
+> Everything else — the stack rules, the token system, the defensive-rendering rules, the
+> accessibility bar, the mock-first discipline — still holds and was followed for MVP 3 Track B.
 
 ---
 

@@ -262,11 +262,24 @@ services:
         condition: service_healthy
 
   # ─── 5. dashboard ───────────────────────────────────────────────────────────────────
-  # Dev C's service (#79). Multi-stage: node builds the same single-file bundle the
-  # `file://` fallback is verified against, nginx serves it and proxies /api/healthscan.
+  # Multi-stage: node builds the same single-file bundle the `file://` fallback is verified
+  # against, nginx serves it and proxies /api/healthscan.
+  #
+  # CONTEXT IS THE REPO ROOT, not ./apps/dashboard, since MVP 3 Track B. `BrochureView.tsx`
+  # imports `../../../../docs/Brochure.png` so the 1.7 MB asset has exactly one copy in git
+  # and no Dockerfile change is needed to ship it (#120). That import cannot resolve from a
+  # context rooted at the app directory:
+  #
+  #   Could not resolve "../../../../docs/Brochure.png" from "src/components/BrochureView.tsx"
+  #
+  # A host `npm run build` succeeds regardless, because the host has the whole repo. So this
+  # was green locally and red in `compose up` -- the same "works and is reached are different
+  # claims" gap as iris/CLAUDE.md's three provider defects, arriving through the build context.
+  # The `dockerfile:` path must now be repo-relative for the same reason.
   dashboard:
     build:
-      context: ./apps/dashboard
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
     container_name: pg-dashboard
     ports:
       # 5173:80 -- the container listens on 80, not 8080. Keeping 5173 on the host so the

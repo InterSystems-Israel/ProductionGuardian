@@ -247,3 +247,27 @@ export const IconSettings: PathIcon = (props) =>
     </>,
     props,
   );
+
+/* ── Production Guardian views (MVP 3) ────────────────────────────────────── */
+
+/** Open book — the brochure. Distinct from IconMessages' single sheet. */
+export const IconBrochure: PathIcon = (props) =>
+  svg(
+    <>
+      <path d="M12 6.5v13" />
+      <path d="M12 6.5C10.5 5 8.4 4.5 5 4.5v13c3.4 0 5.5.5 7 2 1.5-1.5 3.6-2 7-2v-13c-3.4 0-5.5.5-7 2Z" />
+    </>,
+    props,
+  );
+
+/** Three linked nodes — the architecture. Reads as a topology at 17px. */
+export const IconArchitecture: PathIcon = (props) =>
+  svg(
+    <>
+      <rect x="9" y="3.5" width="6" height="5" rx="1.2" />
+      <rect x="3" y="15.5" width="6" height="5" rx="1.2" />
+      <rect x="15" y="15.5" width="6" height="5" rx="1.2" />
+      <path d="M12 8.5v3.5M12 12H6v3.5M12 12h6v3.5" />
+    </>,
+    props,
+  );
