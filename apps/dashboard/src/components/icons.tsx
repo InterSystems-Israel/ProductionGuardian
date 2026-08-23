@@ -197,6 +197,28 @@ export const IconRestart: PathIcon = (props) =>
 export const IconCheck: PathIcon = (props) =>
   svg(<path d="M4.5 12.5l5 5 10-11" />, props);
 
+/**
+ * Enclosed check — the Early Warning *watching* state.
+ *
+ * A SEPARATE ICON FROM `IconCheck` ON PURPOSE, though the tick inside is the same gesture.
+ * `IconCheck` is a bare tick used where something *completed* — the reconnected banner, the
+ * "no findings" empty mark, the Hosts OK tile. "Watching" completes nothing; it reports an
+ * ongoing observation with nothing to report, so the ring is the meaning: a tick held inside a
+ * boundary rather than a tick handed over. Reusing the bare tick would have read as a verdict.
+ *
+ * The circle also keeps it off the severity silhouettes. Per the header rule, shapes must be
+ * distinguishable by outline alone — this is a *ring* with a tick, where `IconInfo` is a ring with
+ * a bar and dot, so neither can be misread as the other on a projector.
+ */
+export const IconWatching: PathIcon = (props) =>
+  svg(
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M8.2 12.4l2.6 2.6 5-5.6" />
+    </>,
+    props,
+  );
+
 /* Nav rail — inert visual context (§7.2), so these are deliberately plain. */
 
 export const IconHome: PathIcon = (props) =>

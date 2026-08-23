@@ -1,6 +1,6 @@
 /** Severity ordering, coercion and counting. Unknown severity is `info` (§2.4). */
 
-import type { Severity } from '../types/healthscan';
+import type { FindingView, Severity } from '../types/healthscan';
 
 const KNOWN: readonly Severity[] = ['critical', 'warning', 'info'];
 
@@ -28,6 +28,23 @@ export function worstSeverity(severities: readonly Severity[]): Severity | null 
       worst === null || RANK[current] > RANK[worst] ? current : worst,
     null,
   );
+}
+
+/**
+ * The names of every host carrying at least one finding.
+ *
+ * `finding.host` is always exactly a `host.host` value — same string, same case (§4 Q8) — so
+ * membership in this set is the entire host↔finding join. Lives here rather than in a component
+ * because the summary and the grid both need the same answer, and a second `for` loop over
+ * `findings` in a second file is how the two would drift apart.
+ *
+ * Deliberately *not* the worst severity per host: the summary only asks "is anything wrong here",
+ * and `HostGrid.severityByHost` already answers the harder question for the cards.
+ */
+export function hostsWithFindings(findings: readonly FindingView[]): ReadonlySet<string> {
+  const named = new Set<string>();
+  for (const finding of findings) named.add(finding.host);
+  return named;
 }
 
 export type SeverityCounts = Record<Severity, number>;

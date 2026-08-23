@@ -3,13 +3,17 @@
  *
  * Metric values are monospaced and right-aligned so they do not jitter as the
  * numbers change across polls (§7.3). A host with active findings takes a
- * severity-colored left border at its *worst* severity.
+ * severity-colored left border at its *worst* severity, **and** a severity badge
+ * in the header — the border alone signalled severity by colour only, which §7.3
+ * forbids and which let a green `OK` dot sit unqualified beside three critical
+ * findings.
  */
 
 import type { HostView } from '../types/healthscan';
 import type { Severity } from '../types/healthscan';
 import { formatCount, formatDuration, formatRate, formatRelative } from '../lib/format';
 import { StatusDot } from './StatusDot';
+import { SeverityBadge } from './SeverityBadge';
 import { EarlyWarning } from './EarlyWarning';
 import type { HostProjectionView } from '../types/mvp2';
 
@@ -68,9 +72,22 @@ export function HostCard({
 
   return (
     <article className={`pg-host${severityClass}`}>
+      {/* THE BADGE IS HERE BECAUSE THE BORDER IS A COLOUR, and §7.3 forbids severity signalled by
+          colour alone. The `pg-host--<severity>` left border already made this card honest before
+          the badge existed — verified on the live stack, Cloud API carrying three critical findings
+          rendered `pg-host pg-host--critical` — but an operator reading the header saw a green
+          status dot and the word "OK" beside it, with the only contradiction being 3px of red at
+          the card's edge and a finding count at its foot.
+
+          That is the same over-reassurance the summary tile was fixed for, at card scale, and it is
+          NOT fixed by touching `host.status`: contract §4 Q1 has no `Warning`, so `OK` is what IRIS
+          said and what must be rendered (§2.4). The badge sits BESIDE the status rather than
+          replacing it, so the card states both facts — the host is running, and Health Scan has a
+          critical finding on it — which is precisely the state Q1 describes. */}
       <header className="pg-host__header">
         <StatusDot status={host.status} />
         <h3 className="pg-host__name">{host.host}</h3>
+        {worst !== null && <SeverityBadge severity={worst} />}
         <span className="pg-host__type">{host.type}</span>
       </header>
 
