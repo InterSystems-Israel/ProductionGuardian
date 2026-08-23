@@ -1264,20 +1264,6 @@ button {
 .pg-view__title {
   margin: 0;
   font-size: 17px;
-/* ─── Manual remediation (MVP 3) ─────────────────────────────────────────────────────
-   Visually distinct from the resolve panel on purpose. The two say different things
-   about authority -- one has an approve button, one cannot -- and making them look the
-   same would invite an operator to look for a control that is not there. */
-
-.pg-manual {
-  margin-top: var(--pg-space-4);
-  padding-top: var(--pg-space-4);
-  border-top: 1px solid var(--pg-border);
-}
-
-.pg-manual__summary {
-  margin: 0 0 var(--pg-space-3);
-  font-size: 0.875rem;
   font-weight: 600;
   color: var(--pg-text);
 }
@@ -1403,6 +1389,26 @@ button {
     flex-direction: column;
     align-items: flex-start;
   }
+}
+
+/* ─── Manual remediation (MVP 3) ─────────────────────────────────────────────────────
+   Visually distinct from the resolve panel on purpose. The two say different things
+   about authority -- one has an approve button, one cannot -- and making them look the
+   same would invite an operator to look for a control that is not there. */
+
+.pg-manual {
+  margin-top: var(--pg-space-4);
+  padding-top: var(--pg-space-4);
+  border-top: 1px solid var(--pg-border);
+}
+
+.pg-manual__summary {
+  margin: 0 0 var(--pg-space-3);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--pg-text);
+}
+
 .pg-manual__steps {
   margin: 0 0 var(--pg-space-3);
   padding-left: var(--pg-space-5);

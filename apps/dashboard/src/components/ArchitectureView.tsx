@@ -52,11 +52,32 @@ function Node({
   );
 }
 
-function Flow({ d, label, dashed = false }: { d: string; label?: string; dashed?: boolean }): JSX.Element {
+/**
+ * An arrow, optionally labelled.
+ *
+ * `lx`/`ly` are REQUIRED when `label` is passed, and the type enforces it rather than defaulting
+ * to a corner. An SVG `<text>` with no `x`/`y` renders at the origin — so the first version of
+ * this component drew all eight labels stacked on top of each other in the top-left of the
+ * viewBox, which reads as a rendering fault rather than as a missing attribute. The types below
+ * make that unrepresentable: a label without a position will not compile.
+ *
+ * Positions are given per call site rather than derived from `d`, because the midpoint of an
+ * L-shaped path is usually the corner — the one place a label is guaranteed to sit on the line.
+ */
+type FlowProps = { d: string; dashed?: boolean } & (
+  | { label: string; lx: number; ly: number }
+  | { label?: undefined; lx?: undefined; ly?: undefined }
+);
+
+function Flow({ d, label, lx, ly, dashed = false }: FlowProps): JSX.Element {
   return (
     <g className={`pg-arch__flow${dashed ? ' pg-arch__flow--dashed' : ''}`}>
       <path d={d} markerEnd="url(#pg-arrow)" />
-      {label !== undefined && <text className="pg-arch__flow-label">{label}</text>}
+      {label !== undefined && (
+        <text className="pg-arch__flow-label" x={lx} y={ly}>
+          {label}
+        </text>
+      )}
     </g>
   );
 }
@@ -78,7 +99,7 @@ function Overview(): JSX.Element {
         <text x="106" y="46">IRIS container</text>
       </g>
       <Node x={32} y={64} w={148} title="LABDEMO" sub="the production" tone="brand" />
-      <Node x={32} y={132} w={148} title="AI Hub" sub="agent · 6 MCP tools" tone="accent" />
+      <Node x={32} y={132} w={148} title="AI Hub" sub="agent · governed MCP tools" tone="accent" />
       <Node x={32} y={200} w={148} title="RBAC · audit" sub="policies, one write tool" />
       <Node x={32} y={264} w={148} title="/api/monitor" sub="built-in metrics" />
 
@@ -88,13 +109,15 @@ function Overview(): JSX.Element {
 
       <Node x={452} y={160} w={148} h={60} title="Dashboard" sub="what the operator sees" tone="accent" />
 
-      <Flow d="M180 290 H248 V100" label="metrics" />
+      {/* Labels sit just above the horizontal leg of each path, left-anchored from its start,
+          so they read along the line rather than crossing a node. */}
+      <Flow d="M180 290 H248 V100" label="metrics" lx={186} ly={284} />
       <Flow d="M316 116 V160" />
       <Flow d="M316 212 V264" />
-      <Flow d="M384 190 H452" label="findings" />
+      <Flow d="M384 190 H452" label="findings" lx={390} ly={184} />
       {/* Dashed: the engine reaches back into IRIS only for WHY and FIX, and only
           through the governed tool path. A solid line would imply a data feed. */}
-      <Flow d="M248 186 H196 V158" label="investigate · resolve" dashed />
+      <Flow d="M248 186 H196 V158" label="investigate · resolve" lx={196} ly={180} dashed />
 
       <text className="pg-arch__note" x="452" y="248">Five compose services.</text>
       <text className="pg-arch__note" x="452" y="264">Ports and names live in</text>
@@ -122,19 +145,21 @@ function Investigation(): JSX.Element {
       </g>
       <Node x={336} y={64} w={168} title="Agent" sub="goal, iteration cap" tone="brand" />
       <Node x={336} y={136} w={168} title="Authorization policy" sub="checked per call" />
-      <Node x={336} y={200} w={168} title="Read tools ×5" sub="metrics · config only" />
+      <Node x={336} y={200} w={168} title="Read tools" sub="metrics · config only" />
       <Node x={336} y={264} w={168} title="set_pool_size" sub="the one write" tone="accent" />
 
       <Node x={552} y={64} w={72} h={44} title="LLM" sub="external" />
       <Node x={552} y={200} w={72} h={44} title="Audit" sub="every call" tone="brand" />
 
       <Flow d="M136 176 H168" />
-      <Flow d="M288 176 H336 V108" label="finding + snapshot" />
-      <Flow d="M504 86 H552" label="reason" dashed />
+      <Flow d="M288 176 H336 V108" label="finding + snapshot" lx={288} ly={170} />
+      <Flow d="M504 86 H552" label="reason" lx={506} ly={80} dashed />
       <Flow d="M420 116 V136" />
-      <Flow d="M420 188 V200" label="evidence" />
+      {/* The two vertical labels are offset to the RIGHT of their arrow rather than centred on
+          it, since a centred label on a 12px vertical run would sit on the line itself. */}
+      <Flow d="M420 188 V200" label="evidence" lx={426} ly={197} />
       <Flow d="M504 222 H552" />
-      <Flow d="M420 252 V264" label="after approval" />
+      <Flow d="M420 252 V264" label="after approval" lx={426} ly={261} />
 
       <text className="pg-arch__note" x="16" y="240">The policy is asked before every</text>
       <text className="pg-arch__note" x="16" y="256">call, and the audit row is written</text>
@@ -173,7 +198,7 @@ export function ArchitectureView(): JSX.Element {
 
       <p className="pg-view__caption">
         {slide === 'overview'
-          ? 'MVP 1 detects. MVP 2 adds WHAT, WHY and FIX on one scenario — the agent, its tools, its RBAC and its audit all run inside the same IRIS instance as the production.'
+          ? 'MVP 1 detects. MVP 2 adds WHAT, WHY and FIX on one scenario, and MVP 3 adds the case where the honest answer is words for an operator rather than a button — the agent, its tools, its RBAC and its audit all run inside the same IRIS instance as the production.'
           : 'Authorization is checked before execution and the audit row is written either way, so a refused attempt is as visible as an applied one.'}
       </p>
     </section>
