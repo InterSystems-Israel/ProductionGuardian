@@ -110,14 +110,22 @@ function Overview(): JSX.Element {
       <Node x={452} y={160} w={148} h={60} title="Dashboard" sub="what the operator sees" tone="accent" />
 
       {/* Labels sit just above the horizontal leg of each path, left-anchored from its start,
-          so they read along the line rather than crossing a node. */}
+          so they read along the line rather than crossing a node. Positions are checked against
+          every node box by test/architecture.test.ts -- a label placed by eye collided with
+          "Detection engine" and shipped that way (@Ari-Glikman). */}
       <Flow d="M180 290 H248 V100" label="metrics" lx={186} ly={284} />
       <Flow d="M316 116 V160" />
       <Flow d="M316 212 V264" />
       <Flow d="M384 190 H452" label="findings" lx={390} ly={184} />
       {/* Dashed: the engine reaches back into IRIS only for WHY and FIX, and only
-          through the governed tool path. A solid line would imply a data feed. */}
-      <Flow d="M248 186 H196 V158" label="investigate · resolve" lx={196} ly={180} dashed />
+          through the governed tool path. A solid line would imply a data feed.
+
+          ly=148 rather than 180: at 180 this label is 124px wide starting at x=196, so it ran
+          straight through the Detection engine box (248..384). Moved above the row into the gap
+          between the AI Hub and Metrics proxy bands, where it still reads as belonging to the
+          dashed arrow beneath it. Shortening the text was the alternative and is worse -- the two
+          verbs ARE the MVP 2 loop, and "WHY · FIX" needs the caption to decode it. */}
+      <Flow d="M248 186 H196 V158" label="investigate · resolve" lx={196} ly={148} dashed />
 
       <text className="pg-arch__note" x="452" y="248">Five compose services.</text>
       <text className="pg-arch__note" x="452" y="264">Ports and names live in</text>
@@ -152,7 +160,10 @@ function Investigation(): JSX.Element {
       <Node x={552} y={200} w={72} h={44} title="Audit" sub="every call" tone="brand" />
 
       <Flow d="M136 176 H168" />
-      <Flow d="M288 176 H336 V108" label="finding + snapshot" lx={288} ly={170} />
+      {/* ly=130, not 170: at 170 this 106px label starting at x=288 overlapped the Authorization
+          policy box (336..504). Sits above it instead, still alongside the vertical leg it
+          describes. */}
+      <Flow d="M288 176 H336 V108" label="finding + snapshot" lx={292} ly={130} />
       <Flow d="M504 86 H552" label="reason" lx={506} ly={80} dashed />
       <Flow d="M420 116 V136" />
       {/* The two vertical labels are offset to the RIGHT of their arrow rather than centred on

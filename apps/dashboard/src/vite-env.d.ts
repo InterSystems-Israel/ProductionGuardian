@@ -5,6 +5,7 @@
 interface ImportMetaEnv {
   readonly VITE_HEALTHSCAN_BASE_URL?: string;
   readonly VITE_POLL_INTERVAL_MS?: string;
+  readonly VITE_IRIS_PORTAL_URL?: string;
 }
 
 interface ImportMeta {
