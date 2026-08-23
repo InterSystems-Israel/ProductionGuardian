@@ -152,7 +152,7 @@ reads is authorization-checked and written to an audit trail."*
 ```
 rootCause: "The Cloud API host is currently configured with a pool size of 1, which severely
             limits its ability to process incoming messages..."
-recommendedAction: {"type": "set_pool_size", "host": "Cloud API", "size": 2}
+recommendedAction: {"type": "set_pool_size", "host": "Cloud API", "size": 4}
 ```
 
 **Point at the provenance line.** *"`source: agent`, two tool calls. If this said `canned` it would be
@@ -162,6 +162,12 @@ you tell."*
 > **The strongest thing to say here, and it is true:** *"Nothing about pool size is in the agent's
 > instructions beyond which action it is permitted to suggest and the allowed range. It worked out the
 > bottleneck itself from the evidence it gathered."*
+
+> **And point at the NUMBER, not just the recommendation.** It does not double the pool — it sizes it.
+> One message per second at ~1s of work each means one worker is exactly break-even, so a pool of 2
+> would hold the queue steady forever and never clear it. Four drains it. The agent states that
+> arithmetic in its own evidence, so you can read the working off the screen rather than asserting it.
+> *"It picked a number it can defend"* is a stronger claim than *"it noticed a problem"*.
 
 ### 2.2 Preview, then approve (60s)
 
