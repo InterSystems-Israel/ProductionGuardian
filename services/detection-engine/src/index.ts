@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { createFindingsServer } from './api/server.ts';
 import { investigate } from './detect/investigate.ts';
 import { liveAgent, mockAgent, liveResolveTool, mockResolveTool } from './detect/agents.ts';
+import { chat, liveChatAgent, parseChatRequest } from './detect/chat.ts';
 // Aliased: `resolve` is already node:path's, used for every path in this file. Importing ours
 // under the same name compiles as a duplicate-identifier error rather than shadowing -- but had it
 // shadowed, `resolve(serviceRoot, 'thresholds.json')` would have called the write orchestrator.
@@ -137,6 +138,20 @@ const callTool =
     ? liveResolveTool(IRIS_BASE_URL, IRIS_USER, IRIS_PASS, (m: string) => console.error(m))
     : mockResolveTool();
 
+/**
+ * The chat assistant, on the SAME switch and with NO mock branch.
+ *
+ * `undefined` with AGENT_MODE=mock, which the server turns into a 503 naming the deployment rather
+ * than a 404 naming the route. That asymmetry with `callAgent` above is deliberate and argued in
+ * `detect/chat.ts`: a canned investigation is honest because the engine already measured the numbers
+ * it narrates, and a canned answer to an arbitrary question would have to invent either the numbers
+ * or the question. So this feature is live-or-absent, and the absent state is labelled.
+ */
+const callChatAgent =
+  AGENT_MODE === 'live'
+    ? liveChatAgent(IRIS_BASE_URL, IRIS_USER, IRIS_PASS, (m: string) => console.error(m))
+    : undefined;
+
 const server = createFindingsServer({
   port: PORT,
   snapshot: () => engine.snapshot(),
@@ -169,6 +184,18 @@ const server = createFindingsServer({
     // to 400. Validated here rather than inside resolve() so the endpoint answers a bad body
     // without ever reaching the write tool.
     runResolve(parseResolveRequest(body), { callTool, log: (m) => console.error(m) }),
+  // Wired only when an agent is live, so `chat` is undefined otherwise and the endpoint answers 503.
+  // Validated here rather than inside chat() so a bad body answers 400 without reaching IRIS -- the
+  // same division as parseResolveRequest above.
+  ...(callChatAgent === undefined
+    ? {}
+    : {
+        chat: async (body: unknown) =>
+          chat(parseChatRequest(body), {
+            callAgent: callChatAgent,
+            log: (m: string) => console.error(m),
+          }),
+      }),
   triggerStatus: () => triggers.status(),
   armTrigger: async (body) => {
     // Read here rather than in triggers.ts so a malformed body is a 400 from the API boundary,

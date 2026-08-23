@@ -34,6 +34,36 @@ Class ProductionGuardian.LabDemo.Tools.Governance
 /// The read-tool class. Registered for every caller.
 Parameter READTOOLS = "ProductionGuardian.LabDemo.Tools.Read";
 
+/// The activity-history read tools.
+///
+/// A SECOND READ CLASS RATHER THAN MORE METHODS ON THE FIRST -- see `Tools.Activity`'s own class
+/// comment for why. Both are gated by `PG_Read` and neither can mutate anything, so the read/write
+/// split that `AuthPolicy` enforces is unaffected by which of the two a caller gets.
+///
+/// WHY `GovernAgent` CAN NEVERTHELESS REGISTER ONE WITHOUT THE OTHER, and this is a correctness
+/// finding rather than a security one. The two families answer questions that SOUND identical and
+/// are not: `Tools.Read.GetProcessingTime` reports the instant reading from
+/// `/api/monitor/metrics`, and `Tools.Activity` reports the recorded history. Given both, a model
+/// asked "which host has the highest average queueing time" reached for the current-state tool and
+/// answered from it. Measured through the dashboard's own path:
+///
+///     GetProcessingTime("Cloud API")            -> avgQueueingTime 0.12   <- true, and instantaneous
+///     CompareHostActivity("hours", 6)           -> avgQueueingTime 77.66  <- true, and the answer
+///
+/// Both readings are correct. The answer built on the first was wrong by three orders of magnitude,
+/// and it carried `confidence: 1` with two evidence bullets reading `NOT MEASURED` -- so it was
+/// confidently wrong AND self-contradicting, which is the worst available shape. On another run the
+/// same question produced "all hosts have reported an average queueing time of null".
+///
+/// Prompt wording did not fix it and was tried first: the chat prompt already named each tool and
+/// what it was for. That is the fifth time on this project that a behaviour something depended on
+/// needed a deterministic guard rather than politer instruction, so the guard is the tool surface --
+/// a model cannot prefer a tool that is not registered. The chat assistant gets `"activity"`;
+/// AI Detective keeps `"all"`, because a root-cause investigation genuinely needs the instantaneous
+/// status, queue depth and pool size, and it is given ONE finding to explain rather than an open
+/// question about a time range.
+Parameter ACTIVITYTOOLS = "ProductionGuardian.LabDemo.Tools.Activity";
+
 /// The write-tool class, in its own class so the RBAC requirement does not leak onto the reads.
 Parameter WRITETOOLS = "ProductionGuardian.LabDemo.Tools.Resolve";
 
@@ -65,6 +95,10 @@ ClassMethod ToolManager(pIncludeWrite As %Boolean = 1, Output pStatus As %Status
     }
 
     set pStatus = mgr.RegisterToolSet(..#READTOOLS)
+    if $$$ISERR(pStatus) {
+        quit $$$NULLOREF
+    }
+    set pStatus = mgr.RegisterToolSet(..#ACTIVITYTOOLS)
     if $$$ISERR(pStatus) {
         quit $$$NULLOREF
     }
@@ -104,7 +138,10 @@ ClassMethod Attach(pManager As %AI.ToolMgr) As %Status
 /// names our classes will have registered them on an ungoverned manager by then. Attaching
 /// afterwards still governs every subsequent execution, because the policy is consulted per call
 /// rather than per registration.
-ClassMethod GovernAgent(pAgent As %AI.Agent, pIncludeWrite As %Boolean = 1) As %Status
+///
+/// `pToolSets` SELECTS WHICH FAMILIES ARE REGISTERED. See the parameter's own comment for the
+/// measurement that made a narrower option necessary rather than merely available.
+ClassMethod GovernAgent(pAgent As %AI.Agent, pIncludeWrite As %Boolean = 1, pToolSets As %String = "all") As %Status
 {
     if '$isobject(pAgent) {
         quit $$$ERROR($$$GeneralError, "no agent to govern")
@@ -114,13 +151,32 @@ ClassMethod GovernAgent(pAgent As %AI.Agent, pIncludeWrite As %Boolean = 1) As %
         // saying so is better than attaching to nothing and reporting success.
         quit $$$ERROR($$$GeneralError, "agent has no ToolManager yet -- call %Init() first")
     }
+    // POLICIES FIRST, always, and before any early return below. An agent that got its tools
+    // registered and its policies skipped is the ungoverned manager this class exists to prevent.
     set sc = ..Attach(pAgent.ToolManager)
     if $$$ISERR(sc) {
         quit sc
     }
-    set sc = pAgent.ToolManager.RegisterToolSet(..#READTOOLS)
-    if $$$ISERR(sc) {
-        quit sc
+
+    // A FIXED $case over three names, not a list the caller composes. An unrecognised value is an
+    // ERROR rather than a default, because the two failure directions are not symmetric: defaulting
+    // to "all" on a typo would silently widen what an agent can reach, which is the one mistake this
+    // method must not make quietly.
+    if '$listfind($listbuild("all", "activity", "current"), pToolSets) {
+        quit $$$ERROR($$$GeneralError, "pToolSets must be 'all', 'activity' or 'current'")
+    }
+
+    if pToolSets '= "activity" {
+        set sc = pAgent.ToolManager.RegisterToolSet(..#READTOOLS)
+        if $$$ISERR(sc) {
+            quit sc
+        }
+    }
+    if pToolSets '= "current" {
+        set sc = pAgent.ToolManager.RegisterToolSet(..#ACTIVITYTOOLS)
+        if $$$ISERR(sc) {
+            quit sc
+        }
     }
     if pIncludeWrite {
         set sc = pAgent.ToolManager.RegisterToolSet(..#WRITETOOLS)

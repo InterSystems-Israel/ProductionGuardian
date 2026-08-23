@@ -159,6 +159,21 @@ describe('headers', () => {
     assert.equal(res.headers.get('access-control-allow-origin'), '*');
   });
 
+  it('POST /api/chat with no handler answers 503, which is the demo-mode state', async () => {
+    // NOT AN EDGE CASE FOR THIS ENDPOINT -- it is the shipped behaviour with AGENT_MODE=mock, because
+    // there is deliberately no canned chat agent (see detect/chat.ts). So 503 here is what the
+    // dashboard meets on every deployment without a live LLM, and the panel renders it as
+    // "not configured" rather than as a fault. A 404 would tell it the feature does not exist.
+    const res = await fetch(`${base}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'which host is busiest?' }),
+    });
+    assert.equal(res.status, 503);
+    const body = (await res.json()) as { error: string };
+    assert.match(body.error, /not configured on this deployment/);
+  });
+
   it('an unknown POST path still answers 404', async () => {
     // The distinction above is only meaningful if a genuinely unknown path behaves differently.
     const res = await fetch(`${base}/api/nope`, {
@@ -200,7 +215,10 @@ describe('routing', () => {
     // Asserted for both POST routes, not just one: the two are wired through different branches
     // (investigate builds a handler, resolve passes one through), so covering one proves nothing
     // about the other.
-    for (const path of ['/api/resolve', '/api/investigate']) {
+    // `/api/chat` is in the list because it is wired through a THIRD branch (a passed-through
+    // handler that this test server leaves undefined), and the comment above is explicit that
+    // covering one branch proves nothing about another.
+    for (const path of ['/api/resolve', '/api/investigate', '/api/chat']) {
       const res = await fetch(`${base}${path}`);
       assert.equal(res.status, 405, `GET ${path} should be 405`);
       const body = (await res.json()) as { error: string };

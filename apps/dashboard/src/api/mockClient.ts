@@ -14,6 +14,8 @@
 import type { HealthScanApi } from './HealthScanApi';
 import { parseFindings, parseHosts } from './guards';
 import type {
+  ChatAnswerView,
+  ChatTurnView,
   HostProjectionView,
   ManualRemediationView,
   InvestigationView,
@@ -341,6 +343,46 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
           observeVia: 'GET /api/healthscan/findings',
           expectedWithinSeconds: 120,
           directEvidence: false,
+        },
+      };
+    },
+
+    /**
+     * Demo-mode chat, and it DECLINES rather than answering.
+     *
+     * EVERY OTHER MOCK IN THIS FILE ANSWERS, so declining here is a deliberate exception and needs
+     * its reason stated. `investigate` can be canned honestly because the engine has already measured
+     * the numbers the narrative describes -- the facts are live and only the wording is fixed, which
+     * is why `source: "canned"` is a sufficient label. A chat answer has no such anchor: the question
+     * is arbitrary, so a canned reply would have to invent either the numbers or the question it was
+     * answering. Both are the thing this project forbids outright, and a badge cannot make either
+     * honest -- `investigation-api.md` §4.3's labelling rule cannot save a mock that has to guess what
+     * was asked.
+     *
+     * So demo mode reports the truthful state: this feature needs the live agent. `state:
+     * "unavailable"` with `source: "none"` is the same shape the engine serves when no agent is wired,
+     * so the panel's declined branch is exercised in demo mode rather than first met on stage -- which
+     * is the point of mock-first even for a feature the mock cannot fake.
+     */
+    async ask(question: string, _history: ChatTurnView[], signal?: AbortSignal): Promise<ChatAnswerView> {
+      await delay(SIMULATED_LATENCY_MS, signal);
+      return {
+        requestId: `chat-mock-${Date.now()}`,
+        state: 'unavailable',
+        source: 'none',
+        answeredAt: new Date().toISOString().slice(0, 19) + 'Z',
+        // Echoed so the panel still pairs the declined answer with the question that was asked.
+        question,
+        answer: null,
+        evidence: [],
+        confidence: null,
+        diagnostics: {
+          model: null,
+          toolCalls: null,
+          durationMs: SIMULATED_LATENCY_MS,
+          note:
+            'Demo mode cannot answer questions about activity — the answer would have to be ' +
+            'invented. Switch to Live mode, where a governed agent reads the real activity tables.',
         },
       };
     },

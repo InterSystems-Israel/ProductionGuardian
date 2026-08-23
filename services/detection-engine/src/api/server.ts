@@ -41,6 +41,15 @@ export interface ServerOptions {
   armTrigger?: (body: unknown) => Promise<unknown>;
   /** Handles `POST /api/demo/reset`. */
   resetTriggers?: () => Promise<unknown>;
+  /**
+   * Handles `POST /api/chat` — the activity insights question.
+   *
+   * Absent means 503, same reasoning as `investigate`: this deployment has no agent wired is a
+   * different fact from no such endpoint, and a 404 would tell the dashboard the feature does not
+   * exist in this build. There is no canned chat fallback to degrade to — see `detect/chat.ts` for
+   * why a mock that has to guess the question cannot be made honest.
+   */
+  chat?: (body: unknown) => Promise<unknown>;
 }
 
 /**
@@ -62,7 +71,16 @@ const GET_PATHS = new Set([
   '/api/demo/triggers',
 ]);
 
-const POST_PATHS = new Set(['/api/investigate', '/api/resolve', '/api/demo/trigger', '/api/demo/reset']);
+const POST_PATHS = new Set([
+  '/api/investigate',
+  '/api/resolve',
+  '/api/demo/trigger',
+  '/api/demo/reset',
+  // NOT under /api/demo/: the chat assistant is a product capability, not demo scaffolding, and it
+  // is read-only. Putting it under that prefix would also give it the 180s nginx timeout meant for
+  // arming a slow scenario, which is longer than IRIS will hold a request open anyway.
+  '/api/chat',
+]);
 
 /**
  * Origins permitted to POST — the fix for `resolve-api.md` §13.2's confused deputy.
@@ -181,7 +199,9 @@ export function createFindingsServer(options: ServerOptions): Server {
           ? options.investigate === undefined
             ? undefined
             : async (body: unknown) => options.investigate!(readFindingId(body))
-          : path === '/api/demo/trigger'
+          : path === '/api/chat'
+            ? options.chat
+            : path === '/api/demo/trigger'
             ? options.armTrigger
             : path === '/api/demo/reset'
               ? // Takes no body. Ignoring it rather than validating an empty object: reset is the

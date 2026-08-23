@@ -185,7 +185,7 @@ ClassMethod MakeDirectories()
     }
 }
 
-/// ALL FOUR web applications. Registering only /labdemo/monitor -- which is what had happened
+/// ALL FIVE web applications. Registering only /labdemo/monitor -- which is what had happened
 /// on the instance -- leaves Cloud API POSTing into a 404 while EMR Source and Lab Router
 /// look healthy, so nothing points at the cause. The same omission for /labdemo/agent takes out
 /// every MVP 2 write with `HTTP 404` from a component the caller never names.
@@ -213,6 +213,17 @@ ClassMethod RegisterWebApps()
     // permanent: an instance booted once without the flag could never gain the routes, and one
     // booted with it could never lose them. The check belongs at request time.
     set apps("/labdemo/trigger") = "ProductionGuardian.LabDemo.REST.TriggerDispatcher"
+    // FIVE. The activity insights chat turn. Registered unconditionally and with no flag of its own:
+    // unlike the trigger surface it is READ-ONLY -- its agent is governed with `pIncludeWrite = 0`, so
+    // there is no write tool on its manager -- and a read endpoint that needs an environment variable
+    // to exist is one a demo discovers is missing at the worst moment.
+    //
+    // It answers 503 rather than 404 when the LLM provider is absent, which is the honest distinction:
+    // the route exists in this build and this deployment has no agent. #106's lesson is what makes
+    // this line load-bearing at all -- `/labdemo/agent` was missing from this list and every MVP 2
+    // write returned 404 from a component the caller never names, invisible on every instance because
+    // we had each registered it by hand while building it.
+    set apps("/labdemo/chat") = "ProductionGuardian.LabDemo.REST.ChatDispatcher"
     set ns = $namespace
 
     new $namespace

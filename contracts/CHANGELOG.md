@@ -5,6 +5,79 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-23 — three activity-history read tools, for the chat assistant (Dev B)
+
+**`mcp-tools.md` §1, §3.7–§3.9, §6, §8.** Additive: three new read tools in a new class,
+`PG.Tools.Activity`. No existing tool changed, no schema change, no sample change — `validate.mjs`
+stays at 3 samples / 26 reject.
+
+- `get_activity_coverage` — which hosts have recorded activity, over what period, at which resolutions
+- `get_activity_trend` — one host's throughput and latency, bucket by bucket
+- `compare_host_activity` — every host ranked over one window
+
+All three read `Ens_Activity_Data.{Seconds,Hours,Days}`. **The expected tool count moves 7 → 10**, and
+`Setup.AIHub.ReportTools()` was updated with the discovered names read back rather than the number
+bumped — that guard exists so an accidentally-public helper is caught at boot.
+
+### The data-boundary finding, which is the reason this entry is long
+
+**`SiteDimension` is derived from message body content, and nothing about the column name says so.**
+Traced through the platform rather than read off the schema:
+`Ens.Util.Statistics.GetStatsUserDimension` opens the in-flight `Ens.MessageHeader`, opens its body,
+and calls **`GetStatsDimension()` on the message body object**. `EnsLib.HL7.Message` returns `..Name`;
+where a body declines, the fallback is the body **class name**. `GetStatsDimension` is an
+**overridable hook**, and `SetStatsUserDimension` lets an operator put free text there per host
+without touching a class.
+
+That is structurally the same situation as `Ens_Util.Log.Text` in §3.4 — safe on today's instance
+because of how the writing code happens to be used, unsafe the moment a hook is overridden — so it
+gets the same answer: **classify against an allowlist, never pass the value through.** A value is
+published only when this instance can independently verify it names a loaded HL7 message structure or
+a compiled class; anything else is `other` with no text. Not a regex, because "looks like a class
+name" passes `Patient.Smith.John`.
+
+**Demonstrated rather than asserted.** A PHI-shaped dimension (`SMITH^JOHN^A^MRN12345678`) was written
+into the activity table for a real host, and the tool's reply contained neither `SMITH` nor
+`MRN12345678` — only `{"kind":"other","verifiedAs":"unverified"}`. The test row was deleted afterwards.
+
+**The generalisable lesson, recorded in §6:** a column is safe because of what writes it, not because
+of what it is called. Any new tool over a table nobody has traced should be assumed to have one of
+these until checked.
+
+### `GovernAgent` gained a tool-set selector, and it is a CORRECTNESS guard
+
+`GovernAgent(agent, includeWrite, toolSets)` now takes `"all"` (default), `"activity"` or
+`"current"`. Both read families are `PG_Read` and neither mutates anything, so this is not a
+privilege boundary — it fixes a wrong answer.
+
+§3.5 and §3.9 answer questions that *sound* identical. On "which host has the highest average
+queueing time", measured through the dashboard's own path:
+
+```
+get_processing_time("Cloud API")   ->  avgQueueingTime  0.12   <- true, and instantaneous
+compare_host_activity("hours", 6)  ->  avgQueueingTime 77.66   <- true, and the answer
+```
+
+The model reached for the first. The answer was wrong by three orders of magnitude and carried
+`confidence: 1` beside two evidence bullets reading `NOT MEASURED` — confidently wrong *and*
+self-contradicting. **Prompt wording was tried first and failed**; the prompt already named each tool
+and its purpose. So the chat assistant is registered with `"activity"` and cannot reach the
+current-state tools, verified by execution (`ToolNotFound`) rather than by reading the registration —
+`FindTools()` is namespace-wide discovery and lists tools that are not registered, so it proves
+nothing. AI Detective keeps `"all"`, because it explains one finding and needs the live status beside
+the history. An unrecognised value is an **error**, not a default: falling back to `"all"` on a typo
+would silently widen what an agent can reach.
+
+### Not in this entry
+
+No `.d.ts` and no JSON Schema, consistent with the rest of this file: these tools' schemas are
+*generated* from the ObjectScript at compile time by `%AI.Tool.Generator`, so a hand-written schema
+would be a second source of truth that drifts (§7). The engine's `/api/chat` endpoint and its
+response shape are **not** in `contracts/` at all yet, matching how `investigation-api.md` and
+`resolve-api.md` began — flagged here rather than left implicit.
+
+---
+
 ## 2026-08-23 — `get_recent_errors` reports HOW RECENT, not only how many (Dev B)
 
 **`mcp-tools.md` §3.4 only.** Two additive nullable fields, no schema change, no sample change —

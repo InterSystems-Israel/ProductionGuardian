@@ -371,23 +371,28 @@ ClassMethod CreateRoles() As %Status
 
 /// How many tools the runtime actually discovers, and their names.
 ///
-/// SIX, AND THE COUNT IS THE TEST. `Tools.Read` and `Tools.Resolve` both warn that every public
-/// ClassMethod becomes an LLM-callable tool, so a seventh name here means a helper was left public
-/// -- and for `Tools.Resolve` a seventh name is a second way to mutate a live production. Printed on
-/// every setup run so the regression is visible at boot rather than in a review.
+/// THE COUNT IS THE TEST. `Tools.Read`, `Tools.Activity` and `Tools.Resolve` all warn that every
+/// public ClassMethod becomes an LLM-callable tool, so an unexpected name here means a helper was
+/// left public -- and for `Tools.Resolve` an extra name is a second way to mutate a live production.
+/// Printed on every setup run so the regression is visible at boot rather than in a review.
 ClassMethod ReportTools()
 {
-    // SEVEN since MVP 3, not six. GetHostSettings was added so the agent can name the directory in
-    // the missing-folder scenario from configuration rather than from log text (mcp-tools.md §3.4a).
+    // TEN since the activity chat assistant, from seven. `Tools.Activity` adds three read tools over
+    // `Ens_Activity_Data.{Seconds,Hours,Days}` -- get_activity_coverage, get_activity_trend,
+    // compare_host_activity (mcp-tools.md §3.7-3.9).
     //
-    // This number is moved DELIBERATELY and with the tool list read back, because the guard's whole
-    // value is that an unexpected count is loud: it fired on the first compile of the new tool --
-    // "7 -- EXPECTED 6, INVESTIGATE" -- which is exactly what it is for. Bumping it without reading
-    // the names would defeat it, so the names were checked: six reads plus one write, no helper left
-    // public.
-    set expected = 7
+    // Moved DELIBERATELY and with the tool list read back, which is the discipline the previous bump
+    // to 7 established: the guard's whole value is that an unexpected count is loud, and bumping it
+    // without reading the names would defeat it. Checked on the first compile -- `Tools.Activity`
+    // discovered exactly three, so nine reads plus one write, no helper left public. The three
+    // helpers on that class (`ClassifyDimension`, `IsHL7Structure`, `TableFor` and the rest) are all
+    // `[ Private ]`, which is what keeps the count at three rather than eleven.
+    set expected = 10
     set found = 0
-    for class = "ProductionGuardian.LabDemo.Tools.Read", "ProductionGuardian.LabDemo.Tools.Resolve" {
+    // Tools.Activity IS LISTED HERE, not only registered in Governance. A tool class the count does
+    // not cover is a class whose accidental extra method nothing catches at boot -- which is the one
+    // thing this method exists to prevent.
+    for class = "ProductionGuardian.LabDemo.Tools.Read", "ProductionGuardian.LabDemo.Tools.Activity", "ProductionGuardian.LabDemo.Tools.Resolve" {
         if '##class(%Dictionary.CompiledClass).%ExistsId(class) {
             write "3. tools ", class, ": NOT COMPILED", !
             continue
