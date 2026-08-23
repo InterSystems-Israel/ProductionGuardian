@@ -15,6 +15,7 @@ import type { HealthScanApi } from './HealthScanApi';
 import { parseFindings, parseHosts } from './guards';
 import type {
   HostProjectionView,
+  ManualRemediationView,
   InvestigationView,
   ResolveActionView,
   ResolveMode,
@@ -85,6 +86,26 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
   /** The fixture to hand out on this call. */
   function serving(): Scenario {
     return pinned ?? scenarioAt(cursor);
+  }
+
+  /**
+   * The canned manual remediation for demo mode's missing-folder finding.
+   *
+   * The path is a plausible LABDEMO one rather than a real read: in the live path it comes from the
+   * host's configured adapter settings, never from a log message (`mcp-tools.md` §3.4a). Written to
+   * look like a setting value so the demo does not teach that the agent quotes log text.
+   */
+  function manualFor(host: string): ManualRemediationView {
+    const path = '/tmp/labdemo/hl7-in-missing/';
+    return {
+      summary: `${host} polls a directory that does not exist`,
+      steps: [
+        `Create ${path} on the IRIS host, or`,
+        `point ${host}'s FilePath setting at an existing directory`,
+      ],
+      target: { host, setting: 'FilePath', currentValue: path },
+      appliedBy: 'operator',
+    };
   }
 
   /* Mock write state. Module-scoped per client instance so `restart()` does not reset it -- a
@@ -181,6 +202,11 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
       const finding = parsed.find((f) => f.id === findingId) ?? parsed[0];
       const host = finding?.host ?? 'Cloud API';
       const queued = finding?.currentValue ?? null;
+      /* `dead_host` is the MVP 3 scenario's finding (§2.3 -- Error is in DEAD_STATUSES, so no new
+         rule was needed). Everything else in the demo scenarios is a throughput condition with a
+         governed fix. Keyed on the finding type rather than the host name, because the host list is
+         Production.cls's to own (#84). */
+      const actionable = finding?.type !== 'dead_host';
 
       return {
         requestId: `inv-mock-${findingId}`,
@@ -203,14 +229,21 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
           { label: 'Downstream latency', detail: 'average processing time ~1s per message', source: 'mcp_tool', tool: 'get_processing_time' },
         ],
         confidence: 0.9,
-        recommendedAction: {
-          action: { type: 'set_pool_size', host, size: 4 },
-          currentValue: 1,
-          bounds: { min: 2, max: 8 },
-          reversible: true,
-          requiresApproval: true,
-          summary: `increase ${host} pool 1 -> 4`,
-        },
+        recommendedAction: actionable
+          ? {
+              action: { type: 'set_pool_size', host, size: 4 },
+              currentValue: 1,
+              bounds: { min: 2, max: 8 },
+              reversible: true,
+              requiresApproval: true,
+              summary: `increase ${host} pool 1 -> 4`,
+            }
+          : null,
+        /* EXACTLY ONE OF THE TWO, never both. A finding whose fix is a bounded configuration change
+           gets a `recommendedAction`; one whose fix is an operator's job gets a `manualRemediation`.
+           Demo mode has to be able to show the second, or the state whose acceptance criterion is
+           "no approve button" is never exercised before a live run. */
+        manualRemediation: actionable ? null : manualFor(host),
         diagnostics: { model: null, toolCalls: null, durationMs: 240, note: 'demo mode: canned investigation' },
       };
     },
