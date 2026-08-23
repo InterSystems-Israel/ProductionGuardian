@@ -216,6 +216,11 @@ function parseChatEvidence(value: unknown): ChatEvidenceItemView[] {
  * `unavailable` and an unrecognised source as `none`, so a garbled payload cannot present itself as a
  * complete answer from a live agent — which is the one direction of error that matters, since
  * `source` is the field `iris/CLAUDE.md`'s pre-demo check relies on.
+ *
+ * `static` IS MATCHED EXPLICITLY, alongside `agent`, and it is still pessimistic: an unrecognised
+ * value is `none` as before. Matched rather than folded into `agent` because the panel shows a
+ * different provenance tag for each, and a small-talk reply wearing "Live agent" would claim a
+ * metered call that never happened.
  */
 export function parseChatAnswer(payload: unknown): ChatAnswerView | null {
   if (!isRecord(payload)) return null;
@@ -224,7 +229,8 @@ export function parseChatAnswer(payload: unknown): ChatAnswerView | null {
   const state: ChatState = rawState === 'complete' ? 'complete' : 'unavailable';
 
   const rawSource = payload['source'];
-  const source: ChatSource = rawSource === 'agent' ? 'agent' : 'none';
+  const source: ChatSource =
+    rawSource === 'agent' ? 'agent' : rawSource === 'static' ? 'static' : 'none';
 
   const diagnostics = isRecord(payload['diagnostics']) ? payload['diagnostics'] : {};
 

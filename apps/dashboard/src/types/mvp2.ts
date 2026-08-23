@@ -112,7 +112,17 @@ export interface InvestigationView {
  */
 export type ChatState = 'complete' | 'unavailable';
 
-export type ChatSource = 'agent' | 'none';
+/**
+ * `static` IS NOT A CANNED ANSWER ABOUT THE PRODUCTION, which is what the paragraph above rules out.
+ *
+ * It is a greeting, a thanks, a farewell or a "what can you do" — classified in
+ * `ChatDispatcher.SmallTalkKind` and answered from a fixed catalogue in IRIS, with no model call and
+ * no tool call. It describes the ASSISTANT, never the data, so it invents nothing: the thing
+ * `unavailable` exists to prevent is a plausible answer to a question about this production, and no
+ * such question can reach this source. The panel labels it, because an answer nothing measured must
+ * not present itself with the same "Live agent" tag as one three tools were read for.
+ */
+export type ChatSource = 'agent' | 'static' | 'none';
 
 /**
  * One value the agent read, and the tool it used.

@@ -53,8 +53,21 @@ export type ChatState = 'complete' | 'unavailable';
  * web application and the agent are all correct at once — which is why `iris/CLAUDE.md`'s pre-demo
  * check turns on this field rather than on the answer looking right. There is deliberately no
  * `canned` chat agent: see `chatUnavailable`.
+ *
+ * `static` IS A THIRD THING AND IT IS NOT A DEGRADED `agent`. A greeting, a thanks, a farewell or a
+ * "what can you do" is classified in `ChatDispatcher.SmallTalkKind` and answered from a fixed
+ * catalogue — no provider, no metered call, no tool, `toolCalls: 0`. Distinguished from `agent`
+ * because otherwise a zero tool count would be ambiguous between "nothing needed reading" and "a
+ * model answered from its priors about a production it has never seen", and the second is the one
+ * `toolCalls` exists to surface. Distinguished from `none` because a `static` answer IS an answer:
+ * `answer` is non-null and `state` is `complete`.
+ *
+ * NOT A NEW WAY TO INVENT DATA. The catalogue describes the assistant, never the production — see
+ * `ChatDispatcher.SmallTalkText`, which is grounded in the three tools `Tools.Activity` publishes and
+ * names no host. `iris/CLAUDE.md`'s pre-demo check is unaffected: it asserts `source: agent` for a
+ * real question, and a real question can never reach this path.
  */
-export type ChatSource = 'agent' | 'none';
+export type ChatSource = 'agent' | 'static' | 'none';
 
 export interface ChatResponse {
   requestId: string;
@@ -275,10 +288,17 @@ export async function chat(request: ChatRequest, deps: ChatDeps): Promise<ChatRe
 
   const finished = now();
   const obj = raw as Record<string, unknown>;
+  /* READ FROM WHAT IRIS SAID, and only the one literal is accepted — anything else, including an
+     absent field, is `agent`. That direction is deliberate: `agent` is the claim `iris/CLAUDE.md`'s
+     pre-demo check treats as load-bearing, and defaulting an unrecognised value to `static` would let
+     a garbled reply present a real agent answer as canned text, which is the reverse of the error
+     worth guarding. An older IRIS that does not send the field at all still reports `agent`, which is
+     what it means. */
+  const source: ChatSource = obj['source'] === 'static' ? 'static' : 'agent';
   return {
     requestId,
     state: 'complete',
-    source: 'agent',
+    source,
     answeredAt: isoSeconds(finished),
     /* IRIS's echo is preferred over our own copy, because it is what the agent actually answered.
        Falling back to the request only when the echo is missing — a UI pairing an answer with a
