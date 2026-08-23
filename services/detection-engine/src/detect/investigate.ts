@@ -56,6 +56,29 @@ export interface RecommendedAction {
   summary: string;
 }
 
+/**
+ * A fix the system may NOT apply. Contract §3.3a, MVP 3.
+ *
+ * SEPARATE FROM `RecommendedAction` BY DESIGN, and the reason is authority rather than convenience:
+ * `RecommendedAction` means "the system may apply this, with approval"; this means "the system may
+ * not apply this at all". Because there is no `action` object here, a consumer physically cannot
+ * send it to `POST /api/resolve` and cannot bind an approve control to it — the wrong UI is
+ * unrepresentable rather than merely discouraged. A single object with an `applyable: false` flag
+ * would make the wrong UI a forgotten `if`.
+ *
+ * The failure being designed out is an approve button next to a recommendation the system cannot
+ * carry out, because a human would click it.
+ */
+export interface ManualRemediation {
+  summary: string;
+  /** Ordered and imperative. Rendered verbatim — this service does not compose or reword them. */
+  steps: string[];
+  /** Configuration only, never message content (`mcp-tools.md` §6). Null when unidentified. */
+  target: { host: string; setting: string; currentValue: string | null } | null;
+  /** Closed set, one member. A second value is a contract change, not a code change. */
+  appliedBy: 'operator';
+}
+
 export interface InvestigationResponse {
   requestId: string;
   findingId: string;
@@ -66,6 +89,11 @@ export interface InvestigationResponse {
   evidence: EvidenceItem[];
   confidence: number | null;
   recommendedAction: RecommendedAction | null;
+  /**
+   * MVP 3. Null when the agent recommended nothing manual — which is legal alongside
+   * `recommendedAction: null` and must render as *no recommended action*, not as an error.
+   */
+  manualRemediation: ManualRemediation | null;
   diagnostics: {
     model: string | null;
     toolCalls: number | null;
@@ -184,6 +212,7 @@ function unavailable(
     evidence: [],
     confidence: null,
     recommendedAction: null,
+    manualRemediation: null,
     diagnostics: { model: null, toolCalls: null, durationMs: null, note },
   };
 }
@@ -204,7 +233,13 @@ function parseAgentReply(
   raw: unknown,
   finding: Finding,
   currentPoolSize: number | null,
-): { rootCause: string; evidence: EvidenceItem[]; confidence: number | null; action: RecommendedAction | null } | null {
+): {
+  rootCause: string;
+  evidence: EvidenceItem[];
+  confidence: number | null;
+  action: RecommendedAction | null;
+  manual: ManualRemediation | null;
+} | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const obj = raw as Record<string, unknown>;
 
@@ -268,7 +303,53 @@ function parseAgentReply(
     }
   }
 
-  return { rootCause, evidence, confidence, action };
+  /**
+   * `manualRemediation` — STRICT, and dropped rather than repaired when it is not whole.
+   *
+   * The strictness is the same argument as for `action`: this reaches a human who acts on a live
+   * production by hand. A half-parsed remediation ("create the directory" with no path, or a step
+   * list the model returned as one string) is worse than none, because the operator follows it.
+   *
+   * `appliedBy` is not read from the reply at all — it is SET. The contract enumerates one member,
+   * and letting a model choose the value would let it assert `"system"`, which is the one thing
+   * root CLAUDE.md §2.1 forbids. A field whose only legal value is fixed should not be an input.
+   */
+  let manual: ManualRemediation | null = null;
+  const rawManual = obj['manualRemediation'];
+  if (typeof rawManual === 'object' && rawManual !== null) {
+    const m = rawManual as Record<string, unknown>;
+    const summary = typeof m['summary'] === 'string' ? m['summary'].trim() : '';
+    const rawSteps = m['steps'];
+    const steps = Array.isArray(rawSteps)
+      ? rawSteps.filter((step): step is string => typeof step === 'string' && step.trim() !== '')
+      : [];
+
+    // Both required. A summary with no steps is a restatement of the root cause; steps with no
+    // summary have no heading. Either alone is a partial parse, so neither is kept.
+    if (summary !== '' && steps.length > 0) {
+      let target: ManualRemediation['target'] = null;
+      const rawTarget = m['target'];
+      if (typeof rawTarget === 'object' && rawTarget !== null) {
+        const t = rawTarget as Record<string, unknown>;
+        const host = typeof t['host'] === 'string' ? t['host'] : '';
+        const setting = typeof t['setting'] === 'string' ? t['setting'] : '';
+        /* Built field by field from an ALLOWLIST of three keys -- never a spread. `target` describes
+           configuration and the schema refuses extra keys for exactly one reason: a model that
+           returned `messageBody` alongside `setting` would put payload content into a response that
+           leaves the instance. Naming the three keys makes that unrepresentable here too. */
+        if (host !== '' && setting !== '') {
+          target = {
+            host,
+            setting,
+            currentValue: typeof t['currentValue'] === 'string' ? t['currentValue'] : null,
+          };
+        }
+      }
+      manual = { summary, steps, target, appliedBy: 'operator' };
+    }
+  }
+
+  return { rootCause, evidence, confidence, action, manual };
 }
 
 /**
@@ -327,6 +408,7 @@ export async function investigate(
     evidence: parsed.evidence,
     confidence: parsed.confidence,
     recommendedAction: parsed.action,
+    manualRemediation: parsed.manual,
     diagnostics: {
       model: typeof (raw as Record<string, unknown>)['model'] === 'string'
         ? ((raw as Record<string, unknown>)['model'] as string)
