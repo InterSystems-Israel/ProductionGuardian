@@ -3,9 +3,18 @@
 **Owner:** Dev B (inherited `iris/**` from Dev A) · **Consumer:** Dev B (agent orchestration), Dev C
 (approval UI, indirectly) · **Runs in:** the `pg-iris` container · **Status:** published
 
-**Seven tools since MVP 3. Six read, one write.** They exist so the **AI Detective** agent can gather evidence about
-one condition on one host, and so **Smart Resolve** can apply one bounded action to it. Root
-`CLAUDE.md` §2.1 is the scope boundary; this file is the interface.
+**Ten tools since the activity chat assistant. Nine read, one write.** They exist so the
+**AI Detective** agent can gather evidence about one condition on one host, so **Smart Resolve** can
+apply one bounded action to it, and so the **activity chat assistant** can answer an operator's
+question about interoperability activity over time. Root `CLAUDE.md` §2.1 is the scope boundary; this
+file is the interface.
+
+**The nine reads are two families answering two different questions**, and the split matters because
+they sound alike. §3.1–§3.5 report **what is true now** — a status, a depth, a pool size, read from
+the live production. §3.7–§3.9 report **what happened over a period**, read from the persisted
+`Ens_Activity_Data` tables. Given both, a model asked "which host has the highest average queueing
+time" answered from the instantaneous reading and was wrong by three orders of magnitude, so
+`Tools.Governance.GovernAgent` can register one family without the other — see §3.9's closing note.
 
 The organising principle is **least privilege**: the read tools are granted broadly, the write tool
 is not, and the two are gated separately. The demo the spec asks for is a direct consequence —
@@ -41,16 +50,29 @@ silently disagrees with its neighbour is worse than one that is wrong out loud:
 | `get_queue_depth` | `PG.Tools.Read` | read | `PG_Read` | `PG_Read` | `EnumerateHostStatus`, `Queue` column |
 | `get_pool_size` | `PG.Tools.Read` | read | `PG_Read` | `PG_Read` | `Ens.Config.Production` → `Ens.Config.Item.PoolSize` |
 | `get_recent_errors` | `PG.Tools.Read` | read | `PG_Read` | `PG_Read` | `Ens.Util.Log`, **sanitised** — see §3.4 |
+| `get_host_settings` | `PG.Tools.Read` | read | `PG_Read` | `PG_Read` | `Ens.Config.Item.Settings`, **allowlisted** — see §3.4b |
 | `get_processing_time` | `PG.Tools.Read` | read | `PG_Read` | `PG_Read` | `iris_interop_avg_*`, aggregated as the proxy aggregates them |
+| `get_activity_coverage` | `PG.Tools.Activity` | read | `PG_Read` | `PG_Read` | `Ens_Activity_Data.Hours` + all three tables' extents — §3.7 |
+| `get_activity_trend` | `PG.Tools.Activity` | read | `PG_Read` | `PG_Read` | `Ens_Activity_Data.{Seconds,Hours,Days}`, one host — §3.8 |
+| `compare_host_activity` | `PG.Tools.Activity` | read | `PG_Read` | `PG_Read` | `Ens_Activity_Data.{Seconds,Hours,Days}`, all hosts — §3.9 |
 | `set_pool_size` | `PG.Tools.Resolve` | **write** | `PG_Read` | **`PG_Resolve`** | `Ens.Config.Production` + `Ens.Director.UpdateProduction()` |
 
 `PG_Read` and `PG_Resolve` are **IRIS resources**, held by roles `Guardian_Read` and
 `Guardian_Resolve`. §5 explains the resource-not-role choice and why the write tool is
 **listable to `PG_Read` but executable only by `PG_Resolve`**.
 
-Two classes, not six, because discovery is per class: `%AI.Tool` exposes every public method of a
-subclass as a tool (§7). Splitting read from write across two classes means the write tool can carry
+Three classes, not ten, because discovery is per class: `%AI.Tool` exposes every public method of a
+subclass as a tool (§7). Splitting read from write across classes means the write tool can carry
 class-level parameters — `REQUIRESAUTH`, its own `Policy` — that must not apply to the read tools.
+`PG.Tools.Activity` is a **third** class rather than five more methods on `PG.Tools.Read` for two
+reasons: its nullability story is different (an empty result means "no traffic in that window", not
+"unmeasurable"), and a new tool family in a new class moves `Setup.AIHub.ReportTools()`'s expected
+count by an amount attributable to one file.
+
+**`Setup.AIHub.ReportTools()` prints the discovered count on every boot and flags an unexpected one.**
+It expects **10**. That guard is the reason an accidentally-public helper is caught at boot rather
+than in review, so the number moves only with the tool list read back — the three `Activity` tools
+were confirmed by discovery before the expectation was raised.
 
 ---
 
@@ -844,6 +866,284 @@ audited (§5.5), and `resolve-api.md` maps them to `not_authorized` and `failure
 
 ---
 
+### 3.7 `get_activity_coverage` — read, added for the activity chat assistant
+
+Which hosts have recorded activity, over what period, and at which resolutions. **The orientation
+call**: it is what makes a valid `host` argument and an honest date range knowable without guessing.
+
+**Input** — none.
+
+**Output**
+
+| Field | Type | Notes |
+|---|---|---|
+| `namespace` | string | The namespace reported on. Pinned to the tool's own, not an argument. |
+| `readable` | boolean | `false` with an `error` when no activity table could be read. |
+| `resolutions` | array | One entry per resolution — see below. |
+| `hosts` | array | One entry per host with recorded activity, busiest first. |
+
+`resolutions[]`: `resolution` (`seconds` \| `hours` \| `days`), `buckets` (row count),
+`periodSeconds` (bucket width, **null when the table is empty** — an empty table has not said what
+its width is), `earliestUTC`, `latestUTC`. `periodVaries` and `periodSecondsMax` appear **only** if a
+table holds mixed widths, which would mean the table is not what the tool assumes.
+
+`hosts[]`: `host` (config item name, verbatim), `hostType`, `application`, `messages`,
+`firstActivityUTC`, `lastActivityUTC`.
+
+**`hostType` is `service` \| `process` \| `operation` \| `actor_pool` \| `unknown`.** Translated from
+the numeric `HostType` column, whose mapping is read from the column's own description in
+`%Dictionary.CompiledProperty` (`1=Service, 2=Process, 3=Operation, 4 = Production Actor Pool`) —
+there is no `VALUELIST` to read. **It can disagree with `Ens.Config.Item.BusinessType()` and that is
+not a bug:** measured, `Lab Router` is `businessType=2` on the config item and `HostType=4` in the
+activity tables, because a routing engine is *configured* as a process and its activity is *recorded*
+against the actor pool that runs it. This tool reports what was recorded. Note this is also **not**
+normalised the way `healthscan-api.md` Q10 normalises `actor` to `process`.
+
+**`application` distinguishes the production's own hosts from framework plumbing**, computed from
+`Production.cls`'s `<Item>` set minus `Ens.*`-prefixed names rather than from a list in the tool. The
+activity tables record hosts that are not config items at all — `Ens.MonitorService`,
+`Ens.Alerting.AlertMonitor`, `Ens.ScheduleService`, `Ens.ScheduleHandler` — and
+`Ens.Activity.Operation.Local` **is** a config item that `iris/CLAUDE.md` §3 states is not an
+application host. Both resolve to `false`. Without this an agent asked "which host is slowest"
+can report the framework's own bookkeeping as a finding.
+
+```jsonc
+// <- measured on the live instance, abridged to three hosts
+{
+  "namespace": "LABDEMO",
+  "readable": true,
+  "resolutions": [
+    { "resolution": "seconds", "buckets": 22220, "periodSeconds": 10,
+      "earliestUTC": "2026-08-20T09:07:30Z", "latestUTC": "2026-08-23T11:26:00Z" },
+    { "resolution": "hours", "buckets": 112, "periodSeconds": 3600, "earliestUTC": "2026-08-20T09:00:00Z", "latestUTC": "2026-08-23T11:00:00Z" },
+    { "resolution": "days", "buckets": 29, "periodSeconds": 86400, "earliestUTC": "2026-08-20T00:00:00Z", "latestUTC": "2026-08-23T00:00:00Z" }
+  ],
+  "hosts": [
+    { "host": "EMR Source", "hostType": "service", "application": true, "messages": 32501,
+      "firstActivityUTC": "2026-08-20T09:00:00Z", "lastActivityUTC": "2026-08-23T11:00:00Z" },
+    { "host": "Lab Router", "hostType": "actor_pool", "application": true, "messages": 32501, "firstActivityUTC": "2026-08-20T09:00:00Z", "lastActivityUTC": "2026-08-23T11:00:00Z" },
+    { "host": "Ens.MonitorService", "hostType": "service", "application": false, "messages": 11598, "firstActivityUTC": "2026-08-20T09:00:00Z", "lastActivityUTC": "2026-08-23T11:00:00Z" }
+  ]
+}
+```
+
+### 3.8 `get_activity_trend` — read
+
+One host's throughput and latency, bucket by bucket, so a rise or fall is visible rather than
+averaged away.
+
+**Input**
+
+| Field | Type | Req | Notes |
+|---|---|---|---|
+| `host` | string | **required** | Config item name. |
+| `resolution` | string | optional, default `hours` | `seconds` \| `hours` \| `days`. |
+| `buckets` | integer | optional, default `24` | `1..720`. |
+
+**Both optional parameters restate their default in the body**, per §2 — an omitted key arrives as
+`""` and the ObjectScript default never fires. Verified for this tool specifically, because that bug
+was live for four days in `get_recent_errors`:
+
+```
+Invoke("GetActivityTrend", {"host":"Cloud API"})  ->  resolution "hours", 22 buckets   (NOT a refusal)
+Invoke("GetActivityTrend", {"host":"Cloud API","buckets":9999})  ->  {"error":"buckets must be an integer between 1 and 720"}
+Invoke("GetActivityTrend", {"host":"Cloud API","buckets":0})     ->  {"error":"buckets must be an integer between 1 and 720"}
+```
+
+Absence uses the default; a value the model **sent** and got wrong is still refused with its range
+named.
+
+**Output**: `host`, `resolution`, `measured`, `buckets[]`, `from`, `to`, `totals`,
+`aggregatedAcross`. `reason` instead of buckets when there is no data; `error` when unreadable.
+
+`buckets[]`: `startUTC`, `periodSeconds`, `messages`, `avgProcessingTime`, `avgQueueingTime`,
+`messagesPerSecond`. Oldest first.
+
+`totals`: `messages`, `avgProcessingTime`, `avgQueueingTime` over exactly the buckets returned.
+**Weighted by message count by construction** — the sums are summed and divided once, where averaging
+the per-bucket averages would weight a one-message bucket like a thousand-message one.
+
+**`buckets` is a count of ROWS, not a wall-clock window.** The newest N buckets that exist are
+returned, with no time cutoff, so "the last 24 hours" and "the last 24 hours that had traffic" are
+distinguishable: every returned bucket is one that exists, and `from`/`to` state the span actually
+covered. A cutoff would silently return fewer buckets for an idle host and read as missing data.
+
+**An empty result distinguishes an unknown host from a silent one**, checked against the production's
+config item set rather than inferred from the absence of rows:
+
+```jsonc
+{ "host": "No Such Host", "resolution": "hours", "buckets": [], "measured": false,
+  "reason": "no activity recorded, and 'No Such Host' is not a config item in ProductionGuardian.LabDemo.Production" }
+```
+
+**`aggregatedAcross` states what was collapsed** rather than leaving it implicit: `instances` is
+always `true`, and `messageKinds` is `true` when the host wrote more than one `SiteDimension` series.
+`Instance` is part of the table's grain and a long-lived volume holds several — this one has rows
+under three container lifetimes — so a reply that summed across them silently would be a number
+nobody could reproduce.
+
+```jsonc
+// <- Cloud API, hours, 6 buckets. Real values: the pool bottleneck is visible in the queueing time.
+{
+  "host": "Cloud API", "resolution": "hours", "measured": true,
+  "buckets": [
+    { "startUTC": "2026-08-23T06:00:00Z", "periodSeconds": 3600, "messages": 1800, "avgProcessingTime": 0.006011, "avgQueueingTime": 0.002471, "messagesPerSecond": 0.5 },
+    { "startUTC": "2026-08-23T09:00:00Z", "periodSeconds": 3600, "messages": 881, "avgProcessingTime": 2.685064, "avgQueueingTime": 387.968395, "messagesPerSecond": 0.2447 }
+  ],
+  "from": "2026-08-23T06:00:00Z", "to": "2026-08-23T11:00:00Z",
+  "totals": { "messages": 9681, "avgProcessingTime": 1.005398, "avgQueueingTime": 81.249508 },
+  "aggregatedAcross": { "instances": true, "messageKinds": true }
+}
+```
+
+### 3.9 `compare_host_activity` — read
+
+Every host ranked over **one** window, so "which host is busiest" is a single call rather than one
+trend call per host.
+
+**Input**: `resolution` (optional, default `hours`), `buckets` (optional, default `24`, `1..720`).
+Same restated-default and refusal behaviour as §3.8.
+
+**Output**: `resolution`, `measured`, `from`, `to`, `bucketsRequested`, `hosts[]`.
+
+`hosts[]`: `host`, `hostType`, `application`, `messages`, `avgProcessingTime`, `avgQueueingTime`,
+`totalProcessingTime`, `bucketsWithActivity`, `messageKinds[]`. Ordered by message count descending.
+
+**`totalProcessingTime` is kept alongside the average because they answer different questions**: the
+average says how slow each message was, the total says where the instance's time actually went. A
+host at 0.001s × 12,000 messages and one at 1.0s × 12 have the same story in only one of the two.
+
+**The window is derived from the data, not the clock.** The newest `buckets` distinct time slots
+present are found first and every host is compared over exactly those, so the comparison is never
+between different periods for different hosts — which is the defect a "compare" tool exists to avoid.
+
+#### `messageKinds` — a CLASSIFICATION of `SiteDimension`, never the value
+
+**This is the data-boundary decision in this tool family and it is not visible from the column name.**
+`Ens_Activity_Data.*.SiteDimension` is **derived from message body content**. Traced through the
+platform: `Ens.Util.Statistics.GetStatsUserDimension` opens the in-flight `Ens.MessageHeader`, opens
+its body, and calls **`GetStatsDimension()` on the message body object**.
+`EnsLib.HL7.Message.GetStatsDimension` returns `..Name`; `Ens.MessageBody` returns the default `-`;
+where the body declines the fallback is the body **class name**.
+
+So the value is chosen *by the message*, `GetStatsDimension` is an **overridable hook**, and a
+per-host override exists as well (`SetStatsUserDimension`, stored under
+`^Ens.Config("stats","userdim")`) — an operator can put free text there without touching a class.
+That makes the column structurally identical to `Ens_Util.Log.Text` (§3.4): safe on today's instance
+because of how the writing code happens to be used, unsafe the moment a hook is overridden. **Same
+answer as §3.4a: classify against an allowlist, never pass the value through.**
+
+A value is published **only when this instance can independently verify it names configuration**:
+
+| `kind` | `verifiedAs` | Verified against |
+|---|---|---|
+| `none` | `platform_default` | The literal `-` / empty — no message contributed it |
+| the value | `hl7_message_structure` | `EnsLib.HL7.Schema:MessageStructures` |
+| the value | `compiled_class` | `%Dictionary.CompiledClass` |
+| `other` | `unverified` | Nothing. **No text is returned.** |
+
+Not a regex, deliberately: "looks like a class name" passes `Patient.Smith.John`, and "looks like an
+HL7 structure" passes `MRN_00998877`. Checking against what the instance actually holds is the
+strongest available test and it **fails closed** — an unreadable schema table yields `false`, so a
+read failure cannot become a disclosure.
+
+**Demonstrated, by writing a PHI-shaped dimension into the table for a real host** and asking the
+tool. The row genuinely contained `SMITH^JOHN^A^MRN12345678`:
+
+```jsonc
+// Cloud API's messageKinds, with that row present
+[ { "kind": "ProductionGuardian.LabDemo.Message.PatientDemographics", "verifiedAs": "compiled_class" },
+  { "kind": "other", "verifiedAs": "unverified" } ]
+// and the full reply contains neither "SMITH" nor "MRN12345678"
+```
+
+Entries are **deduplicated on the classification, not on the raw value**, so several unverifiable
+dimensions collapse to one `other` rather than revealing how many distinct values existed — which
+would itself be a small disclosure about the traffic.
+
+```jsonc
+// <- hours, 6 buckets, abridged. Cloud API's total processing time is where the time went.
+{
+  "resolution": "hours", "measured": true,
+  "from": "2026-08-23T06:00:00Z", "to": "2026-08-23T11:00:00Z", "bucketsRequested": 6,
+  "hosts": [
+    { "host": "EMR Source", "hostType": "service", "application": true, "messages": 12318,
+      "avgProcessingTime": 0.003073, "avgQueueingTime": 0, "totalProcessingTime": 37.858,
+      "bucketsWithActivity": 6,
+      "messageKinds": [ { "kind": "ADT_A01", "verifiedAs": "hl7_message_structure" } ] },
+    { "host": "Cloud API", "hostType": "operation", "application": true, "messages": 9681,
+      "avgProcessingTime": 1.005398, "avgQueueingTime": 81.249508, "totalProcessingTime": 9733.256,
+      "bucketsWithActivity": 6,
+      "messageKinds": [ { "kind": "ProductionGuardian.LabDemo.Message.PatientDemographics", "verifiedAs": "compiled_class" } ] },
+    { "host": "Ens.MonitorService", "hostType": "service", "application": false, "messages": 3851,
+      "avgProcessingTime": 0.001277, "avgQueueingTime": 0, "totalProcessingTime": 4.918,
+      "bucketsWithActivity": 6,
+      "messageKinds": [ { "kind": "none", "verifiedAs": "platform_default" } ] }
+  ]
+}
+```
+
+#### What the three tools assume about the tables, measured rather than documented
+
+**They are not a pipeline.** `Ens.Activity.Utils.AddActivity` writes **all three rows in one
+transaction**, each into its own bucket via `RoundTimeBack("hh"/"d", ...)`. There is no rollup job and
+no ordering between them, so `Days` is not derived from `Hours` and the three cannot disagree except
+by a purge. Verified: `SUM(TotalCount)` is 102,842 in all three.
+
+**So choosing a table is choosing a RESOLUTION, never a freshness.** `Period` is the bucket width in
+seconds and is constant per table — 10 / 3600 / 86400, confirmed by MIN/MAX over every row. Note
+`Seconds` buckets at **ten** seconds, so its name is its unit and not its grain.
+
+**Retention is purge-driven and nothing schedules it here.** `Ens.Activity.Data.<T>.Purge(period)`
+deletes `TimeSlotUTC <= cutoff`; absent a caller, every table holds history back to its first message
+and `Seconds` is simply the largest (22,220 rows against 112 and 29). A tool must never imply that a
+short window is all the data there is — which is why §3.7 exists.
+
+**`%EXACT(HostName)` in every query, and it is not cosmetic.** The column collates `SQLUPPER`, so a
+bare `SELECT HostName ... GROUP BY HostName` returns `CLOUD API` — measured. §2 makes the config item
+name the join key across four contracts and requires it verbatim, so an uppercased name would be one
+that matches nothing the agent can pass back and nothing the engine can join on.
+
+**`resolution` is looked up in a fixed `$case`, never concatenated into the query.** It arrives from a
+model, and `"Ens_Activity_Data." _ resolution` would let one JSON field name any table in the
+namespace. Verified: `{"resolution":"Ens_Util.Log"}` returns
+`{"error":"resolution must be one of seconds, hours, days"}`.
+
+#### A CALLER MAY BE GIVEN ONE READ FAMILY WITHOUT THE OTHER
+
+`Tools.Governance.GovernAgent(agent, includeWrite, toolSets)` takes `"all"` (default),
+`"activity"` or `"current"`. **This is a correctness guard, not an additional safety one** — both
+families are `PG_Read` and neither mutates anything.
+
+The reason is that §3.5 and §3.9 answer questions that *sound* identical. Measured through the
+dashboard's own path, on the question "which host has the highest average queueing time":
+
+```
+get_processing_time("Cloud API")   ->  avgQueueingTime  0.12   <- true, and instantaneous
+compare_host_activity("hours", 6)  ->  avgQueueingTime 77.66   <- true, and the answer
+```
+
+Both readings are correct. The answer built on the first was wrong by three orders of magnitude, and
+it arrived with `confidence: 1` alongside two evidence bullets reading `NOT MEASURED` — confidently
+wrong *and* self-contradicting. A second run on the same question produced "all hosts have reported an
+average queueing time of null". **Prompt wording was tried first and did not fix it**: the chat
+prompt already named each tool and what it was for.
+
+So the chat assistant is registered with `"activity"` and cannot reach the current-state tools at all.
+Verified by execution rather than by reading the registration, because
+`ToolManager.FindTools()` is namespace-wide discovery and lists tools that are not registered:
+
+```
+ExecuteTool("CompareHostActivity", …)  ->  REACHABLE
+ExecuteTool("GetProcessingTime", …)    ->  ERROR <%AICore>ToolNotFound
+ExecuteTool("SetPoolSize", …)          ->  ERROR <%AICore>ToolNotFound
+```
+
+**AI Detective keeps `"all"`**, because it explains *one finding* rather than answering an open
+question about a time range, and a root-cause diagnosis genuinely needs the live status, queue depth
+and pool size beside the history. An unrecognised `toolSets` value is an **error**, not a default:
+falling back to `"all"` on a typo would silently widen what an agent can reach.
+
 ## 4. Errors, and the three things that are not the same
 
 A caller must be able to tell these apart, and only one of them is an error.
@@ -1139,9 +1439,23 @@ Forbidden, for every tool: message bodies or any part of one, HL7 segments or fi
 identifiers of any kind, `Ens.MessageBody` contents, `Ens.MessageHeader` field values other than
 counts, `Ens.Util.Log` text, credentials, and stack traces.
 
-**`get_recent_errors` is the tool where this is a live risk** rather than a formality, and §3.4
-specifies its handling in full: an allowlist that extracts only the IRIS error code and maps it to a
-catalogue string, with `unclassified` and no text for anything unrecognised.
+**Two tools are where this is a live risk** rather than a formality, and both handle it the same way —
+classify against an allowlist, never pass the value through:
+
+- **`get_recent_errors`** (§3.4, §3.4a): extracts only the IRIS error code and maps it to a catalogue
+  string, with `unclassified` and no text for anything unrecognised. `Ens_Util.Log` on this instance
+  holds 61,772 rows carrying a `PatientID` in plain text.
+- **`compare_host_activity`** (§3.9): `Ens_Activity_Data.*.SiteDimension` is **derived from message
+  body content** via `GetStatsDimension()` on the message body — an overridable hook, with a
+  free-text per-host override available as well. So it is never returned raw; only a value this
+  instance can independently verify as a loaded HL7 structure or a compiled class name survives, and
+  everything else becomes `other` with no text.
+
+**The second one is the more instructive**, because nothing about the column name says it carries
+message-derived data. It was found by tracing `GetStatsUserDimension` through the platform rather
+than by reading the schema, and the lesson generalises: **a column is safe because of what writes it,
+not because of what it is called.** Any new tool over a table nobody has traced should be assumed to
+have one of these until it is checked.
 
 Two smaller edges, both worth naming because they are the ones that get missed:
 
@@ -1222,9 +1536,14 @@ configuration that answers `200` with plausible-looking emptiness.
 
 ## 8. What this is not
 
-- **Not a general tool catalogue.** Six tools for one scenario: `queue_buildup` on `Cloud API`,
-  caused by `PoolSize 1`, fixed by raising it. A generalised action catalogue is later work
-  (root `CLAUDE.md` §2.2).
+- **Not a general tool catalogue.** The write side is still one action on one host: `queue_buildup` on
+  `Cloud API`, caused by `PoolSize 1`, fixed by raising it. A generalised action catalogue is later
+  work (root `CLAUDE.md` §2.2). The three activity tools widen what can be **read**, not what can be
+  **done**.
+- **§3.7–§3.9 are not a message search interface.** They report counts and durations per time bucket,
+  and the one column that could identify a message is classified rather than returned (§3.9, §6).
+  There is no tool here that takes a message id, a session id or a patient identifier, and a tool
+  needing message content to do its job does not belong in this catalogue.
 - **Not a remote-execution surface.** There is one mutating operation, on one host, over one
   setting, within a four-value range. It is not a settings API, not a production editor, and not a
   path to `Ens.Director.StartProduction` / `StopProduction`.

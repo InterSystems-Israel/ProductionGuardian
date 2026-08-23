@@ -13,6 +13,8 @@
 
 import type { FindingView, HostView } from '../types/healthscan';
 import type {
+  ChatAnswerView,
+  ChatTurnView,
   HostProjectionView,
   InvestigationView,
   ResolveActionView,
@@ -56,6 +58,25 @@ export interface HealthScanApi {
     origin: { findingId: string },
     signal?: AbortSignal,
   ): Promise<ResolveView>;
+
+  /**
+   * Activity insights chat — POST /api/chat.
+   *
+   * Resolves for every outcome including failure, like `investigate`: the endpoint serves 200 with a
+   * labelled state, so a rejected promise here means the TRANSPORT failed and not that the question
+   * went unanswered.
+   *
+   * `history` IS PASSED IN BY THE CALLER, not held by the client. The transcript cannot live in IRIS
+   * — `%AI.Agent.Session`'s agent handle is transient and a CSP dispatcher runs in a pooled process,
+   * so a held session throws when the next request lands elsewhere. So the component owns the
+   * conversation and this method is stateless, which is also what makes a reload honestly start a new
+   * one rather than appear to continue an old one. `types/mvp2.ts` `ChatTurnView` carries the note.
+   */
+  ask(
+    question: string,
+    history: ChatTurnView[],
+    signal?: AbortSignal,
+  ): Promise<ChatAnswerView>;
 }
 
 export type Mode = 'demo' | 'live';

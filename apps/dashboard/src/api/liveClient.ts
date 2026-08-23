@@ -9,13 +9,15 @@
 
 import type { HealthScanApi } from './HealthScanApi';
 import type {
+  ChatAnswerView,
+  ChatTurnView,
   HostProjectionView,
   InvestigationView,
   ResolveActionView,
   ResolveMode,
   ResolveView,
 } from '../types/mvp2';
-import { parseInvestigation, parseProjections, parseResolve } from './mvp2Guards';
+import { parseChatAnswer, parseInvestigation, parseProjections, parseResolve } from './mvp2Guards';
 import { parseFindings, parseHosts } from './guards';
 import type { FindingView, HostView } from '../types/healthscan';
 
@@ -211,6 +213,23 @@ export function createLiveClient(): HealthScanApi {
       );
       if (parsed === null) {
         throw new HealthScanRequestError('The resolve response could not be read', null);
+      }
+      return parsed;
+    },
+
+    async ask(
+      question: string,
+      history: ChatTurnView[],
+      signal?: AbortSignal,
+    ): Promise<ChatAnswerView> {
+      /* Sibling of /api/healthscan, like the other two POSTs -- `postJson` strips the one level. It
+         also does NOT map 404 to an empty result, which matters here for the same reason it does for
+         `/resolve`: a 404 means the route or the IRIS dispatcher is missing, which is exactly the
+         failure that took the MVP 2 write path down until `/labdemo/agent` was registered at boot,
+         and swallowing it would hide it again. */
+      const parsed = parseChatAnswer(await postJson('/chat', { question, history }, signal));
+      if (parsed === null) {
+        throw new HealthScanRequestError('The chat response could not be read', null);
       }
       return parsed;
     },

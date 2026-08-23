@@ -98,6 +98,71 @@ export interface InvestigationView {
   };
 }
 
+/**
+ * Activity insights chat — the ask-a-question panel.
+ *
+ * NO CONTRACT FILE AND NO SCHEMA, like the two above, so every field here was read off a live
+ * response and the parser in `api/mvp2Guards.ts` reads field by field rather than casting.
+ *
+ * TWO STATES, NOT THREE. There is no `degraded` and no `canned` source: the answer either came from
+ * the live agent in IRIS or it could not be produced. `detect/chat.ts` argues why a canned chat
+ * agent is not buildable honestly — a mock that has to guess the question would have to invent
+ * either the numbers or the question — so the offline state is `unavailable` and the panel says so
+ * rather than showing a plausible answer with a badge on it.
+ */
+export type ChatState = 'complete' | 'unavailable';
+
+export type ChatSource = 'agent' | 'none';
+
+/**
+ * One value the agent read, and the tool it used.
+ *
+ * `tool: null` MEANS THE MODEL DID NOT CITE ONE, and the panel labels it differently for that
+ * reason. It is the same distinction `EvidenceSource` draws for an investigation: a value a governed
+ * tool read from the live production and a value the model asserted must not appear with equal
+ * standing. Here the tool NAME is the citation, so its absence is the `llm` case.
+ */
+export interface ChatEvidenceItemView {
+  label: string;
+  detail: string;
+  tool: string | null;
+}
+
+export interface ChatAnswerView {
+  requestId: string;
+  state: ChatState;
+  source: ChatSource;
+  answeredAt: string;
+  /** Echoed by IRIS from what it received, so the panel never pairs an answer with a question the
+      agent was not asked. */
+  question: string;
+  /** Null when no answer could be produced. Never a placeholder sentence. */
+  answer: string | null;
+  evidence: ChatEvidenceItemView[];
+  confidence: number | null;
+  diagnostics: {
+    model: string | null;
+    /** Zero means the model answered from its priors rather than from the production. */
+    toolCalls: number | null;
+    durationMs: number | null;
+    note: string | null;
+  };
+}
+
+/**
+ * One turn as the CLIENT holds it, for replay on the next question.
+ *
+ * THE TRANSCRIPT LIVES HERE BECAUSE IT CANNOT LIVE IN IRIS. `%AI.Agent.Session` persists as a row but
+ * its agent handle is `transient`, so a session reopened in another process throws — and a CSP
+ * dispatcher runs in a pooled process, so consecutive requests are usually not the same one.
+ * `iris/labdemo/REST/ChatDispatcher.cls` carries the measurement. The consequence for the UI is that
+ * it owns the conversation and sends it, which also means a reload legitimately starts a new one.
+ */
+export interface ChatTurnView {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
 /** `resolve-api.md` §1.4. Closed set. */
 export type ResolveOutcome = 'previewed' | 'applied' | 'no_change' | 'refused' | 'failed';
 

@@ -10,10 +10,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Mode } from './api/HealthScanApi';
 import { createLiveClient } from './api/liveClient';
 import { createMockClient, type MockClient } from './api/mockClient';
+import { useChat } from './hooks/useChat';
 import { useHealthScan } from './hooks/useHealthScan';
 import { useInvestigation } from './hooks/useInvestigation';
 import { useProjections } from './hooks/useProjections';
 import { pollIntervalMs, usePolling } from './hooks/usePolling';
+import { ActivityChat } from './components/ActivityChat';
 import { AppShell, type View } from './components/AppShell';
 import { ArchitectureView } from './components/ArchitectureView';
 import { BrochureView } from './components/BrochureView';
@@ -80,6 +82,17 @@ export function App(): JSX.Element {
      the hook -- a missing forecast must never blank a host card that has real metrics on it. */
   const projections = useProjections(api, failureCount);
 
+  /* The activity conversation, NOT keyed to a finding -- unlike `useInvestigation` below, which
+     clears itself when the selection changes because an investigation explains one finding. A chat
+     is about the production as a whole, so it survives opening and closing the drawer and is cleared
+     only when the operator asks or the mode changes.
+
+     Declared HERE, above `switchMode`, because that callback clears it. Below it, `chat` would be
+     used before its `const` initialiser runs -- a TDZ error at runtime rather than a compile
+     failure, since the reference sits inside a callback body. */
+  const chat = useChat(api);
+  const chatClear = chat.clear;
+
   // One shared clock for every relative timestamp on the page.
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
@@ -94,8 +107,12 @@ export function App(): JSX.Element {
       // would make the new mode's findings all look pre-existing.
       resetSeen();
       setSelectedId(null);
+      /* The transcript goes too. Demo mode declines to answer at all, so a live conversation left on
+         screen after switching would sit above a composer that now refuses -- and answers about the
+         real production must not stay visible while the pill reads Demo. */
+      chatClear();
     },
-    [resetSeen],
+    [chatClear, resetSeen],
   );
 
   /* Looked up from the live array rather than held in state, so the open drawer
@@ -280,6 +297,17 @@ export function App(): JSX.Element {
           />
         </section>
       </div>
+
+      {/* OUTSIDE the dimming wrapper, like the drawer. Staleness dims readings that may have moved;
+          a conversation is a record of what was asked and answered at the time and does not become
+          less true because the metrics poll is behind. Placed last so an operator reads the current
+          state of the production before asking about its history. */}
+      <ActivityChat
+        exchanges={chat.exchanges}
+        asking={chat.asking}
+        onAsk={chat.ask}
+        onClear={chat.clear}
+      />
 
       {/* Outside the dimming wrapper: stale data dims the grid, but the drawer the
           operator deliberately opened should stay fully legible. Its numbers carry

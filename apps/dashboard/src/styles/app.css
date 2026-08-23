@@ -1607,3 +1607,230 @@ button {
 .pg-triggers__note {
   color: rgb(255 255 255 / 55%);
 }
+
+/* ── Activity insights chat ────────────────────────────────────────────────────
+
+   Reuses `.pg-tag` and `.pg-evidence` from the investigation panel rather than
+   defining parallel versions. That is deliberate and not just economy: a bullet
+   read by a governed tool must look the same wherever it appears, or an operator
+   learns the provenance colours twice and trusts them less. Only the conversation
+   shell — the log, the two bubbles, the composer — is new here.                  */
+
+.pg-chat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pg-space-3);
+  margin-top: var(--pg-space-6);
+  padding: var(--pg-space-5);
+  background: var(--pg-surface);
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-radius-lg);
+  box-shadow: var(--pg-shadow-card);
+}
+
+.pg-chat__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--pg-space-3);
+}
+
+/* Lower-emphasis action. "New conversation" discards state, so it must not compete
+   with Ask for attention -- borderless until hovered. */
+.pg-button--subtle {
+  background: transparent;
+  border-color: transparent;
+  color: var(--pg-text-muted);
+}
+
+.pg-button--subtle:hover {
+  background: var(--pg-surface-sunk);
+  color: var(--pg-navy-800);
+}
+
+.pg-chat__intro {
+  margin: 0;
+  max-width: 76ch;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--pg-text-muted);
+}
+
+/* Starter questions. Shown only on an empty conversation -- once there is a
+   transcript they would compete with the composer for the same action. */
+.pg-chat__suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pg-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pg-chat__suggestion {
+  padding: var(--pg-space-2) var(--pg-space-3);
+  background: var(--pg-surface-alt);
+  border: 1px solid var(--pg-border-soft);
+  border-radius: var(--pg-radius-pill);
+  font-family: inherit;
+  font-size: 0.75rem;
+  color: var(--pg-navy-800);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pg-chat__suggestion:hover:not(:disabled) {
+  background: var(--pg-surface-sunk);
+  border-color: var(--pg-border);
+}
+
+.pg-chat__suggestion:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.pg-chat__log {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pg-space-5);
+  /* Capped so a long conversation does not push the composer off screen -- the input
+     is the control the operator needs reachable at all times. */
+  max-height: 60vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.pg-chat__exchange {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pg-space-2);
+}
+
+/* The question, right-aligned and tinted so the two sides of the conversation are
+   distinguishable by POSITION as well as colour -- the same never-colour-alone rule
+   the severity badges follow. */
+.pg-chat__question {
+  align-self: flex-end;
+  max-width: 80%;
+  margin: 0;
+  padding: var(--pg-space-2) var(--pg-space-3);
+  background: var(--pg-info-bg);
+  border-radius: var(--pg-radius) var(--pg-radius) 2px var(--pg-radius);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--pg-text);
+}
+
+.pg-chat__answer {
+  align-self: stretch;
+  padding: var(--pg-space-3);
+  background: var(--pg-surface-alt);
+  border-radius: 2px var(--pg-radius) var(--pg-radius) var(--pg-radius);
+}
+
+.pg-chat__provenance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pg-space-2);
+  margin-bottom: var(--pg-space-2);
+}
+
+.pg-chat__text {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--pg-text);
+}
+
+.pg-chat__pending {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-style: italic;
+  color: var(--pg-text-muted);
+}
+
+/* A declined answer is neutral, not an error: nothing failed, the system declined to
+   invent. `--error` below is the transport failure and IS tinted as a problem. */
+.pg-chat__declined {
+  padding: var(--pg-space-3);
+  background: var(--pg-neutral-bg);
+  border-left: 3px solid var(--pg-neutral);
+  border-radius: var(--pg-radius);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--pg-text);
+}
+
+.pg-chat__error {
+  padding: var(--pg-space-3);
+  background: var(--pg-critical-bg);
+  border-left: 3px solid var(--pg-critical);
+  border-radius: var(--pg-radius);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.pg-chat__declined p,
+.pg-chat__error p {
+  margin: 0 0 var(--pg-space-2);
+}
+
+.pg-chat__note {
+  margin: var(--pg-space-2) 0 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--pg-text-muted);
+}
+
+.pg-chat__composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pg-space-2);
+  padding-top: var(--pg-space-3);
+  border-top: 1px solid var(--pg-border-soft);
+}
+
+.pg-chat__input {
+  width: 100%;
+  padding: var(--pg-space-3);
+  background: var(--pg-surface);
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-radius);
+  /* `inherit`, not the mono face: this is prose the operator writes. */
+  font-family: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--pg-text);
+  resize: vertical;
+}
+
+.pg-chat__input:focus {
+  outline: 2px solid var(--pg-teal-500);
+  outline-offset: -1px;
+}
+
+.pg-chat__input:disabled {
+  background: var(--pg-surface-sunk);
+  color: var(--pg-text-muted);
+}
+
+.pg-chat__composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--pg-space-3);
+}
+
+.pg-chat__count {
+  font-family: var(--pg-font-mono);
+  font-size: 0.6875rem;
+  color: var(--pg-text-muted);
+}
+
+.pg-button:disabled,
+.pg-button--primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

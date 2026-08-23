@@ -18,6 +18,10 @@
  */
 
 import type {
+  ChatAnswerView,
+  ChatEvidenceItemView,
+  ChatSource,
+  ChatState,
   EvidenceItemView,
   ManualRemediationView,
   HostProjectionView,
@@ -172,6 +176,67 @@ export function parseInvestigation(payload: unknown): InvestigationView | null {
     confidence: nullableNum(payload['confidence']),
     recommendedAction: parseRecommendedAction(payload['recommendedAction']),
     manualRemediation: parseManualRemediation(payload['manualRemediation']),
+    diagnostics: {
+      model: nullableStr(diagnostics['model']),
+      toolCalls: nullableNum(diagnostics['toolCalls']),
+      durationMs: nullableNum(diagnostics['durationMs']),
+      note: nullableStr(diagnostics['note']),
+    },
+  };
+}
+
+/**
+ * Chat evidence, dropping any bullet that is not whole.
+ *
+ * A bullet with no label has no heading and one with no detail has no content, so neither half alone
+ * is kept. Same rule as `parseEvidence` above, minus the `source` field: for a chat answer the tool
+ * NAME is the citation, and its absence is what marks a value the model asserted.
+ */
+function parseChatEvidence(value: unknown): ChatEvidenceItemView[] {
+  if (!Array.isArray(value)) return [];
+  const out: ChatEvidenceItemView[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const label = nullableStr(entry['label']);
+    const detail = nullableStr(entry['detail']);
+    if (label === null || detail === null) continue;
+    out.push({ label, detail, tool: nullableStr(entry['tool']) });
+  }
+  return out;
+}
+
+/**
+ * Parse one chat answer.
+ *
+ * `answer: null` IS NOT A PARSE FAILURE, by the same rule as `rootCause: null` above: it is the
+ * engine declining to invent an answer, and the panel renders it as an explicit statement rather than
+ * as an empty bubble that reads as still-loading.
+ *
+ * `state` and `source` both DEFAULT TO THE PESSIMISTIC VALUE. An unrecognised state reads as
+ * `unavailable` and an unrecognised source as `none`, so a garbled payload cannot present itself as a
+ * complete answer from a live agent — which is the one direction of error that matters, since
+ * `source` is the field `iris/CLAUDE.md`'s pre-demo check relies on.
+ */
+export function parseChatAnswer(payload: unknown): ChatAnswerView | null {
+  if (!isRecord(payload)) return null;
+
+  const rawState = payload['state'];
+  const state: ChatState = rawState === 'complete' ? 'complete' : 'unavailable';
+
+  const rawSource = payload['source'];
+  const source: ChatSource = rawSource === 'agent' ? 'agent' : 'none';
+
+  const diagnostics = isRecord(payload['diagnostics']) ? payload['diagnostics'] : {};
+
+  return {
+    requestId: str(payload['requestId']),
+    state,
+    source,
+    answeredAt: str(payload['answeredAt']),
+    question: str(payload['question']),
+    answer: nullableStr(payload['answer']),
+    evidence: parseChatEvidence(payload['evidence']),
+    confidence: nullableNum(payload['confidence']),
     diagnostics: {
       model: nullableStr(diagnostics['model']),
       toolCalls: nullableNum(diagnostics['toolCalls']),
