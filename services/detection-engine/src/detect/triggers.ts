@@ -33,14 +33,48 @@ export interface TriggerScenario {
 export interface TriggerStatus {
   enabled: boolean;
   scenarios: TriggerScenario[];
-  /** Per-scenario armed state, read from the trigger globals in IRIS. */
+  /**
+   * Per-scenario **in effect** state, read from the trigger globals in IRIS.
+   *
+   * Means "the scenario is live", not "a request was accepted" — the dispatcher keys it on a global
+   * the scenario sets when it actually takes effect. For `pool_bottleneck` those are ~75s apart.
+   */
   armed: Record<string, boolean>;
+  /**
+   * Per-scenario **accepted but not yet in effect** state.
+   *
+   * A THIRD STATE, not a flag on the second. `pool_bottleneck` warms a baseline at zero for 75s
+   * before it arms anything and runs as a background job, so the arm POST returns in ~0.26s and the
+   * scenario is in neither of the other two states for over a minute. Carried through this service
+   * rather than re-derived in the dashboard: IRIS owns the witnesses, and a browser inferring
+   * "probably still arming" from a timer it started would be wrong the moment someone drives the
+   * terminal — the same reason `armed` is not tracked from button presses.
+   *
+   * Absent for a scenario that arms atomically. An older dispatcher omits the map entirely, which
+   * parses to `{}` — every scenario then reads not-activating, i.e. the previous two-state
+   * behaviour, rather than an empty rail.
+   */
+  activating: Record<string, boolean>;
 }
 
 export interface TriggerResult {
   ok: boolean;
   /** The scenario armed, or null for a reset. */
   armed: string | null;
+  /**
+   * The trigger's own captured narration — what it armed, which findings to expect, and which
+   * deliberately will NOT fire. Empty for a jobbed arm, which has produced no output yet.
+   *
+   * FORWARDED RATHER THAN DROPPED, which it was until #133. The dispatcher goes to real trouble to
+   * capture this — a temp file becomes the current device for the call, because the trigger methods
+   * write to `$io` and would otherwise corrupt the JSON body (see `TriggerDispatcher.Arm`) — and
+   * this service then parsed the reply field-by-field and left `log` out, so the text crossed one
+   * process boundary and died at the next. It is the clearest explanation of each scenario anyone
+   * has written, and the UI now renders it under the button that produced it.
+   *
+   * Multi-line plain text, never markup. The dashboard renders it as text.
+   */
+  log: string;
   /** Present when the dispatcher qualified the outcome — e.g. what a reset cannot undo. */
   note: string | null;
   error: string | null;
@@ -59,7 +93,12 @@ export interface TriggerDeps {
  * able to render disabled buttons, which advertises a capability the deployment declined — the same
  * reasoning as the dispatcher answering 404 rather than 403.
  */
-export const TRIGGERS_DISABLED: TriggerStatus = { enabled: false, scenarios: [], armed: {} };
+export const TRIGGERS_DISABLED: TriggerStatus = {
+  enabled: false,
+  scenarios: [],
+  armed: {},
+  activating: {},
+};
 
 /** Field-by-field, never a cast — the dispatcher's reply crosses a process boundary. */
 function parseScenario(raw: unknown): TriggerScenario | null {
@@ -77,7 +116,14 @@ function parseScenario(raw: unknown): TriggerScenario | null {
   };
 }
 
-function parseStatus(raw: unknown): TriggerStatus {
+/**
+ * Exported for the tests, the same as `parseResolveRequest` and `parseChatRequest`.
+ *
+ * Worth testing directly rather than through `liveTriggers`: this is the only place the three-state
+ * model crosses a process boundary, and the case most likely to break it — a dispatcher that predates
+ * the `activating` field — cannot be produced by the live stack once IRIS is updated.
+ */
+export function parseStatus(raw: unknown): TriggerStatus {
   if (typeof raw !== 'object' || raw === null) return TRIGGERS_DISABLED;
   const r = raw as Record<string, unknown>;
   // `enabled` must be explicitly true. An absent or non-boolean field reads as off, so a garbled
@@ -94,21 +140,36 @@ function parseStatus(raw: unknown): TriggerStatus {
     }
   }
 
-  const armed: Record<string, boolean> = {};
-  const rawArmed = r['armed'];
-  if (typeof rawArmed === 'object' && rawArmed !== null) {
-    for (const [key, value] of Object.entries(rawArmed as Record<string, unknown>)) {
-      // Only a real boolean. An unparseable value must not read as armed=true, since the UI uses
-      // this to decide whether to show "armed" state on a button.
-      if (typeof value === 'boolean') armed[key] = value;
-    }
-  }
+  return {
+    enabled: true,
+    scenarios,
+    armed: parseBooleanMap(r['armed']),
+    // Same parser, and that is the point: the two maps have identical shape and identical failure
+    // behaviour, so a garbled `activating` cannot make a button read differently from a garbled
+    // `armed`. An older dispatcher sends no `activating` at all -> `{}` -> nothing activating.
+    activating: parseBooleanMap(r['activating']),
+  };
+}
 
-  return { enabled: true, scenarios, armed };
+/**
+ * One `Record<string, boolean>` from the wire, field-by-field.
+ *
+ * ONLY A REAL BOOLEAN. An unparseable value must not read as `true`, because both maps drive what a
+ * button says about a live production: `armed: true` claims the scenario is running, and
+ * `activating: true` is what makes a second click refuse. Dropping the key is the safe direction —
+ * it reads as "not in that state", which is the answer a witness we could not read deserves.
+ */
+function parseBooleanMap(raw: unknown): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  if (typeof raw !== 'object' || raw === null) return out;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === 'boolean') out[key] = value;
+  }
+  return out;
 }
 
 function parseResult(raw: unknown, scenario: string | null): TriggerResult {
-  const base: TriggerResult = { ok: false, armed: null, note: null, error: null };
+  const base: TriggerResult = { ok: false, armed: null, log: '', note: null, error: null };
   if (typeof raw !== 'object' || raw === null) {
     return { ...base, error: 'trigger dispatcher returned a non-object' };
   }
@@ -122,6 +183,10 @@ function parseResult(raw: unknown, scenario: string | null): TriggerResult {
     // one the UI needs to correlate a response with the button that was pressed — the same reason
     // `requestedBy` is threaded through resolve.ts rather than read back.
     armed: scenario,
+    // The trigger's own narration, forwarded verbatim. Empty string rather than null when absent:
+    // "the trigger printed nothing" and "there was no field" are the same fact to a caller, and one
+    // type means the UI needs no null check before trimming it.
+    log: typeof r['log'] === 'string' ? r['log'] : '',
     note: typeof r['note'] === 'string' && r['note'] !== '' ? r['note'] : null,
     error: null,
   };
@@ -197,6 +262,7 @@ export function disabledTriggers(): TriggerDeps {
   const declined: TriggerResult = {
     ok: false,
     armed: null,
+    log: '',
     note: null,
     error: 'demo triggers are not enabled on this deployment',
   };

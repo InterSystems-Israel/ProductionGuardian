@@ -1555,11 +1555,19 @@ button {
   outline-offset: -2px;
 }
 
-/* Disabled while any trigger is in flight. Reduced opacity AND not-allowed, because a rail
-   item that merely stops responding reads as broken. */
-.pg-rail__item--trigger:disabled {
-  opacity: 0.5;
+/* A trigger that will refuse the click. `aria-disabled`, not `disabled`, so the refusal can still be
+   spoken in the slot below it (see TriggerRail.tsx) — but it must still LOOK unavailable, because a
+   control that stops acting without looking any different reads as broken. The dimming is
+   deliberately mild: the label and its state word have to stay readable, since they are the reason
+   the click was refused. */
+.pg-rail__item--trigger[aria-disabled='true'] {
+  opacity: 0.72;
   cursor: not-allowed;
+}
+
+/* Hover suppressed on a refusing trigger, so the affordance does not contradict the cursor. */
+.pg-rail__item--trigger[aria-disabled='true']:hover {
+  background: none;
 }
 
 .pg-rail__trigger-label {
@@ -1568,17 +1576,14 @@ button {
   gap: var(--pg-space-2);
 }
 
-/* Armed is signalled by a dot AND the word "armed" below it — never by colour alone (§7.3). */
-.pg-rail__armed-dot {
+/* State is signalled by a dot AND a word below it — never by colour alone (§7.3). The dot's SHAPE
+   carries the difference too: filled for activated, hollow for activating. See the three-state block
+   at the END of this file, which owns the modifiers; this rule is only the shared geometry. */
+.pg-rail__trigger-dot {
   width: 7px;
   height: 7px;
   border-radius: var(--pg-radius-pill);
-  background: var(--pg-warning);
   flex-shrink: 0;
-}
-
-.pg-rail__item--armed {
-  color: var(--pg-text-invert);
 }
 
 .pg-rail__trigger-state {
@@ -1592,21 +1597,9 @@ button {
   font-style: italic;
 }
 
-.pg-triggers__error,
-.pg-triggers__note {
-  margin: var(--pg-space-2) 0 0;
-  padding: 0 var(--pg-space-4);
-  font-size: 10.5px;
-  line-height: 1.45;
-}
-
-.pg-triggers__error {
-  color: var(--pg-warning);
-}
-
-.pg-triggers__note {
-  color: rgb(255 255 255 / 55%);
-}
+/* `.pg-triggers__error` and `.pg-triggers__note` were the SHARED slot at the bottom of the panel and
+   are gone: every message now belongs to one trigger and renders under it (#135). Removed rather than
+   left as dead rules, because a rule matching nothing is what someone reaches for next time. */
 
 /* ── Activity insights chat ────────────────────────────────────────────────────
 
@@ -1833,4 +1826,101 @@ button {
 .pg-button--primary:disabled {
   opacity: 0.55;
   cursor: default;
+}
+
+/* ── Demo triggers: three states, and one message slot per trigger (#135) ───────
+
+   Appended as one block at the END of this file rather than edited into the demo-trigger section
+   above, because that region is contended by several concurrent changes and a mis-split rule here
+   has already caused a real defect in this repo. The two rules the three-state model replaced were
+   changed in place (`.pg-rail__trigger-dot`, the `aria-disabled` styling); everything genuinely new
+   is here.
+
+   All tokens, no literals. The only bare values are the sub-token font sizes the surrounding rail
+   rules already use (10.5px / 10px) and the 1px dot border, matched to the dot geometry above.     */
+
+/* The row is the trigger PLUS its message, so the message is inside the list item and cannot be read
+   as belonging to the next button down — the mis-attribution the shared slot allowed. */
+.pg-triggers__row {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ACTIVATING vs ACTIVATED are told apart by SHAPE first: a hollow ring while it is coming into
+   effect, a filled disc once it is. Colour is the second signal and the state word below the label is
+   the third, so nothing here depends on amber and teal surviving a projector (§7.3). */
+.pg-rail__trigger-dot--activating {
+  background: none;
+  border: 1px solid var(--pg-teal-200);
+}
+
+.pg-rail__trigger-dot--activated {
+  background: var(--pg-warning);
+}
+
+/* Activated is the state that means the production is currently broken on purpose, so it gets the
+   full-contrast label. Activating stays dimmer: nothing has happened to the production yet. */
+.pg-rail__item--activated {
+  color: var(--pg-text-invert);
+}
+
+.pg-rail__item--activating {
+  color: rgb(255 255 255 / 88%);
+}
+
+/* One message slot per trigger, always in the document so a live region exists before it changes, and
+   collapsed by `:empty` when there is nothing to say (see TriggerNote in TriggerRail.tsx). */
+.pg-triggers__msg {
+  margin: var(--pg-space-1) 0 var(--pg-space-2);
+  padding: 0 var(--pg-space-4);
+  font-size: 10.5px;
+  line-height: 1.45;
+  /* The dispatcher's captured log is preformatted plain text — indented lines, aligned arithmetic, an
+     ARMED header. `pre-wrap` is what makes it legible; without it the whole explanation collapses
+     into one paragraph. `break-word` because it quotes filesystem paths that do not wrap. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  color: rgb(255 255 255 / 62%);
+}
+
+.pg-triggers__msg:empty {
+  display: none;
+}
+
+/* The captured trigger log, monospaced because its own alignment is load-bearing. Inset with a rule
+   down the left so a block of narration reads as output belonging to the button above it rather than
+   as more rail chrome. */
+.pg-triggers__msg--log {
+  margin-left: var(--pg-space-4);
+  padding: var(--pg-space-1) 0 var(--pg-space-1) var(--pg-space-2);
+  border-left: 1px solid rgb(255 255 255 / 18%);
+  font-family: var(--pg-font-mono);
+  font-size: 10px;
+  color: rgb(255 255 255 / 66%);
+}
+
+/* A refusal is not a failure — nothing went wrong and nothing was sent. Accent tone rather than
+   warning, and italic so it reads as the panel answering rather than the server reporting. */
+.pg-triggers__msg--refused {
+  font-style: italic;
+  color: var(--pg-teal-200);
+}
+
+.pg-triggers__msg--error {
+  color: var(--pg-warning);
+}
+
+/* "Failed:" — the word that keeps an error from being signalled by its colour alone (§7.3). */
+.pg-triggers__msg-tag {
+  font-weight: 600;
+  font-style: normal;
+}
+
+/* The rail collapses to icons below 1100px and `.pg-rail__item` loses its text (`font-size: 0`).
+   These messages are prose that only makes sense beside a readable label, so they collapse with it
+   rather than becoming a column of unattributed sentences. */
+@media (max-width: 1100px) {
+  .pg-triggers__msg {
+    display: none;
+  }
 }
