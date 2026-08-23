@@ -6,9 +6,10 @@
   "description": "Health Scan dashboard — MVP 1 operator frontend for Production Guardian",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && node tools/validate-architecture.mjs && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "validate:architecture": "node tools/validate-architecture.mjs",
     "validate:fixtures": "node tools/validate-fixtures.mjs && node tools/validate-fixture-claims.mjs",
     "validate:fixtures:strict": "node tools/validate-fixtures.mjs --strict && node tools/validate-fixture-claims.mjs --strict"
   },
