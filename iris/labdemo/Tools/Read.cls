@@ -92,20 +92,107 @@ ClassMethod GetPoolSize(host As %String) As %DynamicObject
     quit out
 }
 
+/// Report the configured adapter settings for one interoperability host.
+///
+/// WHY THIS TOOL EXISTS, and it is a data-boundary decision rather than a convenience. MVP 3's
+/// scenario needs the agent to name the directory a service cannot read. That name lives in exactly
+/// two places: the `#5021` log message, and the host's configuration. `GetRecentErrors` will never
+/// return log text -- `Ens_Util.Log` holds 61,772 rows carrying `PatientID` in plain text -- so
+/// without this tool the agent can learn *a path is missing* and never *which path*.
+///
+/// Configuration is what the boundary permits: root `CLAUDE.md` §2.1 is "metrics and configuration
+/// only, never message content". A setting VALUE is configuration by definition; it was typed by
+/// whoever deployed the production, not derived from a message.
+///
+/// AN ALLOWLIST OF SETTING NAMES, NOT EVERY SETTING. Returning the whole collection would be one
+/// `Credentials` row away from handing an external LLM the name of a credential set, and one future
+/// setting away from something worse -- a production is configured by people, and people put
+/// surprising things in free-text settings. So the tool names what it will return and refuses the
+/// rest by construction. Adding a name here is a decision, which is the same reasoning as
+/// `Tools.Resolve`'s single whitelisted host and the `#5021` catalogue.
+///
+/// `Credentials` is deliberately ABSENT even though it is only an identifier: it names a stored
+/// secret, and an agent has no diagnostic use for it that outweighs saying its name out loud.
+ClassMethod GetHostSettings(host As %String) As %DynamicObject
+{
+    set out = { "host": (host), "found": false, "settings": {} }
+    set item = ..FindItem(host)
+    if '$isobject(item) {
+        set out.error = "no such config item in " _ ..#PRODUCTION
+        quit out
+    }
+    set out.found = 1
+
+    // The allowlist. Path and target settings, because those are what a misconfiguration diagnosis
+    // needs -- where the host reads from, where it writes to, and where it sends.
+    set allowed = $listbuild(
+        "FilePath",
+        "ArchivePath",
+        "WorkPath",
+        "FileSpec",
+        "PollInterval",
+        "HTTPServer",
+        "HTTPPort",
+        "URL",
+        "TargetConfigNames")
+
+    for i = 1:1:item.Settings.Count() {
+        set setting = item.Settings.GetAt(i)
+        // $listfind, not %INLIST -- the latter is SQL-only and raises #1010 in method code.
+        if $listfind(allowed, setting.Name) > 0 {
+            do out.settings.%Set(setting.Name, setting.Value)
+        }
+    }
+
+    // The POOL SIZE is a property rather than a Settings row, so it is not in the loop above. Added
+    // because a diagnosis about throughput needs it and `get_pool_size` already publishes it -- this
+    // is the same value, not a second source of truth.
+    set out.settings.PoolSize = +item.PoolSize
+
+    // COUNTED, so the agent can tell "this host has three settings" from "the allowlist filtered
+    // most of them out". Without it, a host configured entirely through settings this tool refuses
+    // looks identically bare to one with no configuration at all.
+    set out.settingsOnItem = item.Settings.Count()
+    quit out
+}
+
 /// Report recent error counts for one interoperability host, classified by IRIS error code.
 ///
 /// Returns COUNTS and error CODES only -- never log text. Error text can contain patient data,
 /// so this tool classifies rather than quotes.
 ClassMethod GetRecentErrors(host As %String, sinceMinutes As %Integer = 15) As %DynamicObject
 {
+    // AN OMITTED ARGUMENT IS NOT AN INVALID ONE, and the ObjectScript default above does not cover
+    // this. `%AI.ToolMgr.ExecuteTool` builds the argument list from the model's JSON and passes ""
+    // for a key the model did not send -- so the `= 15` default never applies on the tool path, ""
+    // fails `< 1` below, and the tool refused every call that omitted the parameter. Measured:
+    //
+    //   Invoke("GetRecentErrors", {"host":"EMR Source"})                 -> error, sinceMinutes
+    //   Invoke("GetRecentErrors", {"host":"EMR Source","sinceMinutes":15}) -> 3 errors, #5021
+    //
+    // Same host, same second, opposite answers. This was live from #106 and invisible because every
+    // hand-written check passed the argument -- the only caller that omits it is the model, whose
+    // schema marks it optional. It cost a live investigation: blinded to the error codes, the agent
+    // reasoned from the one number it could still see (PoolSize 1) and recommended enlarging the pool
+    // of a host whose directory did not exist.
+    if sinceMinutes = "" {
+        set sinceMinutes = 15
+    }
+
     // BOUNDED, and the bound is part of the data boundary rather than politeness. A count is not
     // content, but a count of one nearly is: "1 error for patient X in the last 5 seconds" is
     // identifying in a way "40 errors in 15 minutes" is not. 60 minutes is the ceiling because
     // this tool answers questions about a CONDITION, not a message search interface.
+    //
+    // Still rejects a value the model actually sent and got wrong -- `0` and `90` are refusals, and
+    // the refusal names the range. Only absence now means "use the default".
     if (sinceMinutes < 1) || (sinceMinutes > 60) {
         quit { "host": (host), "error": "sinceMinutes must be between 1 and 60", "sanitised": true }
     }
 
+    // `sinceMinutes` echoed under the SAME name as the input. The contract said `windowMinutes` on
+    // output until 2026-08-20 and this said `sinceMinutes`; reconciled in #116 toward one name,
+    // because a different name on each side is a translation step nobody wanted.
     set out = { "host": (host), "sinceMinutes": (sinceMinutes), "count": null, "sanitised": true, "byCode": [] }
 
     // THE PHI BOUNDARY, and this is measured rather than cautious. Ens_Util.Log on this instance
@@ -151,7 +238,10 @@ ClassMethod GetRecentErrors(host As %String, sinceMinutes As %Integer = 15) As %
     for {
         set code = $order(codes(code), 1, n)
         quit:code=""
-        do out.byCode.%Push({ "errorCode": (code), "count": (n) })
+        // `summary` lives on the byCode entry because it is keyed by `errorCode` -- a property of
+        // the CODE, not of an occurrence. That is what made the aggregate shape sufficient and the
+        // per-event `errors[]` array unnecessary (@kskubach's correction on #116).
+        do out.byCode.%Push({ "errorCode": (code), "count": (n), "summary": (..ErrorSummary(code)) })
     }
     quit out
 }
@@ -290,6 +380,40 @@ ClassMethod HostStatusRow(host As %String, ByRef row) As %Status [ Private ]
 /// novel error message cannot leak through a gap in a pattern list. A denylist would need to
 /// anticipate every shape PHI can take in a log line, which is not a bet worth taking on a
 /// healthcare system.
+/// The `summary` catalogue — `contracts/mcp-tools.md` §3.4a.
+///
+/// A FIXED STRING LOOKED UP BY `errorCode`, never derived from the log row. That is the whole reason
+/// it is safe to send: `Ens_Util.Log` on this instance holds 61,772 rows carrying `PatientID` in
+/// plain text, and a summary built from the row would carry whatever the row carries. A catalogue
+/// cannot, by construction.
+///
+/// THE ALLOWLIST MUST NOT GAIN AN EXCEPTION FOR `#5021`. The tempting shortcut for MVP 3's scenario
+/// is to return that error's message text, because it contains the missing path and the path is
+/// *usually* harmless. That is the wrong shape twice: an allowlist with one exception is one an
+/// implementer widens, and "usually harmless" is the rare-rather-than-absent pattern that survives
+/// review and then leaks. The agent learns the KIND of fault here and the offending path from
+/// `GetHostSettings` -- configuration, which the boundary permits.
+///
+/// Adding a row is a contract change (§3.4a), deliberately: a code that reaches an agent with a
+/// human-readable meaning is a decision about what the model is told.
+ClassMethod ErrorSummary(code As %String) As %String [ Private ]
+{
+    // Returns "" for anything not listed, which GetRecentErrors emits as JSON null -- §3.4a's
+    // "null when unclassified". An unknown code gets a count and no interpretation, which is honest:
+    // the agent can see something is failing and cannot be told what it means.
+    quit $case(code,
+        "#5021": "a configured directory or file path does not exist",
+        "#6059": "the configured downstream host or port could not be reached",
+        "#5001": "a general IRIS error was raised while handling a message",
+        "<Ens>ErrFailureTimeout": "the host retried and gave up within its failure timeout",
+        "<Ens>ErrConnectionLost": "the connection to the downstream target was lost",
+        "<Ens>ErrHTTPStatus": "the downstream returned an HTTP status the adapter treats as an error",
+        "<Ens>ErrProductionSettingInvalid": "a production setting on this host is not a valid value",
+        "<Ens>ErrTCPTerminatedReadTimeoutExpired": "a TCP read timed out before the downstream replied",
+        "<Ens>ErrGeneral": "the interoperability framework raised a general error",
+        : "")
+}
+
 ClassMethod ClassifyError(text As %String) As %String [ Private ]
 {
     set known = $listbuild(

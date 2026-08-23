@@ -47,6 +47,17 @@ Parameter PRODUCTION = "ProductionGuardian.LabDemo.Production";
 /// reporting nothing armed -- a status method lying by omission (@tanifgit, #66).
 Parameter CLOSEDPORT = 59999;
 
+/// The directory MissingFolder() points EMR Source at — one that does not exist.
+///
+/// Under /tmp/labdemo/ rather than somewhere exotic, so a reader of the boot log sees a path that
+/// looks like the real one with a suffix, not a contrived value. `-missing` rather than a random
+/// name because the point of the scenario is that the *configuration* is wrong, and a plausible
+/// typo is what actually happens on a real deployment.
+///
+/// NOT CREATED, EVER. `FirstBoot.MakeDirectories()` creates the two real drop directories on every
+/// boot; if this one were in that list the scenario would disarm itself. Checked that it is not.
+Parameter MISSINGPATH = "/tmp/labdemo/hl7-in-missing/";
+
 /// dead_host -- absolute, fires within two polls. The demo's headline finding.
 ClassMethod DeadHost() As %Status
 {
@@ -457,6 +468,23 @@ ClassMethod Reset() As %Status
         kill ^ProductionGuardian.Trigger("RateSecs")
         write "  restored the HL7 inflow rate to the generator's own interval", !
     }
+    // The FilePath, restored to what it WAS rather than to a literal -- the same rule as the port
+    // above, and for the same reason: a deployment that legitimately uses a different inbound
+    // directory must not be rewritten by a reset. If nothing was stashed, MissingFolder() never ran
+    // and the path is whatever the environment configured.
+    if $data(^ProductionGuardian.Trigger("PathWas")) {
+        set was = ^ProductionGuardian.Trigger("PathWas")
+        if was '= "" {
+            do ..SetSetting(..#SERVICE, "Adapter", "FilePath", was)
+            write "  ", ..#SERVICE, " FilePath restored to ", was, !
+        } else {
+            // Absent before arming is the shipped state for a setting this class added.
+            do ..RemoveSetting(..#SERVICE, "FilePath")
+            write "  ", ..#SERVICE, " FilePath removed, as it was before arming", !
+        }
+        kill ^ProductionGuardian.Trigger("PathWas")
+    }
+
     if $data(^ProductionGuardian.Trigger("MaxQueued")) {
         kill ^ProductionGuardian.Trigger("MaxQueued")
         write "  removed the generator's queue-depth cap", !
@@ -547,6 +575,15 @@ ClassMethod Status() As %Status
     write "  HL7 inflow     : ", $select(rate > 0: rate _ "s per message  <- rate overridden", 1: "generator default"), !
     // Reported with the live depth beside it, so "capped" and "currently paused" are distinguishable
     // at a glance -- a presenter seeing a flat queue needs to know whether it is held or stuck.
+    // Reported for the same reason as the throttle and the inflow rate: an armed FilePath shows up
+    // as a host in Error with no obvious cause, and Status() exists so nothing armed is invisible.
+    set livePath = ..GetSetting(..#SERVICE, "FilePath")
+    write "  inbound path   : ", $select(livePath = "": "(adapter default)", 1: livePath),
+        $select(livePath = ..#MISSINGPATH: "   <- ARMED, does not exist", 1: ""), !
+    if $data(^ProductionGuardian.Trigger("PathWas")) {
+        write "  path stashed   : ", ^ProductionGuardian.Trigger("PathWas"), "  <- Reset() will restore this", !
+    }
+
     set cap = +$get(^ProductionGuardian.Trigger("MaxQueued"), 0)
     if cap > 0 {
         set depth = ##class(Ens.Queue).GetCount(..#OPERATION)
@@ -734,6 +771,76 @@ ClassMethod SetSetting(pItem As %String, pTarget As %String, pName As %String, p
         quit $$$ERROR($$$GeneralError, "no such config item: " _ pItem _ " (renamed in Production.cls?)")
     }
     quit def.%Save()
+}
+
+/// MVP 3 scenario 2 — the missing folder. A host that cannot read its inbound directory.
+///
+/// WHY THIS SCENARIO EXISTS. Every finding MVP 2 could produce had a governed action behind it, so
+/// nothing exercised the path where the correct answer is **no action at all**. This one is a real
+/// failure — `FirstBoot.cls` records it from the #34/#53 deploy, where the two HL7 drop directories
+/// did not exist and `EMR Source` went straight to Error with `#5021` — and the fix is an operator
+/// creating a directory, which Production Guardian must recommend without offering to do.
+///
+/// ARMED BY REPOINTING THE SETTING, NOT BY DELETING THE DIRECTORY, and the third reason is the one
+/// that decides it:
+///
+///   1. The generator writes into that directory, so deleting it breaks inbound traffic a second way
+///      and the finding stops being about what it claims to be about.
+///   2. `FirstBoot.MakeDirectories()` recreates it on every boot, so an armed demo would disarm
+///      itself on the next restart.
+///   3. **It is not reversible from inside IRIS.** Every toggle in this class stashes what it
+///      replaced and `Reset()` puts it back; a trigger that deleted a filesystem directory could not
+///      honour that contract, because recreating a directory is not the same as never having removed
+///      it — permissions and ownership are lost.
+///
+/// So this is `ErrorRate()`'s stash-and-restore shape with a path instead of a port.
+///
+/// WHICH FINDING FIRES. `dead_host`, because `Error` is already in the engine's `DEAD_STATUSES` —
+/// read from the rule rather than assumed, so MVP 3 needs no new detection rule. `stalled_host`
+/// deliberately does NOT fire: it declines for any host already in `DEAD_STATUSES`, which is the
+/// one-condition-one-finding rule working.
+ClassMethod MissingFolder() As %Status
+{
+    set sc = ..CheckProduction()
+    if $$$ISERR(sc) {
+        quit sc
+    }
+
+    // Stash the REAL path before overwriting it, and only if not already stashed -- arming twice
+    // must not overwrite the saved value with the missing one. Same rule as PortWas and PoolWas,
+    // and the same reason: #66 restored a hardcoded port and destroyed a deployment that
+    // legitimately used a different one.
+    if '$data(^ProductionGuardian.Trigger("PathWas")) {
+        set ^ProductionGuardian.Trigger("PathWas") = ..GetSetting(..#SERVICE, "FilePath")
+    }
+
+    set sc = ..SetSetting(..#SERVICE, "Adapter", "FilePath", ..#MISSINGPATH)
+    if $$$ISERR(sc) {
+        quit sc
+    }
+
+    // WITHOUT THIS THE SETTING PERSISTS AND NOTHING HAPPENS. SetSetting() saves the production
+    // definition; the RUNNING job keeps the value it started with, so the host stays OK and the
+    // scenario looks broken. Measured: 160 seconds at status OK with the persisted path already
+    // pointing at the missing directory. Every other arming method in this class calls this for the
+    // same reason -- copied the shape rather than rediscovering it a second time.
+    set sc = ..UpdateProduction()
+    if $$$ISERR(sc) {
+        quit sc
+    }
+
+    write "ARMED  dead_host  (the MVP 3 missing-folder scenario)", !
+    write "  ", ..#SERVICE, " FilePath -> ", ..#MISSINGPATH, !
+    write "    stashed the real path; Reset() restores it", !
+    write "  The service polls a directory that does not exist, so every poll fails", !
+    write "    before it can read a message. Expect Error status and #5021 in the log.", !
+    write "  dead_host fires (Error is in DEAD_STATUSES).", !
+    write "  stalled_host will NOT fire -- it declines for a host already in DEAD_STATUSES.", !
+    write "  THERE IS NO GOVERNED FIX. The recommendation is words, for an operator to act on:", !
+    write "    create the directory, or repoint FilePath at one that exists.", !
+    write "  Inbound traffic stops while this is armed -- the generator still writes to the real", !
+    write "    directory, and the service is no longer looking at it.", !
+    quit $$$OK
 }
 
 /// Remove one setting from one config item, if present. Absent is the shipped state for
