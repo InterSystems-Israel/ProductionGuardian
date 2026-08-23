@@ -105,11 +105,68 @@ ClassMethod Investigate() As %Status
         set stats = session.GetStats()
         set parsed.toolCalls = $select($isobject(stats): stats."total_tool_calls", 1: "")
 
+        do ..DropUnapplicableAction(parsed)
+
         write parsed.%ToJSON()
         return $$$OK
     } catch ex {
         return ..Fail(500, "investigation failed: " _ ex.DisplayString())
     }
+}
+
+/// Drop a `recommendedAction` the write tool would refuse anyway. Private.
+///
+/// WHY A DETERMINISTIC GUARD RATHER THAN A BETTER PROMPT. The prompt already states the bound --
+/// `set_pool_size` applies only to the whitelisted host, and never both fields -- and the model
+/// obeys it **most** of the time. Measured over four consecutive live runs on the same finding,
+/// same prompt, same model:
+///
+///   action=set_pool_size on EMR Source   manual=yes     <- both, and the action is unapplicable
+///   action=set_pool_size on EMR Source   manual=yes
+///   action=set_pool_size on EMR Source   manual=null    <- worst: the only fix offered cannot apply
+///   action=null                          manual=yes     <- correct
+///
+/// One in four. **A prompt is a request, not a constraint**, and a demo cannot run on a 25% gate.
+/// This is the same lesson as the ungoverned write in #92 from the other direction: there, a guard
+/// was documented and absent; here, a guard was *asked for* and probabilistic. Neither is a guard.
+///
+/// So the bound is enforced where it is checkable. `Tools.Resolve` would refuse the call regardless
+/// -- that boundary always held and is what makes this safe rather than merely tidy. What it could
+/// not prevent is the **recommendation** reaching a UI that then renders an approve button for an
+/// action guaranteed to fail. An operator clicking it learns nothing except that the product is
+/// broken.
+///
+/// DROPPED, NOT REWRITTEN. This method never invents a `manualRemediation` to replace what it
+/// removes, and never edits the narrative: `rootCause` and `evidence` are the model's and stay
+/// verbatim. If the model offered only an unapplicable action, the honest result is a diagnosis
+/// with no fix -- which §3.1 has always allowed and which is exactly what MVP 3's scenario is
+/// about. Substituting our own words here would make the dispatcher a second author.
+ClassMethod DropUnapplicableAction(parsed As %DynamicObject) [ Private ]
+{
+    if '$isobject(parsed.%Get("recommendedAction")) {
+        quit
+    }
+    set action = parsed.recommendedAction.%Get("action")
+    if '$isobject(action) {
+        quit
+    }
+
+    // Read the bound from the tool, not from a literal -- the whole defect being fixed is a second
+    // copy of a rule disagreeing with the rule.
+    set host = action.%Get("host", "")
+    if host = ##class(ProductionGuardian.LabDemo.Tools.Resolve).#ALLOWEDHOST {
+        quit
+    }
+
+    set parsed.recommendedAction = ""
+    // Built before the literal: a concatenation inside a %DynamicObject constructor is #1021
+    // "Expected right bracket". Only a parenthesised single expression is accepted there.
+    set detail = "set_pool_size applies only to '" _ ##class(ProductionGuardian.LabDemo.Tools.Resolve).#ALLOWEDHOST _ "'"
+    // Recorded on the response rather than only in the log, because "the model recommended
+    // something we dropped" is information the engine and a reviewer both want, and a silent
+    // filter is indistinguishable from a model that behaved. The engine ignores unknown keys.
+    set parsed.droppedAction = { "type": (action.%Get("type", "")), "host": (host),
+        "reason": "not_whitelisted_host", "detail": (detail) }
 }
 
 /// Invoke the governed write tool. Every guard is the tool's, not this class's.
