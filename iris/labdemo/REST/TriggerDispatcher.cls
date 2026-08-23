@@ -77,6 +77,17 @@ ClassMethod Enabled() As %Boolean [ Private ]
 }
 
 /// Report what is armed. Also the endpoint the UI uses to decide whether to render the buttons.
+///
+/// PUBLISHES TWO MAPS, `armed` AND `activating`, because there are THREE states and only two of
+/// them were previously observable. See `Scenarios()` for how the pair is derived; the short version
+/// is that "the request was accepted" and "the scenario is in effect" are up to 75 seconds apart for
+/// `pool_bottleneck`, and a presenter watching a button needs to tell those apart from each other
+/// and from nothing having happened.
+///
+/// `armed` KEEPS ITS NAME ON THE WIRE even though the operator-facing word is now "trigger
+/// activated". Two reasons: renaming it would break an older engine or dashboard against a newer
+/// IRIS for no gain, and `armed` is the accurate technical word for what the global witnesses say.
+/// The rename is a wording change in the UI, and it stays one.
 ClassMethod Status() As %Status
 {
     set %response.ContentType = "application/json"
@@ -84,43 +95,94 @@ ClassMethod Status() As %Status
         quit ..Gone()
     }
 
-    // The scenario list is published so the UI does not hardcode it. A button that posts a scenario
-    // this class does not know would 400, and the UI having its own copy of the list is how that
-    // happens -- the same stale-copy argument as the host list in root CLAUDE.md §6.
-    set out = { "enabled": true, "scenarios": [], "armed": {} }
-    do out.scenarios.%Push({ "id": "pool_bottleneck", "label": "Pool bottleneck",
-        "detail": "Throttles the downstream and raises inflow. Queue builds behind one worker; the fix is a bigger pool.",
-        "findings": "queue_buildup, growing_queue_wait" })
-    do out.scenarios.%Push({ "id": "missing_folder", "label": "Missing directory",
-        "detail": "Repoints EMR Source at a directory that does not exist. No governed fix -- the recommendation is words.",
-        "findings": "dead_host" })
-    do out.scenarios.%Push({ "id": "closed_port", "label": "Downstream unreachable",
-        "detail": "Points Cloud API at a closed port. The queue is a symptom; a bigger pool would only fail faster.",
-        "findings": "elevated_error_rate, queue_buildup, throughput_drop" })
+    // ONE PASS OVER ONE TABLE. The published descriptors and both state maps come from the same
+    // `Scenarios()` entries, so a scenario cannot be advertised without a witness pair or carry a
+    // witness pair nobody advertises. Two lists here -- a %Push block plus a separate set of %Set
+    // lines keyed by name -- is what this method had, and it is the stale-copy shape root CLAUDE.md
+    // §6 names: adding a fourth scenario would have advertised a button whose state read `false`
+    // forever.
+    set out = { "enabled": true, "scenarios": [], "armed": {}, "activating": {} }
+    set it = ..Scenarios().%GetIterator()
+    while it.%GetNext(.index, .s) {
+        // Only the four public fields reach the wire. The witness names are an implementation detail
+        // of this class, and a caller keying on them would be reading our globals.
+        do out.scenarios.%Push({ "id": (s.id), "label": (s.label), "detail": (s.detail),
+            "findings": (s.findings) })
 
-    // What is actually armed, read from the trigger globals rather than inferred, so the UI can
-    // show state instead of assuming its own button presses are the whole truth. Someone driving
-    // the terminal at the same time is a normal thing to do in a rehearsal.
-    // KEYED ON WHAT THE SCENARIO *SETS*, NOT ON WHAT IT STASHED. `PoolWas` was the first choice and
-    // it is wrong: every stash is conditional on the value differing from the shipped one, so
-    // arming `pool_bottleneck` on an instance already at pool 1 stashes nothing and the button read
-    // "not armed" while the scenario was fully armed. Measured -- DispatcherMs, RateSecs and
-    // MaxQueued were all set and the UI showed false.
-    //
-    // `DispatcherMs` is set unconditionally and only by this scenario, so it is the honest witness.
-    // It is also set AFTER the 75-second warm-up, which makes the indicator mean "arming has taken
-    // effect" rather than "a request was accepted" -- exactly what a presenter needs from it while a
-    // jobbed scenario is still warming.
-    do out.armed.%Set("pool_bottleneck", ''$data(^ProductionGuardian.Trigger("DispatcherMs")), "boolean")
+        // Read from the trigger globals rather than inferred, so the UI can show state instead of
+        // assuming its own button presses are the whole truth. Someone driving the terminal at the
+        // same time is a normal thing to do in a rehearsal.
+        set requested = ''$data(^ProductionGuardian.Trigger(s.requestWitness))
+        set inEffect = ''$data(^ProductionGuardian.Trigger(s.effectWitness))
 
-    // `PathWas` and `PortWas` ARE correct witnesses for their scenarios, because both repoint a
-    // setting to a value that cannot be the shipped one -- so the stash always happens. Kept, rather
-    // than changed for symmetry with the line above.
-    do out.armed.%Set("missing_folder", ''$data(^ProductionGuardian.Trigger("PathWas")), "boolean")
-    do out.armed.%Set("closed_port", ''$data(^ProductionGuardian.Trigger("PortWas")), "boolean")
+        do out.armed.%Set(s.id, inEffect, "boolean")
+        // ACTIVATING = the request landed and the scenario is not yet in effect. DERIVED, not
+        // stored: a third global tracking "arming in progress" would be state that can disagree with
+        // the two witnesses, and it would have to be cleared on every path a jobbed arm can die on.
+        // This derivation cannot go stale, because it is two $data reads of the witnesses themselves.
+        //
+        // A scenario whose two witnesses are the SAME global is structurally never activating, which
+        // is the right answer for one that arms atomically -- no branch is needed for that case and
+        // none should be added. `missing_folder` and `closed_port` are both that shape.
+        do out.activating.%Set(s.id, (requested && 'inEffect), "boolean")
+    }
 
     write out.%ToJSON()
     quit $$$OK
+}
+
+/// The scenario table: what each one is, and the two globals that witness its state. Private.
+///
+/// THE THREE STATES, AND WHY ONE OF THEM NEEDS TWO WITNESSES.
+///
+///   not activated   neither witness present
+///   activating      the request landed; the scenario is not in effect yet
+///   activated       the scenario is in effect
+///
+/// The middle state is real and observable, not a UI nicety. `PoolBottleneck()` warms the baseline
+/// at zero for 75 seconds BEFORE arming anything -- that wait is load-bearing (see that method, and
+/// #43: a queue forming during warm-up caps the ratio near 2x and `queue_buildup` can then never
+/// fire) -- and it runs as a background job, so the HTTP call returns in ~0.26s. For 75 seconds the
+/// operator has a scenario that was accepted and is doing nothing yet. Reporting that as "not
+/// activated" invites a second click; reporting it as "activated" is a claim the presenter notices
+/// is false when no queue appears.
+///
+/// `effectWitness` IS THE ONE THAT MEANS "IN EFFECT", and for `pool_bottleneck` it is deliberately
+/// NOT the stash. `DispatcherMs` is set unconditionally, only by this scenario, and only AFTER the
+/// warm-up. `PoolWas` is set immediately BEFORE the wait, which makes it an honest witness for "the
+/// request landed" and a wrong one for "armed" -- keying `armed` on it was #129's second bug, where
+/// arming on an instance already at pool 1 stashed nothing and the button read "not armed" while the
+/// scenario was fully armed. Verified on the live instance across one warm-up: `PoolWas` present
+/// with `DispatcherMs` absent during the wait, both present after it.
+///
+/// `PathWas` and `PortWas` serve as BOTH witnesses for their scenarios, because those arm in one
+/// step with nothing to wait for. Listing the same global twice states that, rather than leaving a
+/// reader to infer it from a missing field, and it makes `activating` false by construction instead
+/// of by a special case.
+///
+/// ONE HONEST AMBIGUITY, stated rather than papered over: `PoolWas` present with `DispatcherMs`
+/// absent is also what a jobbed arm that DIED during its warm-up looks like. "Activating" is the
+/// truthful report either way -- this class cannot see the job -- and `Reset()` clears the stash,
+/// which is the recovery for both.
+ClassMethod Scenarios() As %DynamicArray [ Private ]
+{
+    // The scenario list is published so the UI does not hardcode it. A button that posts a scenario
+    // this class does not know would 400, and the UI having its own copy of the list is how that
+    // happens -- the same stale-copy argument as the host list in root CLAUDE.md §6.
+    set out = []
+    do out.%Push({ "id": "pool_bottleneck", "label": "Pool bottleneck",
+        "detail": "Throttles the downstream and raises inflow. Queue builds behind one worker; the fix is a bigger pool.",
+        "findings": "queue_buildup, growing_queue_wait",
+        "requestWitness": "PoolWas", "effectWitness": "DispatcherMs" })
+    do out.%Push({ "id": "missing_folder", "label": "Missing directory",
+        "detail": "Repoints EMR Source at a directory that does not exist. No governed fix -- the recommendation is words.",
+        "findings": "dead_host",
+        "requestWitness": "PathWas", "effectWitness": "PathWas" })
+    do out.%Push({ "id": "closed_port", "label": "Downstream unreachable",
+        "detail": "Points Cloud API at a closed port. The queue is a symptom; a bigger pool would only fail faster.",
+        "findings": "elevated_error_rate, queue_buildup, throughput_drop",
+        "requestWitness": "PortWas", "effectWitness": "PortWas" })
+    quit out
 }
 
 /// Arm one named scenario.

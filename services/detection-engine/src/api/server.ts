@@ -13,6 +13,10 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { EngineSnapshot } from '../detect/engine.ts';
+// The off-state payload, imported rather than written out here. It was inlined twice below and
+// gained a third field in #135; two literals that must match a type in another file is the
+// stale-copy shape, and both copies would have been silently short an `activating: {}`.
+import { TRIGGERS_DISABLED } from '../detect/triggers.ts';
 
 export interface ServerOptions {
   port: number;
@@ -291,14 +295,14 @@ export function createFindingsServer(options: ServerOptions): Server {
           // trigger buttons exist", and if IRIS cannot be reached the honest answer is "no". A 5xx
           // would put the connection banner into an error state over an optional demo affordance.
           if (options.triggerStatus === undefined) {
-            sendJson(res, 200, { enabled: false, scenarios: [], armed: {} }, snapshot.state);
+            sendJson(res, 200, TRIGGERS_DISABLED, snapshot.state);
             return;
           }
           options.triggerStatus()
             .then((payload) => sendJson(res, 200, payload, snapshot.state))
             .catch((err: unknown) => {
               log(`trigger status unavailable: ${String(err)}`);
-              sendJson(res, 200, { enabled: false, scenarios: [], armed: {} }, snapshot.state);
+              sendJson(res, 200, TRIGGERS_DISABLED, snapshot.state);
             });
           return;
         }

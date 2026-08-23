@@ -12,9 +12,25 @@
  * `CLAUDE.md` §6). The consequence is that this component renders whatever it is given, including a
  * scenario added later with no dashboard change.
  *
- * ARMED STATE IS ALSO THE SERVER'S. It is read from the trigger globals in IRIS on every poll, not
+ * TRIGGER STATE IS ALSO THE SERVER'S. It is read from the trigger globals in IRIS on every poll, not
  * tracked locally from button presses, because driving the terminal during a rehearsal is normal and
  * a button showing state from its own last click would be confidently wrong.
+ *
+ * THERE ARE THREE STATES, NOT TWO, and the middle one is real rather than cosmetic (#135).
+ *
+ *     not activated     nothing armed
+ *     activating        the request was accepted; the scenario is not in effect yet
+ *     activated         the scenario is live
+ *
+ * `pool_bottleneck` is why. It warms a baseline at zero for ~75 seconds *before* arming anything —
+ * that wait is load-bearing, see `Triggers.PoolBottleneck` and #43 — and it runs as a background
+ * job, so the arm POST returns in ~0.26s. For over a minute the scenario is in neither of the other
+ * two states. Collapsing that into "not activated" invites a second click; collapsing it into
+ * "activated" is a claim a presenter notices is false when no queue appears. The dispatcher reports
+ * both maps and this component renders three phases from them. `missing_folder` and `closed_port`
+ * arm atomically and pass through the middle phase in under a second, with no branch for that case.
+ *
+ * A CLICK ON AN ALREADY-ACTIVATED TRIGGER IS ANSWERED LOCALLY, WITHOUT A REQUEST. See `onArm`.
  *
  * DELIBERATELY STYLED AS SOMETHING THAT BREAKS THINGS. These sit under their own heading, in a
  * warning tone, separate from the two navigation buttons above. The rail already distinguishes inert
@@ -36,13 +52,16 @@ export interface TriggerScenario {
 export interface TriggerState {
   enabled: boolean;
   scenarios: TriggerScenario[];
+  /** In effect — the scenario is live. Not "a request was accepted"; see the file comment. */
   armed: Record<string, boolean>;
+  /** Accepted, not in effect yet. Always false for a scenario that arms atomically. */
+  activating: Record<string, boolean>;
 }
 
 /** Field-by-field. The endpoint is ours, but a shape check here is what keeps a bad payload from
     rendering a broken rail rather than no rail. */
 function parseState(raw: unknown): TriggerState {
-  const off: TriggerState = { enabled: false, scenarios: [], armed: {} };
+  const off: TriggerState = { enabled: false, scenarios: [], armed: {}, activating: {} };
   if (typeof raw !== 'object' || raw === null) return off;
   const r = raw as Record<string, unknown>;
   if (r['enabled'] !== true) return off;
@@ -63,19 +82,36 @@ function parseState(raw: unknown): TriggerState {
     }
   }
 
-  const armed: Record<string, boolean> = {};
-  if (typeof r['armed'] === 'object' && r['armed'] !== null) {
-    for (const [k, v] of Object.entries(r['armed'] as Record<string, unknown>)) {
-      if (typeof v === 'boolean') armed[k] = v;
-    }
+  return {
+    enabled: true,
+    scenarios,
+    armed: parseFlags(r['armed']),
+    // One parser for both maps, so a garbled `activating` cannot make a button behave differently
+    // from a garbled `armed`. An engine or dispatcher predating #135 sends no `activating` field at
+    // all, which parses to `{}` — every scenario then reads not-activating, i.e. the old two-state
+    // behaviour, rather than a crash or an empty rail.
+    activating: parseFlags(r['activating']),
+  };
+}
+
+/** One boolean map from the wire. Only a real boolean: an unparseable value must not read as `true`,
+    because both maps make claims about a live production and one of them refuses a click. */
+function parseFlags(raw: unknown): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  if (typeof raw !== 'object' || raw === null) return out;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === 'boolean') out[k] = v;
   }
-  return { enabled: true, scenarios, armed };
+  return out;
 }
 
 const BASE = '/api/demo';
 
+/** The `busy` and message key for Reset, which has no scenario id of its own. */
+const RESET_KEY = '__reset__';
+
 /**
- * Poll cadence for the armed state.
+ * Poll cadence for the trigger state.
  *
  * Slower than the findings poll on purpose: arming is a human action taken seconds apart, not a
  * metric stream, and this endpoint reaches into IRIS on every call. 5s is responsive enough that a
@@ -83,13 +119,33 @@ const BASE = '/api/demo';
  */
 const STATUS_POLL_MS = 5000;
 
+/** Which of the three states a scenario is in, as this component renders it. */
+type Phase = 'idle' | 'activating' | 'activated';
+
+/**
+ * One message belonging to one trigger.
+ *
+ * `refused` is the local answer to a click that made no request — a different fact from `error`,
+ * which is something the server said, and rendered differently for that reason.
+ */
+interface TriggerMessage {
+  kind: 'log' | 'note' | 'error' | 'refused';
+  text: string;
+}
+
 export function TriggerRail(): JSX.Element | null {
   const [state, setState] = useState<TriggerState | null>(null);
-  /** The scenario currently being armed, so its own button can show pending without freezing others
-      that are still legitimately clickable. */
+  /** The trigger whose request is in flight, or null. One at a time — see `onArm`. */
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
+  /**
+   * Messages keyed by the trigger they belong to.
+   *
+   * PER TRIGGER, NOT ONE SHARED SLOT. A single `error`/`note` pair at the bottom of the panel meant
+   * the output of arming `missing_folder` appeared under `closed_port`'s button as far as an operator
+   * reading top-to-bottom could tell — and the text names a host and a setting, so the
+   * mis-attribution is plausible enough to be believed (@Ari-Glikman, from driving the live UI).
+   */
+  const [messages, setMessages] = useState<Record<string, TriggerMessage>>({});
 
   const refresh = useCallback(async () => {
     try {
@@ -112,11 +168,14 @@ export function TriggerRail(): JSX.Element | null {
     return () => clearInterval(id);
   }, [refresh]);
 
+  /** Replace one trigger's message, leaving every other trigger's alone. */
+  const say = useCallback((key: string, message: TriggerMessage) => {
+    setMessages((prev) => ({ ...prev, [key]: message }));
+  }, []);
+
   const post = useCallback(
-    async (path: string, body: unknown, pending: string) => {
-      setBusy(pending);
-      setError(null);
-      setNote(null);
+    async (path: string, body: unknown, key: string) => {
+      setBusy(key);
       try {
         const res = await fetch(`${BASE}${path}`, {
           method: 'POST',
@@ -145,34 +204,136 @@ export function TriggerRail(): JSX.Element | null {
         } catch {
           // 504/502 specifically, because for a long arm that is the likely one and "still running"
           // is materially different advice from "it failed".
-          setError(
-            res.status === 504 || res.status === 502
-              ? `The request timed out at the proxy after ${res.status}. Arming may still be ` +
-                `running in IRIS — check the armed state before retrying.`
-              : `The server returned a non-JSON response (HTTP ${res.status}).`,
-          );
+          say(key, {
+            kind: 'error',
+            text:
+              res.status === 504 || res.status === 502
+                ? `The request timed out at the proxy after ${res.status}. Arming may still be ` +
+                  `running in IRIS — check the state above before retrying.`
+                : `The server returned a non-JSON response (HTTP ${res.status}).`,
+          });
           return;
         }
         if (typeof payload['error'] === 'string' && payload['error'] !== '') {
-          setError(payload['error']);
-        } else if (typeof payload['note'] === 'string' && payload['note'] !== '') {
-          // A reset reports what it CANNOT undo. Surfaced rather than dropped: "the alert is still
-          // there" is the question a presenter asks ten seconds later.
-          setNote(payload['note']);
+          say(key, { kind: 'error', text: payload['error'] });
+          return;
+        }
+
+        /*
+         * THE CAPTURED `log` IS THE POINT OF THIS SLOT, not a debugging leftover. Each trigger writes
+         * what it armed, which findings to expect and which deliberately will NOT fire; the
+         * dispatcher captures that text to a file so it cannot corrupt the JSON body and returns it
+         * (see `TriggerDispatcher.Arm`). It then crossed one process boundary and was dropped by the
+         * engine's own parser, and would have been dropped here too.
+         *
+         * BOTH FIELDS WHEN BOTH ARE PRESENT. A reset returns a long `log` of what it restored AND a
+         * `note` about the one thing it cannot — the buffered `system_alert` — and that note is the
+         * question a presenter asks ten seconds later, so it must not be shadowed by the log. A
+         * jobbed arm is the reverse: `log` is empty because there is no output yet, and `note`
+         * explains the warm-up. Neither case needs a branch.
+         */
+        const log = typeof payload['log'] === 'string' ? payload['log'].trim() : '';
+        const note = typeof payload['note'] === 'string' ? payload['note'].trim() : '';
+        const text = [log, note].filter((part) => part !== '').join('\n\n');
+        if (text !== '') {
+          // `log` when there is captured output, because that text is preformatted and aligned and is
+          // rendered monospaced; a bare note is prose.
+          say(key, { kind: log !== '' ? 'log' : 'note', text });
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'request failed');
+        say(key, { kind: 'error', text: err instanceof Error ? err.message : 'request failed' });
       } finally {
         setBusy(null);
         // Refresh regardless of outcome. A trigger that errored partway may still have armed
-        // something, so the armed state must be re-read rather than assumed unchanged.
+        // something, so the state must be re-read rather than assumed unchanged.
         void refresh();
       }
     },
-    [refresh],
+    [refresh, say],
   );
 
   if (state === null || !state.enabled) return null;
+
+  /**
+   * The three states, resolved per scenario.
+   *
+   * `armed` WINS over everything, including a local in-flight request, because it is the one fact
+   * read from the production itself. The local `busy` folds into `activating` rather than becoming a
+   * fourth state: "this browser's request is in flight" is precisely "accepted, not in effect yet",
+   * and it covers the gap between the POST returning and the next status poll — which for a
+   * fast-arming scenario is the only window the middle phase is ever visible in.
+   */
+  const phaseOf = (id: string): Phase => {
+    if (state.armed[id] === true) return 'activated';
+    if (state.activating[id] === true) return 'activating';
+    if (busy === id) return 'activating';
+    return 'idle';
+  };
+
+  /**
+   * A trigger click, answered locally where it can be.
+   *
+   * NO REQUEST IS MADE FOR A TRIGGER THAT IS ALREADY ACTIVATED OR STILL ACTIVATING. Deliberately not
+   * "POST and let IRIS refuse": arming is idempotent in the trigger class but not free — the
+   * dispatcher's `$case` runs the method again, `PoolBottleneck` re-enters its 75-second warm-up and
+   * rewrites `RateSecs`/`MaxQueued`, and a second `Arm` on a jobbed scenario starts a second
+   * background job against the same production definition. The information needed to refuse is
+   * already in state this component polls, so spending a round trip to be told what it knows would
+   * also mean the answer arrives late and after a side effect.
+   *
+   * TWO REFUSALS, TWO DIFFERENT SENTENCES, because they are different facts. "This one is already
+   * activated" is about this trigger and is cleared only by Reset. "Another trigger is still
+   * activating" is about the panel and clears itself — conflating them would tell an operator to wait
+   * for something that will never finish, or to reset something that needs a moment.
+   */
+  const onArm = (s: TriggerScenario) => {
+    if (phaseOf(s.id) !== 'idle') {
+      // The owner's wording covers both halves — "while the trigger is activating" AND "until it is
+      // reset" — so one sentence serves both, and Reset is named as the way out of it.
+      say(s.id, {
+        kind: 'refused',
+        text: 'Trigger already activated. Press Reset all to clear it before activating it again.',
+      });
+      return;
+    }
+    if (busy !== null) {
+      /*
+       * ONE ARM AT A TIME, and the protection is real rather than tidiness. The trigger class stashes
+       * each replaced value in one global per setting and every arming method calls
+       * `UpdateProduction()`; two interleaved arms can therefore stash a value the other already
+       * wrote and make `Reset()` restore the wrong one. That is why the original panel disabled every
+       * button while any was pending.
+       *
+       * REFUSED RATHER THAN DISABLED, though, so the reason is legible. A `disabled` button fires no
+       * click, so it can say nothing about why it did nothing — which is how "busy" and "already
+       * activated" ended up looking like one state. The mutual exclusion is unchanged: no second
+       * request is issued either way.
+       */
+      say(s.id, {
+        kind: 'refused',
+        text: 'Another trigger is still activating. Wait for it to finish, then try again.',
+      });
+      return;
+    }
+    void post('/trigger', { scenario: s.id }, s.id);
+  };
+
+  /**
+   * Reset, which must stay reachable at all times — it is the operation that recovers from every
+   * other one, so it is never disabled and never refused for the state of anything else. It will not
+   * stack on itself: two concurrent `Reset()` calls both write the production definition, which is
+   * the same hazard `onArm` guards against.
+   */
+  const onReset = () => {
+    if (busy === RESET_KEY) {
+      say(RESET_KEY, { kind: 'refused', text: 'Reset is already running.' });
+      return;
+    }
+    // Every scenario's message describes a state this reset is about to clear, so they go with it.
+    // Leaving them would put "Trigger already activated" under a button that no longer is.
+    setMessages({});
+    void post('/reset', {}, RESET_KEY);
+  };
 
   return (
     <div className="pg-triggers">
@@ -184,59 +345,87 @@ export function TriggerRail(): JSX.Element | null {
 
       <ul className="pg-rail__list">
         {state.scenarios.map((s) => {
-          const isArmed = state.armed[s.id] === true;
-          const pending = busy === s.id;
+          const phase = phaseOf(s.id);
           return (
-            <li key={s.id}>
+            <li key={s.id} className="pg-triggers__row">
               <button
                 type="button"
-                className={`pg-rail__item pg-rail__item--trigger${
-                  isArmed ? ' pg-rail__item--armed' : ''
-                }`}
-                /* Every button disabled while ANY is pending. Arming two scenarios concurrently
-                   would interleave two sets of setting writes on the same production, and the
-                   trigger class stashes previous values in one global per setting — a concurrent
-                   pair could stash the other's value and make Reset() restore the wrong thing. */
-                disabled={busy !== null}
-                onClick={() => void post('/trigger', { scenario: s.id }, s.id)}
+                className={`pg-rail__item pg-rail__item--trigger pg-rail__item--${phase}`}
+                /* NOT `disabled`. A trigger that will refuse stays focusable and clickable so the
+                   refusal can explain itself in the slot below — see `onArm`. `aria-disabled` is what
+                   tells assistive technology the control will not act, which `disabled` would say at
+                   the cost of making the explanation unreachable by keyboard. */
+                aria-disabled={phase !== 'idle' || busy !== null}
+                onClick={() => onArm(s)}
                 title={`${s.detail}\n\nFires: ${s.findings}`}
               >
                 <span className="pg-rail__trigger-label">
                   {s.label}
-                  {isArmed && <span className="pg-rail__armed-dot" aria-hidden="true" />}
+                  {/* Shape as well as words: a filled disc for activated, a hollow ring for
+                      activating. State is never carried by colour alone (§7.3), and these two are
+                      told apart by silhouette at the back of a room where amber and teal may not
+                      be. */}
+                  {phase !== 'idle' && (
+                    <span
+                      className={`pg-rail__trigger-dot pg-rail__trigger-dot--${phase}`}
+                      aria-hidden="true"
+                    />
+                  )}
                 </span>
-                {/* The pending state is words, not a spinner: PoolBottleneck warms a baseline for
-                    75 seconds and a spinner that long reads as a hang. */}
-                {pending && <span className="pg-rail__trigger-state">arming… up to 90s</span>}
-                {isArmed && !pending && <span className="pg-rail__trigger-state">armed</span>}
+                {/* Words, not a spinner: pool_bottleneck warms a baseline for 75 seconds and a
+                    spinner that long reads as a hang. The word the operator now sees is "activated"
+                    rather than "armed" — same state, plainer language. */}
+                {phase === 'activating' && (
+                  <span className="pg-rail__trigger-state">trigger activating…</span>
+                )}
+                {phase === 'activated' && (
+                  <span className="pg-rail__trigger-state">trigger activated</span>
+                )}
               </button>
+              <TriggerNote message={messages[s.id]} />
             </li>
           );
         })}
-        <li>
+        <li className="pg-triggers__row">
           <button
             type="button"
             className="pg-rail__item pg-rail__item--trigger pg-rail__item--reset"
-            disabled={busy !== null}
-            onClick={() => void post('/reset', {}, '__reset__')}
+            onClick={onReset}
             title="Restore every setting the triggers changed"
           >
             <span className="pg-rail__trigger-label">Reset all</span>
-            {busy === '__reset__' && <span className="pg-rail__trigger-state">resetting…</span>}
+            {busy === RESET_KEY && <span className="pg-rail__trigger-state">resetting…</span>}
           </button>
+          <TriggerNote message={messages[RESET_KEY]} />
         </li>
       </ul>
-
-      {error !== null && (
-        <p className="pg-triggers__error" role="alert">
-          {error}
-        </p>
-      )}
-      {note !== null && (
-        <p className="pg-triggers__note" role="status">
-          {note}
-        </p>
-      )}
     </div>
+  );
+}
+
+/**
+ * One trigger's message slot.
+ *
+ * ALWAYS MOUNTED, even with nothing to say, and hidden by `:empty` when it is. A live region has to
+ * be in the document before its content changes or the change is not announced, and these messages
+ * are answers to a button press — the one case where that matters. `role="status"` for every kind,
+ * including errors: swapping a node's role between `status` and `alert` is unreliable, and a failed
+ * demo trigger is not an emergency. The error tone is carried by a class and a leading word.
+ *
+ * The dispatcher's captured log is PLAIN TEXT, not markup, and is rendered as text. `white-space:
+ * pre-wrap` keeps its line breaks and two-space indents, which is the whole reason it is readable;
+ * `dangerouslySetInnerHTML` would be both wrong and unsafe for output that quotes settings and paths.
+ */
+function TriggerNote({ message }: { message: TriggerMessage | undefined }): JSX.Element {
+  return (
+    <p className={`pg-triggers__msg pg-triggers__msg--${message?.kind ?? 'none'}`} role="status">
+      {message === undefined ? null : (
+        <>
+          {/* A word, so "this failed" is not signalled by the colour of the text alone (§7.3). */}
+          {message.kind === 'error' && <span className="pg-triggers__msg-tag">Failed: </span>}
+          {message.text}
+        </>
+      )}
+    </p>
   );
 }
