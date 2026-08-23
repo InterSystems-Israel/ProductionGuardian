@@ -1212,6 +1212,22 @@ button {
   color: var(--pg-warning);
 }
 
+/* The watching state -- Early Warning present with nothing to project.
+   Quieter than --pending on purpose: three calm rows must not compete with a real
+   projection when one appears, but they must still be visible, because a module that
+   renders nothing is indistinguishable from one that was never built. Deliberately NOT
+   --pg-ok: a flat metric is not a health verdict, and severity colours are reserved for
+   severity (§7.1). */
+.pg-forecast--quiet {
+  border-left-color: var(--pg-border-soft);
+  background: transparent;
+}
+
+.pg-forecast--quiet .pg-forecast__label,
+.pg-forecast--quiet .pg-forecast__body {
+  color: var(--pg-text-muted);
+}
+
 /* ── MVP 3: brochure and architecture views ───────────────────────────────── */
 
 /* A real control in the rail. Reset the button chrome so it sits flush with the

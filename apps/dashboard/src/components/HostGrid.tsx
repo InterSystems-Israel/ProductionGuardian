@@ -47,6 +47,28 @@ const FIRST_VISIT_SKELETONS = 3;
    worth is enough to show the shape of what is coming. */
 const MAX_SKELETONS = 12;
 
+/*
+ * Pipeline position of a host type, for grid ordering.
+ *
+ * `type` is an OPEN STRING in the contract (§2.3: "treat as open string"), so an unrecognised value
+ * must sort somewhere defined rather than throw or vanish. Unknown types go last, after the three we
+ * know, and then alphabetically among themselves — visible rather than hidden, which is §2.4's
+ * defensive-rendering rule.
+ *
+ * `actor` is included because IRIS reports business processes that way (contract Q10 — the engine
+ * normalises it to `process`, but this must not depend on that normalisation continuing).
+ */
+const HOST_TYPE_ORDER: Record<string, number> = {
+  service: 0,
+  process: 1,
+  actor: 1,
+  operation: 2,
+};
+
+function hostTypeRank(type: string): number {
+  return HOST_TYPE_ORDER[type] ?? 99;
+}
+
 /** `finding.host` is always exactly a `host.host` value — same string, same case (§4 Q8). */
 function severityByHost(
   findings: readonly FindingView[],
@@ -114,9 +136,24 @@ export function HostGrid({
      component that scales with the production's size. */
   const byHost = new Map(projections.map((p) => [p.host, p]));
 
+  /* PIPELINE ORDER, not alphabetical: service -> process -> operation is the direction a message
+     actually travels, so the grid reads left-to-right as the flow an operator is diagnosing.
+     Alphabetical put the operation first and the service last, i.e. backwards.
+
+     SORTED HERE RATHER THAN IN THE ENGINE, because `contracts/healthscan-api.md` §2 ratifies
+     "stable alphabetical order by `host`" and Q5 explicitly blesses a client sort on top. Changing
+     the server order would be a contract change for something that is purely presentational — and
+     §2.4's rule holds either way: the engine's order is stable, so this sort is deterministic.
+
+     A copy of the array, not an in-place sort: `hosts` is a `readonly` prop and mutating it would
+     reorder the caller's state. */
+  const ordered = [...hosts].sort(
+    (a, b) => hostTypeRank(a.type) - hostTypeRank(b.type) || a.host.localeCompare(b.host),
+  );
+
   return (
     <div className="pg-grid">
-      {hosts.map((host) => {
+      {ordered.map((host) => {
         const summary = bySeverity.get(host.host);
         return (
           <HostCard
