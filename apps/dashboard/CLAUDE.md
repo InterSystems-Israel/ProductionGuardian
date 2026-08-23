@@ -443,7 +443,17 @@ From §4.5 of the MVP plan, in order:
 
 **Tasks 4b and 5 are descoped from MVP 1** (decided 2026-08-13). The screencast and `docs/demo/cue-sheet.md` are presentation artefacts, not product: neither is code, neither is verifiable by a test, and the screencast needs a human to record. Nothing in the *overall* acceptance below depends on either — the static fallback is what makes the demo survivable, and that is done.
 
-`docs/demo/` therefore does not exist and should not be created before MVP 1 closes. If a request asks for the cue sheet or the screencast, say it is descoped rather than building it — the same rule §1.1 applies to the later modules.
+**The cue sheet now EXISTS — `docs/demo/cue-sheet.md`, written 2026-08-23.** The descope above was
+correct for MVP 1 and stayed correct through MVP 2; it stopped being correct once MVP 1, 2 and 3 had
+all shipped and there was an end-to-end flow worth scripting. Kept rather than deleted, because the
+*reasoning* still governs the screencast: that one is still not built, still needs a human to record,
+and still is not a blocker for any acceptance criterion.
+
+The cue sheet is deliberately **measured rather than written from memory** — every timing in it was
+taken from the containerised stack (77s for `pool_bottleneck` to take effect, 12s to `dead_host`, 103s
+for a queue of 165 to drain after an approve), and it names the five traps that have each cost a
+rehearsal. A cue sheet full of plausible-sounding numbers would be worse than none, because a presenter
+would trust it.
 
 **Overall acceptance (from the MVP doc):** *dashboard renders all hosts + findings live; updates within 10 s of a change; fallback to demo mode is seamless.*
 
