@@ -245,6 +245,72 @@ wrong or expired.** That is the honest failure and worth recognising: `rootCause
 none when a human approves a production write on the strength of it. The FIX half is unaffected — it
 does not use the LLM — so a bad key costs you WHY and nothing else.
 
+### MVP 3 — the same loop where the answer is *no action at all*
+
+MVP 2's scenario always ended in a governed fix, so nothing exercised the case where the correct
+answer is **words for an operator**. This is that case, and it is the same three URLs.
+
+```objectscript
+// Arm: repoints EMR Source at a directory that does not exist. Takes ~20s to reach Error.
+do ##class(ProductionGuardian.LabDemo.Triggers).MissingFolder()
+do ##class(ProductionGuardian.LabDemo.Triggers).Status()   // reports the armed path
+do ##class(ProductionGuardian.LabDemo.Triggers).Reset()    // restores the real path
+```
+
+```bash
+curl -s localhost:5173/api/healthscan/findings          # dead_host on EMR Source
+curl -s -XPOST localhost:5173/api/investigate \
+  -H 'Content-Type: application/json' -d '{"findingId":"<the dead_host id>"}'
+```
+
+A live run:
+
+```
+source: agent   model: gpt-4o-mini   toolCalls: 4
+recommendedAction: null                    <- there is no governed fix, and it says so
+manualRemediation:
+  summary: "Configured directory path does not exist."
+  steps:   Check if the directory /tmp/labdemo/hl7-in-missing/ exists.
+           Create the directory /tmp/labdemo/hl7-in-missing/ if it is missing.
+  target:  {host: "EMR Source", setting: "FilePath",
+            currentValue: "/tmp/labdemo/hl7-in-missing/"}
+  appliedBy: "operator"
+```
+
+**`recommendedAction: null` with `manualRemediation` populated is the whole point** — the drawer
+shows the fix in words and renders **no approve control**, because there is no `action` object to
+send. That negative is the acceptance criterion, not a missing feature.
+
+Two details that are easy to misread:
+
+- **The path comes from `get_host_settings`, never from the log.** `get_recent_errors` returns a
+  fixed catalogue string keyed by error code (`#5021` → "a configured directory or file path does
+  not exist") and never message text, because `Ens_Util.Log` carries `PatientID` in plain text. So
+  the agent learns the *kind* of fault from the catalogue and the *value* from configuration —
+  which the data boundary permits.
+- **`appliedBy` is set by us, not read from the model.** The prompt never mentions the field, so a
+  model cannot assert `"system"`.
+
+Also in MVP 3, and needing no setup: two rail entries under **Production Guardian** in the
+dashboard — **Architecture** (two slides, drawn as SVG from the design tokens) and **Brochure**.
+Both are static documents about the product; no API, no engine, no IRIS.
+
+### Before a rehearsal: three things that will bite
+
+- **`AGENT_MODE` defaults to `mock`.** Rebuild or restart the engine without `PG_AGENT_MODE=live`
+  in the environment and `investigate` quietly serves `source: "canned"` — a plausible narrative
+  built from real measured values, which looks correct and demonstrates nothing about the agent.
+  Check `source` is `agent` and `toolCalls` is non-zero. That is the standing #108 check and it
+  earns its keep: it caught exactly this regression during MVP 3.
+- **Restarting the `iris` container reverts an armed trigger.** Recompiling `Production.cls` resets
+  its settings, so `FilePath` and `PoolSize` go back to the shipped values and the scenario
+  disarms itself. Re-arm after any restart; `Status()` shows what is actually live.
+- **A live agent is not deterministic.** The model occasionally proposes `set_pool_size` on a host
+  the tool does not accept. `AgentDispatcher.DropUnapplicableAction()` removes such a
+  recommendation before it reaches the UI, reading the permitted host from the tool itself — so the
+  drawer never offers an approve button for an action that would be refused. The prompt asks; this
+  enforces.
+
 ### What the safety model actually enforces
 
 - **One action, one host, bounded.** `set_pool_size` on `Cloud API`, size `2`–`8`. Anything else is
