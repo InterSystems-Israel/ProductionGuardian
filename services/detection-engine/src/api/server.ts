@@ -54,6 +54,19 @@ export interface ServerOptions {
    * why a mock that has to guess the question cannot be made honest.
    */
   chat?: (body: unknown) => Promise<unknown>;
+  /**
+   * Handles `GET /api/hostseries?host=...&span=...` -- one host's recent metric series.
+   *
+   * WIRED RATHER THAN OPTIONAL-WITH-A-503, unlike `investigate` and `chat`. Those need an external
+   * agent this deployment may not have; this reads the rolling baseline, which every engine has by
+   * construction. So absence here would mean "an engine built before this endpoint", and an empty
+   * series is served rather than an error, for the reason the GETs below all share: a missing graph
+   * must not raise the connection banner.
+   *
+   * SYNCHRONOUS, like every GET but `/api/demo/triggers`. It walks in-memory arrays and touches
+   * nothing outside the process.
+   */
+  hostSeries?: (host: string, spanSeconds: number | null) => unknown;
 }
 
 /**
@@ -71,6 +84,12 @@ const GET_PATHS = new Set([
   '/api/healthscan/findings',
   '/api/healthscan/health',
   '/api/earlywarning',
+  // NOT under /api/healthscan/, for the same reason /api/earlywarning is not: that prefix is the
+  // RATIFIED two-endpoint contract, and a third path under it would read as part of it. This is an
+  // operational read over state the engine already holds, so it is a sibling -- same precedent, and
+  // `contracts/` needs no change to add one (root CLAUDE.md §4 governs edits to that directory, not
+  // the existence of endpoints outside it).
+  '/api/hostseries',
   // Under /api/demo/ so the demo surface is one prefix, greppable and removable as a unit.
   '/api/demo/triggers',
 ]);
@@ -286,6 +305,37 @@ export function createFindingsServer(options: ServerOptions): Server {
           // share its freshness by construction.
           sendJson(res, 200, snapshot.projections, snapshot.state);
           return;
+        case '/api/hostseries': {
+          // `host` IS REQUIRED AND IS A 400, not an empty series. Every other read here answers
+          // "what is true now" and has a correct empty answer; this one answers "about which host",
+          // and there is no host it could mean. Serving [] for a missing parameter would make a
+          // dashboard bug -- a click that lost the host name -- look like a host with no history.
+          const host = url.searchParams.get('host');
+          if (host === null || host.trim() === '') {
+            sendJson(res, 400, { error: 'bad request: host is required' }, snapshot.state);
+            return;
+          }
+          if (options.hostSeries === undefined) {
+            // An engine wired without it. Empty rather than an error, and `known: false` says why
+            // there is nothing -- the client's own "no data" branch then renders, which is a state
+            // it has to handle anyway for a warming engine.
+            sendJson(
+              res,
+              200,
+              { host, known: false, polledAt: null, spanSeconds: 0, pollIntervalSeconds: 0, series: [] },
+              snapshot.state,
+            );
+            return;
+          }
+          // `span` is optional; null means "your default". Parsed rather than trusted -- a
+          // non-numeric or negative value is treated as absent rather than refused, because the
+          // parameter is a display convenience and clamping already bounds what it can ask for.
+          const rawSpan = url.searchParams.get('span');
+          const parsedSpan = rawSpan === null ? Number.NaN : Number(rawSpan);
+          const span = Number.isFinite(parsedSpan) && parsedSpan > 0 ? parsedSpan : null;
+          sendJson(res, 200, options.hostSeries(host, span), snapshot.state);
+          return;
+        }
         case '/api/demo/triggers': {
           // THE ONE ASYNC GET, because the armed state lives in IRIS and this must report what is
           // actually armed rather than what the UI last asked for -- someone driving the terminal

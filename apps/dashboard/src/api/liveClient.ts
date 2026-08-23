@@ -18,8 +18,10 @@ import type {
   ResolveView,
 } from '../types/mvp2';
 import { parseChatAnswer, parseInvestigation, parseProjections, parseResolve } from './mvp2Guards';
+import { parseHostSeries } from './seriesGuards';
 import { parseFindings, parseHosts } from './guards';
 import type { FindingView, HostView } from '../types/healthscan';
+import type { HostSeriesView } from '../types/hostseries';
 
 const DEFAULT_BASE_URL = '/api/healthscan';
 
@@ -189,6 +191,20 @@ export function createLiveClient(): HealthScanApi {
          so an engine that has not warmed up yet yields [] rather than an error banner. */
       const root = baseUrl().replace(/\/healthscan\/?$/, '');
       return parseProjections(await getJsonAbsolute(`${root}/earlywarning`, signal));
+    },
+
+    async getHostSeries(host: string, signal?: AbortSignal): Promise<HostSeriesView | null> {
+      /* Sibling of /api/healthscan, like /api/earlywarning -- same one-level strip.
+         `encodeURIComponent`, not a template literal: every LABDEMO host name contains a space
+         ("Cloud API", "Lab Router"), and an unencoded one would either 400 at the engine or, worse,
+         arrive truncated and answer 200 for a host nobody asked about. */
+      const root = baseUrl().replace(/\/healthscan\/?$/, '');
+      const url = `${root}/hostseries?host=${encodeURIComponent(host)}`;
+      /* getJsonAbsolute maps 404 to `[]`, which is meant for the list endpoints and is the wrong
+         shape here -- so the parser sees a non-record and returns null, which is exactly the
+         "engine predates this endpoint" answer this method promises. Checked rather than assumed,
+         because relying on a coincidence between two files is how the #129 class of bug starts. */
+      return parseHostSeries(await getJsonAbsolute(url, signal));
     },
 
     async investigate(findingId: string, signal?: AbortSignal): Promise<InvestigationView> {

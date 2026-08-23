@@ -2064,3 +2064,209 @@ button {
     animation: none;
   }
 }
+
+/* ─── Host detail panel + metric charts (host graphs) ───────────────────────────────
+   Appended as ONE block at the end of the file, per the working note on this file being
+   contended -- nothing above is reordered or reformatted.
+
+   All tokens, no literals. The charts deliberately borrow `--pg-info` for the line rather
+   than introducing a chart palette: a series is neither a severity nor a brand accent, and
+   the severity colours are reserved for severity (§7.1's "never reuse for decoration").
+
+   The panel REUSES `.pg-drawer` for its geometry rather than redeclaring it, so the finding
+   drawer and the host panel are the same surface at the same edge with the same shadow and
+   the same responsive narrowing. Only what differs is below. */
+
+/* The two panels are mutually exclusive in `App`, so this shares the drawer's z-index
+   rather than stacking above it -- if it ever needed a stacking order, that would mean two
+   were open at once, which is the defect the exclusivity prevents. */
+.pg-drawer--host {
+  /* A slightly wider surface than the finding drawer: three charts plus six metric rows do
+     not read at 420px, and the charts are the reason the panel exists. Still `min()` against
+     the viewport so the grid stays visible beside it, which is why this is a drawer. */
+  width: min(480px, 92vw);
+}
+
+.pg-host-detail__status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--pg-space-2);
+}
+
+.pg-host-detail__status-text {
+  font-size: 12.5px;
+  color: var(--pg-text-muted);
+}
+
+.pg-host-detail__section-title {
+  margin: 0 0 var(--pg-space-2);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pg-text-muted);
+}
+
+.pg-host-detail__window {
+  margin: 0 0 var(--pg-space-4);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--pg-text-muted);
+}
+
+.pg-host-detail__filtered {
+  margin: 0;
+  padding-top: var(--pg-space-3);
+  border-top: 1px solid var(--pg-border-soft);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--pg-text-muted);
+}
+
+/* ── One chart ─────────────────────────────────────────────────────────────── */
+
+.pg-chart {
+  margin: 0 0 var(--pg-space-5);
+}
+
+.pg-chart__caption {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--pg-space-3);
+  margin-bottom: var(--pg-space-1);
+}
+
+.pg-chart__label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--pg-text);
+}
+
+/* Monospaced and right-aligned, the same rule the card's metric rows follow: the value
+   changes every poll and a proportional face makes it jitter (§7.3). */
+.pg-chart__latest {
+  font-family: var(--pg-font-mono);
+  font-size: 13px;
+  color: var(--pg-text);
+}
+
+/* Height in px while the viewBox is unitless: `preserveAspectRatio: none` means the SVG
+   stretches to whatever box CSS gives it, so the box is what sets the visual proportion. */
+.pg-chart__svg {
+  display: block;
+  width: 100%;
+  height: 52px;
+  background: var(--pg-surface-alt);
+  border-radius: var(--pg-radius);
+}
+
+.pg-chart__axis {
+  stroke: var(--pg-border);
+  stroke-width: 1;
+}
+
+.pg-chart__line {
+  fill: none;
+  stroke: var(--pg-info);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  /* `non-scaling-stroke`, because `preserveAspectRatio: none` scales x and y unequally --
+     without it the line's apparent thickness changes with the panel width, and a stretched
+     stroke reads as a rendering fault. */
+  vector-effect: non-scaling-stroke;
+}
+
+/* A lone sample, and each side of a gap that isolated one. Same colour as the line, because
+   it IS the series -- a different colour would imply a different kind of reading. */
+.pg-chart__dot,
+.pg-chart__head {
+  fill: var(--pg-info);
+  stroke: none;
+}
+
+.pg-chart__note {
+  margin: var(--pg-space-1) 0 0;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--pg-text-muted);
+}
+
+/* ── The card as a button ──────────────────────────────────────────────────── */
+
+/* `.pg-host` is now sometimes a `<button>`, which brings UA defaults the article never had.
+   Resetting them here rather than in `.pg-host` keeps the inert card byte-identical. */
+.pg-host--interactive {
+  width: 100%;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  /* Card content is left-aligned prose and numbers; a button centres by default. */
+  text-align: left;
+  cursor: pointer;
+}
+
+.pg-host--interactive:hover {
+  border-color: var(--pg-border);
+  box-shadow: var(--pg-shadow-card), 0 0 0 1px var(--pg-border);
+}
+
+/* THE SELECTED STATE IS NOT COLOUR ALONE (§7.3): the ring below is reinforced by the card's
+   own `aria-pressed`, by the panel that opens beside it, and by the "filtered to <host>"
+   line in the findings heading. The ring is the quietest of the four signals on purpose --
+   it must not compete with the severity border on the same edge. */
+.pg-host--selected {
+  box-shadow: var(--pg-shadow-card), inset 0 0 0 2px var(--pg-teal-500);
+}
+
+/* ── The findings filter notice ─────────────────────────────────────────────── */
+
+.pg-section__filter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pg-space-2);
+  /* The section title is uppercase with tracking; a host name inside it is a proper noun and
+     must render as typed -- "Cloud API", not "CLOUD API". */
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  color: var(--pg-text-muted);
+}
+
+.pg-section__filter strong {
+  color: var(--pg-text);
+}
+
+/* A text button, for a control that sits inside a heading where a bordered box would read as
+   a second heading. Still a real `<button>`, so it keeps the shared focus ring. */
+.pg-button--link {
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--pg-info);
+  text-decoration: underline;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.pg-button--link:hover {
+  background: none;
+  color: var(--pg-navy-800);
+}
+
+/* The panel animates in with the drawer's own keyframes, so `prefers-reduced-motion` is
+   honoured by the existing `.pg-drawer` rule above. Named here rather than left implicit,
+   because the ONE transition this block adds is the hover on a card -- and that needs its own
+   entry, since nothing else in the file covers it. */
+.pg-host--interactive {
+  transition: box-shadow 120ms ease-out, border-color 120ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-host--interactive {
+    transition: none;
+  }
+}

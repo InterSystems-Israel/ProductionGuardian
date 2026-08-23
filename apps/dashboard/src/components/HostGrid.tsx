@@ -30,6 +30,17 @@ export interface HostGridProps {
    * `null` on a first-ever visit, when nothing legitimately knows the answer.
    */
   skeletonCount?: number | null;
+  /**
+   * Opens a host's detail panel. Optional — without it the cards render inert, exactly as in MVP 1.
+   *
+   * SELECTION LIVES ABOVE THIS COMPONENT, in `App`, not here. The grid is a pure function of
+   * (hosts, findings) and the findings LIST also has to react to the selection, so state held here
+   * would have to be lifted the moment the filter was wired — and two components would each own half
+   * of one fact.
+   */
+  onSelectHost?: (host: string) => void;
+  /** The host whose panel is open, or null. */
+  selectedHost?: string | null;
 }
 
 /*
@@ -106,6 +117,8 @@ export function HostGrid({
   loading,
   skeletonCount = null,
   projections = [],
+  onSelectHost,
+  selectedHost = null,
 }: HostGridProps): JSX.Element {
   // Skeletons, not spinners (§7.3), as many as this production last reported, so the
   // layout does not jump when real data lands — whatever production that is.
@@ -163,6 +176,11 @@ export function HostGrid({
             findingCount={summary?.count ?? 0}
             now={now}
             projection={byHost.get(host.host) ?? null}
+            /* Spread conditionally rather than passed as `onSelect={onSelectHost}`: under
+               `exactOptionalPropertyTypes` an explicit `undefined` is not the same as an absent prop,
+               and the card's "inert unless given a handler" behaviour keys on absence. */
+            {...(onSelectHost === undefined ? {} : { onSelect: onSelectHost })}
+            selected={selectedHost === host.host}
           />
         );
       })}
