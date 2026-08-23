@@ -1,0 +1,314 @@
+# Production Guardian — presenter cue sheet
+
+**Every timing in this document was measured on the containerised stack on 2026-08-23, not estimated.**
+Where a number is a range or an assumption, it says so.
+
+This is the end-to-end flow: what to click, what to say, what the audience should see, and how long
+to wait. It is written to be read *while presenting* — the prose is in the "say" column, the
+mechanics are in the commands.
+
+Read [`README.md`](../../README.md) first if the stack is not already up. This file assumes it is.
+
+---
+
+## 0. Before you present — the pre-flight
+
+Do this **at least fifteen minutes before**, not on stage. Three of these five have bitten us.
+
+```bash
+export PG_AGENT_MODE=live          # else the agent serves a CANNED reply that looks correct
+export PG_DEMO_TRIGGERS=1          # else the rail's trigger buttons do not exist
+docker compose up -d
+```
+
+| # | Check | Command | Expected |
+|---|---|---|---|
+| 1 | All four services healthy | `docker compose ps` | four `(healthy)` |
+| 2 | **The agent is live, not canned** | `docker logs pg-detection-engine --tail 5 \| grep listening` | `agent=live`, `demo-triggers=ON` |
+| 3 | Trigger buttons exist | `curl -s localhost:5173/api/demo/triggers` | `"enabled": true`, 3 scenarios |
+| 4 | Nothing armed, no findings | `curl -s localhost:5173/api/healthscan/findings` | `[]` |
+| 5 | **Error window is clean** | see below | `purged N` |
+
+```bash
+# 5. Reset triggers AND purge the event log. Reset alone is not enough — see the trap below.
+curl -s -XPOST -H 'Content-Type: application/json' -H 'Origin: http://localhost:5173' \
+  -d '{}' localhost:5173/api/demo/reset
+docker exec -i pg-iris iris session IRIS <<'EOF'
+zn "LABDEMO"
+do ##class(Ens.Util.Log).Purge(.d, 0)
+write "purged ",$get(d,0),!
+halt
+EOF
+```
+
+### The five traps, in the order they will bite you
+
+1. **`AGENT_MODE` defaults to `mock`.** A canned investigation is built from *real measured values*, so
+   it reads as correct and demonstrates nothing about the agent. Check `source: "agent"` and a
+   non-zero `toolCalls` in any investigation — those two cannot be faked. This is the standing
+   pre-demo check and it has caught a real regression.
+2. **`Reset()` cannot clear the event log.** It restores settings, but a previous scenario's errors
+   stay in the 60-minute window and a later diagnosis reads them as evidence. That is exactly how a
+   pool bottleneck got diagnosed as a connectivity failure. **Always purge** (step 5).
+3. **Restarting the `iris` container disarms triggers.** Recompiling `Production.cls` resets its item
+   settings, so `FilePath` and `PoolSize` revert. Re-arm after any restart; the rail shows live state.
+4. **`Cloud API` may be left at pool 4** from a previous run of the Smart Resolve beat. `Reset()`
+   restores it to 1. If the queue never builds, check this first.
+5. **Never `curl /api/monitor/alerts`.** It is consume-on-read — reading it destroys the alert the
+   `system_alert` path depends on. Use `:3001/proxy/alerts`.
+
+**Open two browser tabs before you start:** `http://localhost:5173` (the dashboard) and the
+Management Portal link from its header (the IRIS interoperability editor). Switching tabs is faster
+than finding a URL on stage.
+
+---
+
+## The shape of the story
+
+Three acts, each answering a different question. **Acts 1 and 2 are the demo**; act 3 is the one
+people ask for afterwards.
+
+| Act | Question | Beat | Wall clock |
+|---|---|---|---|
+| **1** | *Does it see the problem?* | WHAT | ~2 min |
+| **2** | *Does it understand and fix it?* | WHY → FIX | ~4 min |
+| **3** | *What if there is no button to press?* | the honest answer | ~2 min |
+
+Total ≈ 8 minutes of demo. Budget 15 with questions.
+
+---
+
+## Act 1 — WHAT: a healthy production, then a real fault
+
+### 1.1 Start on the healthy state (30s)
+
+**Say:** *"This is a live InterSystems Health Connect production — three interoperability hosts moving
+HL7 messages. Everything is green. Production Guardian is watching it, and the important thing right
+now is that it is quiet."*
+
+**Show:** the host grid, ordered as the message flows — **EMR Source** (service) → **Lab Router**
+(process) → **Cloud API** (operation). Zero findings. Under each host, Early Warning says
+*"Watching — not trending toward a threshold."*
+
+> **Why that matters:** a monitoring tool that is silent when nothing is wrong is the whole point.
+> False positives are the top risk this product was designed against, so a quiet list is a feature.
+
+### 1.2 Break something real (45s)
+
+Click **Pool bottleneck** in the rail under *Demo triggers*.
+
+**Say while it warms:** *"I have just throttled the downstream system this production talks to, and
+raised the inbound rate. Nothing is broken — the host is healthy, it is simply outnumbered. This is
+the most common real-world failure and the hardest to see, because every individual message succeeds."*
+
+| t | What happens |
+|---|---|
+| 0s | Button returns immediately; shows *activating* |
+| **~77s** | Takes effect — measured 77s. It warms a baseline at zero first |
+| ~90s | Queue starts climbing, ~1/sec net |
+| ~2min | First findings confirmed |
+
+> **Do not skip the 77 seconds and do not fill it with silence.** The wait exists for a real reason and
+> it is worth saying out loud: *"it is establishing what normal looks like before I break anything —
+> a baseline learned during a fault is worthless."* That line lands well with a technical audience.
+
+### 1.3 The findings arrive (60s)
+
+**Measured, from a clean instance:**
+
+```
+queue_buildup       critical   Queue depth 123 with no baseline queue
+growing_queue_wait  critical   Average queue wait 37.66s is 1883x baseline
+slow_processing     critical   Average processing time 1.01s is 20x baseline
+```
+
+**Say:** *"Three findings, and each states the actual number — not 'queue is high'. 37 seconds of
+queue wait against a normal of hundredths of a second. And notice the host still reports its status
+as OK, because it is: the process is running fine. The finding carries the alarm, not the status."*
+
+**Show:** the severity tiles. **Hosts OK now reads 2 of 3**, not 3 — a host with a critical finding is
+not counted as OK. Click the host to filter the findings to it and open its live graphs.
+
+> **If asked "how fast?":** ~10s from a metric changing to a finding appearing, and the dashboard polls
+> every 2s. There is a deliberate two-sample debounce so a single bad scrape cannot produce a finding.
+
+---
+
+## Act 2 — WHY and FIX: the closed loop
+
+This is the act that sells the product. Do not rush it.
+
+### 2.1 Ask the AI Detective (90s)
+
+Click a finding → **Investigate**.
+
+**Say while it thinks (~6-8s):** *"This is not a chatbot summarising a dashboard. There is an agent
+running **inside** the IRIS instance, and it is reading live values through governed tools — checking
+the host's status, its queue depth, its configuration, its recent error history. Every one of those
+reads is authorization-checked and written to an audit trail."*
+
+**Measured:** `source: agent`, `model: gpt-4o-mini`, `toolCalls: 2`, `durationMs: 5828`.
+
+```
+rootCause: "The Cloud API host is currently configured with a pool size of 1, which severely
+            limits its ability to process incoming messages..."
+recommendedAction: {"type": "set_pool_size", "host": "Cloud API", "size": 2}
+```
+
+**Point at the provenance line.** *"`source: agent`, two tool calls. If this said `canned` it would be
+a scripted answer built from real numbers — plausible, and proving nothing. Those two fields are how
+you tell."*
+
+> **The strongest thing to say here, and it is true:** *"Nothing about pool size is in the agent's
+> instructions beyond which action it is permitted to suggest and the allowed range. It worked out the
+> bottleneck itself from the evidence it gathered."*
+
+### 2.2 Preview, then approve (60s)
+
+**Say:** *"It has recommended a change to a live production. It cannot make that change. A human has
+to approve it, and before approving you get a dry run."*
+
+**Show** the dry run: `outcome: previewed`, `before: {"poolSize": 1}` — and note it returns *before*
+any write happens.
+
+Then approve. **Measured:** `outcome: applied`, `reversal: {"host": "Cloud API", "size": 1}`.
+
+**Say:** *"Applied, and the previous value was captured live so it is reversible. Both the preview and
+the apply are in the audit trail as separate rows."*
+
+### 2.3 Watch it drain — the money shot (90s)
+
+**Measured drain, pool 1 → 4:**
+
+```
+t+1s    queued=165
+t+27s   queued=121
+t+52s   queued=74
+t+77s   queued=25
+t+103s  queued=0      <- findings clear on their own
+```
+
+**Say:** *"Four workers now, so the downstream waits overlap. It drains about twice as fast as messages
+arrive, and the findings disappear when the condition does — no acknowledging, no clearing, no
+tombstones. If it is still listed, it is still true."*
+
+> **Fill the 103 seconds** with the safety model — it is the right moment because they have just watched
+> an AI change a production:
+> - **one** action, **one** host, bounded 2–8 — anything else is refused by name
+> - dry run first, and that path returns before writing
+> - reversible, with the prior value captured live
+> - RBAC-gated, so the investigating agent **cannot** call the write tool at all
+> - every call audited, reads included — and *refusals are audited too*
+> - **metrics and configuration only ever leave the instance. Never message content. Never PHI.**
+
+---
+
+## Act 3 — the honest answer: a fault with no button
+
+The single most credible thing in the demo. It shows the product knows its limits.
+
+Reset first (`Reset all`), then click **Missing directory**.
+
+**Measured:** `dead_host` appears at **t+12s**.
+
+**Say:** *"Different fault. A service is configured to read from a directory that does not exist. Watch
+what the AI does with it."*
+
+Investigate. **Measured:** `source: agent`, `toolCalls: 2`, ~7s.
+
+```
+recommendedAction: null
+manualRemediation: "Correct the missing directory and invalid production setting."
+```
+
+**Say, slowly:** *"No approve button. There isn't one, because creating a directory on a server is not
+something this system is permitted to do — so it tells you what to do instead, and says plainly that a
+person has to do it. A product that offered a button here would be lying to you."*
+
+> **If asked how it knows the path:** from the host's **configuration**, never from the log. Error text
+> can contain patient data, so the tool returns a fixed catalogue string keyed by error code —
+> `#5021` → *"a configured directory or file path does not exist"* — and the path itself comes from the
+> configuration, which is not message content.
+
+---
+
+## Optional beats — for questions, not the main line
+
+### Ask the activity assistant
+
+**Say:** *"There are three activity tables in IRIS holding days of per-host history. You can just ask."*
+
+```
+"which host has the worst queueing time?"
+  -> "The host with the worst queueing time is the Cloud API, with an average queueing time of
+      27.92 seconds over the last 3 days."       (measured: source agent, 2 tool calls)
+```
+
+### The architecture slides and the brochure
+
+Rail → **Architecture** (two slides) and **Brochure**. Both static; no setup, no risk. Good filler if
+something upstream is slow.
+
+### Downstream unreachable — if someone asks "what if the target is down?"
+
+Click **Downstream unreachable**. It produces four finding types at once, and the interesting part is
+what the AI does **not** recommend: it declines the pool increase, because more workers failing to
+reach a closed port is just a faster failure. That distinction is enforced in code, not left to the
+model's judgement.
+
+---
+
+## Recovery — when something goes wrong on stage
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Investigation says `source: "canned"` | `PG_AGENT_MODE` not `live` | Can't fix live. **Say it is demo mode** and continue — the loop still works |
+| Investigation returns `state: unavailable`, `rootCause: null` | LLM key wrong or expired | The FIX half does not use the LLM, so demo that instead |
+| Trigger buttons missing from the rail | `PG_DEMO_TRIGGERS` unset | Drive from the terminal instead (see README) |
+| Queue never builds | `Cloud API` already at pool 4 | `Reset all` |
+| A connectivity diagnosis on a queue problem | Stale errors in the window | Purge the log (pre-flight step 5) |
+| Everything looks stale | Engine can't reach the proxy | Banner says `stale` — it degrades rather than blanking. Say so; it is a feature |
+| Whole stack unavailable | — | `apps/dashboard/dist/index.html` opens from `file://` in demo mode with fixture data |
+
+**The general rule: if something is wrong, say what is wrong.** This product's whole argument is that
+it tells you the truth about a production. Narrating a real failure honestly is on-message; pretending
+is not.
+
+---
+
+## Between rehearsals
+
+```bash
+curl -s -XPOST -H 'Content-Type: application/json' -H 'Origin: http://localhost:5173' \
+  -d '{}' localhost:5173/api/demo/reset
+docker exec -i pg-iris iris session IRIS <<'EOF'
+zn "LABDEMO"
+do ##class(Ens.Util.Log).Purge(.d, 0)
+do ##class(ProductionGuardian.LabDemo.Audit.Entry).Purge()
+halt
+EOF
+```
+
+Purging the audit log is optional but makes "six rows for six tool calls" legible on the next run.
+
+---
+
+## Known rough edges — say these plainly if asked
+
+Being straight about these is more persuasive than hoping nobody notices.
+
+- **`auditId` is `null` in the resolve response** even though the audit rows *are* written (verified:
+  rows 360 and 361 for a dry run and an apply). The trail is complete; the response just doesn't
+  point at it.
+- **RBAC is not exercised by the running stack.** The services connect as a `%All` user, so every audit
+  row reads `SuperUser` and the authorization policy never actually refuses. The policy is real and
+  refuses a genuinely low-privileged caller — but the deployed demo does not show that boundary firing.
+- **`stalled_host` cannot be induced.** Both ways of stopping a host consuming its queue put it into a
+  status the rule declines for. A gap in demo coverage, not a defect in the rule.
+- **`system_alert` outlives `Reset()`** — the alert sits in the metrics proxy's in-memory buffer, which
+  IRIS cannot reach. Restart the proxy to clear it.
+- **One scenario, one action.** `set_pool_size` on `Cloud API` within 2–8 is the *only* thing this
+  system can change. That is deliberate — a general action catalogue is later work, and the safety
+  argument depends on the boundary being narrow.
+- **A newly added host shows as `unknown` type** until it processes its first message, because the type
+  label only appears on per-message-type metrics.
