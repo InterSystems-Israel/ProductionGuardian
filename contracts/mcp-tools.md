@@ -3,7 +3,7 @@
 **Owner:** Dev B (inherited `iris/**` from Dev A) · **Consumer:** Dev B (agent orchestration), Dev C
 (approval UI, indirectly) · **Runs in:** the `pg-iris` container · **Status:** published
 
-Six tools. Five read, one write. They exist so the **AI Detective** agent can gather evidence about
+**Seven tools since MVP 3. Six read, one write.** They exist so the **AI Detective** agent can gather evidence about
 one condition on one host, and so **Smart Resolve** can apply one bounded action to it. Root
 `CLAUDE.md` §2.1 is the scope boundary; this file is the interface.
 
@@ -72,6 +72,39 @@ is omitted from the generated `required` array; a parameter **without** one is r
 `sinceMinutes As %Integer = 15` is optional *because* it has a default. Do not document a parameter
 as optional and then declare it without a default — the generated schema, not this table, is what
 the agent obeys.
+
+**But the ObjectScript default does not apply on the tool path, and a tool must restate it in the
+body.** `%AI.ToolMgr.ExecuteTool` builds the argument list from the model's JSON and passes `""` for
+a key the model omitted — it does not omit the argument, so `= 15` never fires. A parameter declared
+optional therefore arrives as the empty string, and any range check written against it rejects the
+call. Measured on the same host in the same second:
+
+```
+Invoke("GetRecentErrors", {"host":"EMR Source"})                      -> {"error": "sinceMinutes must be between 1 and 60"}
+Invoke("GetRecentErrors", {"host":"EMR Source", "sinceMinutes": 15})  -> 3 errors, #5021 and <Ens>ErrProductionSettingInvalid
+```
+
+So the signature declares the *schema* and the body must enforce the *default*:
+
+```objectscript
+if sinceMinutes = "" { set sinceMinutes = 15 }   // absence -> default
+if (sinceMinutes < 1) || (sinceMinutes > 60) { ... }   // a wrong value the model SENT is still refused
+```
+
+The two branches are separate on purpose: absence means "use the default", a sent-and-wrong value
+means "refuse and name the range". Collapsing them either way loses one of those.
+
+**Why this is worth a contract paragraph rather than a code comment.** It was live from #106 and
+invisible to every check we had, because the only caller that omits an optional parameter is the
+model — every hand-written probe, test and demo script passed the argument explicitly. It surfaced
+only in a live agent turn, and the failure was not an error: blinded to the error codes, the agent
+reasoned from the one value it could still read (`PoolSize 1`) and recommended enlarging the pool of
+a host whose configured directory did not exist. **A tool that refuses is indistinguishable, in the
+narrative, from a tool that found nothing** — which makes this the same defect class as §2.1's
+unmeasurable-vs-zero, arriving through the argument list instead of the return value.
+
+Any new tool with an optional parameter must do the same, and `contracts/samples/` should carry the
+omitted-argument call rather than only the explicit one.
 
 **Units are seconds**, everywhere a duration appears, matching `healthscan-api.md` Q6. Confirmed
 empirically rather than assumed: `Cloud API` configured at 0.05s latency reports `0.05`.
@@ -477,6 +510,79 @@ settings — never from a log row.
 **The `#5021` entry is the whole reason MVP 3 needs this tool at all**, and it is also why the tool
 alone is insufficient: `count: 8` and that summary tell the agent a path is missing and not *which*
 path. Naming it requires reading configuration, which is a different tool and a different boundary.
+
+### 3.4b `get_host_settings` — read, added in MVP 3
+
+The configured adapter settings for one host, **filtered by an allowlist of setting names**.
+
+**Input**
+
+| Field | Type | Req | Notes |
+|---|---|---|---|
+| `host` | string | **required** | Config item name. |
+
+**Output**
+
+| Field | Type | Notes |
+|---|---|---|
+| `host` | string | Echoed. |
+| `found` | boolean | `false` with an `error` when the host is not in the running production. |
+| `settings` | object | Permitted setting names to their values. Absent names are absent, not null. |
+| `settingsOnItem` | integer | How many settings the item carries **before** filtering. |
+
+Permitted names: `FilePath`, `ArchivePath`, `WorkPath`, `FileSpec`, `PollInterval`, `HTTPServer`,
+`HTTPPort`, `URL`, `TargetConfigNames`, plus `PoolSize` (a property of `Ens.Config.Item`, not a
+settings row — the same value `get_pool_size` publishes, not a second source of truth).
+
+**WHY THIS TOOL EXISTS, and it is a boundary decision rather than a convenience.** MVP 3's scenario
+needs the agent to name a directory a service cannot read. That name lives in exactly two places:
+the `#5021` log message, and the configuration. `get_recent_errors` will never return log text
+(§3.4, §6), so without this tool the agent learns *a path is missing* and never *which path*.
+Configuration is what root `CLAUDE.md` §2.1 permits — a setting value was typed by whoever deployed
+the production, not derived from a message.
+
+**AN ALLOWLIST, NOT THE WHOLE COLLECTION.** Returning every setting is one `Credentials` row away
+from handing an external LLM the name of a credential set, and one future setting away from
+something worse: productions are configured by people, and people put surprising things in free-text
+settings. So the tool names what it returns and refuses the rest by construction — the same
+reasoning as `set_pool_size`'s single whitelisted host.
+
+**`Credentials` is deliberately absent** even though it is only an identifier. It names a stored
+secret, and no diagnosis needs it enough to justify saying its name outside the instance.
+
+**`settingsOnItem` exists so filtering is visible.** Without it, a host configured entirely through
+refused settings looks identical to one with no configuration at all — and "this host has nothing
+set" is a materially different diagnosis from "I am not allowed to see what is set".
+
+```jsonc
+// -> get_host_settings
+{ "host": "EMR Source" }
+```
+
+```jsonc
+// <- the missing-folder scenario, armed
+{
+  "host": "EMR Source",
+  "found": true,
+  "settings": {
+    "FilePath": "/tmp/labdemo/hl7-in-missing/",
+    "FileSpec": "*.hl7",
+    "ArchivePath": "/tmp/labdemo/hl7-archive/",
+    "PollInterval": "2",
+    "TargetConfigNames": "Lab Router",
+    "PoolSize": 1
+  },
+  "settingsOnItem": 6
+}
+```
+
+Combined with `get_recent_errors`, the agent can conclude: *`EMR Source` is in Error; a `#5021` was
+logged, which means a configured path does not exist; its `FilePath` is
+`/tmp/labdemo/hl7-in-missing/`* — a specific diagnosis built entirely from configuration and a
+catalogue, with no log text crossing the boundary.
+
+Measured on `Cloud API`, which carries a `Credentials` setting: `settingsOnItem` reads `4` and
+`settings` returns `3`. The filter is doing something, and the response says so.
 
 ### 3.5 `get_processing_time` — read
 
@@ -954,7 +1060,7 @@ denial happened.
 the same call at `0.0071 s`. Stated because a reader comparing §5.5's promise of a duration against
 a column of zeroes should find the explanation here rather than assume the field is broken.
 
-Every one of the six tools is audited on every call. Not a per-tool setting: it is where the audit
+Every one of the seven tools is audited on every call. Not a per-tool setting: it is where the audit
 hook sits in the execution path (§5.2) — plus the policy's own row for the one case that path
 cannot see.
 

@@ -5,6 +5,68 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-23 — `get_host_settings`, and an optional argument does not default (Dev B)
+
+**`mcp-tools.md` only.** No schema change, no sample change — `validate.mjs` stays at 3 samples /
+26 reject. Two edits, one additive and one a correction to a statement that was wrong in a way that
+cost a live investigation.
+
+### 1. §3.4b — `get_host_settings` added
+
+MVP 3's scenario needs the agent to **name** the directory a service cannot read. That value lives
+in exactly two places: the `#5021` log message, and the host's configuration. `get_recent_errors`
+will never return log text — `Ens_Util.Log` on this instance holds 61,772 rows carrying `PatientID`
+in plain text — so without this tool the agent can learn *a path is missing* and never *which path*.
+
+Configuration is what the boundary permits: root `CLAUDE.md` §2.1 is "metrics and configuration only,
+never message content." A setting **value** is configuration by definition — typed by whoever
+deployed the production, not derived from a message.
+
+**An allowlist of nine setting names, not the whole collection.** Returning everything would be one
+`Credentials` row away from handing an external LLM the name of a credential set, and one future
+setting away from something worse, since productions are configured by people and people put
+surprising things in free-text settings. `Credentials` is deliberately absent even though it is only
+an identifier: an agent has no diagnostic use for it that outweighs saying its name out loud. Adding
+a name to the allowlist is a contract change, on purpose — the same reasoning as `set_pool_size`'s
+single whitelisted host and the `#5021` catalogue.
+
+`settingsOnItem` reports the unfiltered count, so "this host has three settings" is distinguishable
+from "the allowlist filtered most of them out". Without it, a host configured entirely through
+refused settings looks identical to one with no configuration at all.
+
+Expected tool count moves **6 → 7**; `Setup.AIHub.Run()` prints it at boot.
+
+### 2. §2 — an optional parameter arrives as `""`, not as its default
+
+The paragraph above it said required-vs-optional is expressed in the ObjectScript signature, which is
+true of the **generated schema** and does not describe what the tool body receives.
+`%AI.ToolMgr.ExecuteTool` passes `""` for a key the model omitted rather than omitting the argument,
+so `sinceMinutes As %Integer = 15` never defaults on the tool path. Measured, same host, same second:
+
+```
+{"host":"EMR Source"}                      -> {"error": "sinceMinutes must be between 1 and 60"}
+{"host":"EMR Source","sinceMinutes":15}    -> 3 errors, #5021 and <Ens>ErrProductionSettingInvalid
+```
+
+A tool declaring an optional parameter and range-checking it therefore **refused every call that
+omitted it**. Live since #106.
+
+**Why it survived that long, and why the fix is in the contract.** The only caller that omits an
+optional parameter is the model. Every hand-written probe, test and demo script passed it explicitly,
+so nothing we ran could see it. And the failure was not an error: blinded to the error codes, the
+agent reasoned from the one value it could still read — `PoolSize 1` — and recommended enlarging the
+pool of a host whose configured directory did not exist. **A tool that refuses is
+indistinguishable, in the narrative, from a tool that found nothing.** That is §2.1's
+unmeasurable-is-not-zero rule arriving through the argument list rather than the return value, which
+is why it belongs next to the schema rule it corrects rather than in a code comment.
+
+The contract now requires the body to restate the default (`if x = "" { set x = default }`) while
+still refusing a value the model sent and got wrong, and asks that samples carry the
+omitted-argument call rather than only the explicit one.
+
+---
+
+
 ## 2026-08-20 — MVP 3's two contract changes, and the first MVP 2 schema (Dev B)
 
 **Two documents changed, one schema and one captured sample added.** `validate.mjs` goes from
