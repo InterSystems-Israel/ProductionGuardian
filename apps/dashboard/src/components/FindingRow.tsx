@@ -28,7 +28,7 @@ export function FindingRow({
   now,
   onSelect,
 }: FindingRowProps): JSX.Element {
-  const meta = findingMeta(finding.type);
+  const meta = findingMeta(finding.type, finding.message);
 
   const classes = [
     'pg-finding',

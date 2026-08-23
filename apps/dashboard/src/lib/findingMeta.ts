@@ -78,9 +78,40 @@ const KNOWN: Record<FindingType, Omit<FindingMeta, 'unknown'>> = {
 /** The eight contract types, in the order §1.3 of the spec lists them. */
 export const FINDING_TYPES = Object.keys(KNOWN) as FindingType[];
 
-export function findingMeta(type: string): FindingMeta {
+/**
+ * `dead_host` covers four IRIS statuses and "Dead host" is only right for two of them.
+ *
+ * `Stopped` and `Disabled` mean the host is not running — dead is accurate. `Error` and `Inactive`
+ * mean it IS running and failing, which is a different thing to an operator: a host in `Error`
+ * because its configured directory does not exist is very much alive, and labelling it dead sends
+ * someone to look for a stopped job. Reported as wrong by @Ari-Glikman on the MVP 3 scenario.
+ *
+ * THE STATUS COMES FROM THE MESSAGE, not from a new contract field. The engine's `message` is
+ * authoritative and already states it verbatim — "Cloud API is Error with 439 message(s) queued" —
+ * so the status is there to be read. Adding a `status` field to `Finding` for a label would be a
+ * contract change (§2.3) for something the payload already carries.
+ *
+ * Deliberately narrow: it matches only the exact phrase the rule emits, and falls back to the
+ * generic label for anything else. A loose match would relabel findings whose message merely
+ * mentions a status word.
+ */
+function deadHostLabel(message: string | undefined): string {
+  if (message === undefined) return 'Host not processing';
+  if (/\bis Error\b/.test(message)) return 'Host in error';
+  if (/\bis Inactive\b/.test(message)) return 'Host inactive';
+  if (/\bis Stopped\b/.test(message)) return 'Host stopped';
+  if (/\bis Disabled\b/.test(message)) return 'Host disabled';
+  // Covers a status the rule gains later without this going stale into a wrong claim: "not
+  // processing" is true of every member of DEAD_STATUSES, present and future.
+  return 'Host not processing';
+}
+
+export function findingMeta(type: string, message?: string): FindingMeta {
   const known = KNOWN[type as FindingType];
   if (known !== undefined) {
+    if (type === 'dead_host') {
+      return { ...known, label: deadHostLabel(message), unknown: false };
+    }
     return { ...known, unknown: false };
   }
   return { label: humanize(type), metric: null, Icon: IconUnknown, unknown: true };

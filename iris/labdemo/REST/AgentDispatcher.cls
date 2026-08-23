@@ -366,6 +366,28 @@ ClassMethod SystemPrompt() As %String [ Private ]
     set p = p _ "For any other host this action is unavailable and recommending it is an error -- "
     set p = p _ "it will be refused before it applies. "
 
+    // WHEN A POOL INCREASE IS THE WRONG FIX, and this is the one piece of domain reasoning the
+    // prompt has to carry, because the model gets it backwards with the evidence in front of it.
+    // Observed on the closed-port scenario: get_recent_errors returned 246 unreachable-downstream
+    // errors and 242 timeouts, the model NAMED them in its rootCause, and still recommended
+    // set_pool_size 2. Four workers failing to reach a closed port is not four times the
+    // throughput; it is four times the error rate.
+    //
+    // The distinction is a queue that is SLOW versus a queue that is FAILING, and it is decidable
+    // from the byCode breakdown the tool already returns -- no new tool and no new evidence, just
+    // the rule for reading what is there. Stated as a hard precondition rather than a caution,
+    // since a caution is what the previous version effectively was.
+    set p = p _ "A LARGER POOL ONLY HELPS A QUEUE THAT IS PROCESSING SLOWLY, never one that is "
+    set p = p _ "failing. If get_recent_errors shows connectivity or downstream failures -- codes "
+    set p = p _ "#6059, <Ens>ErrConnectionLost, <Ens>ErrHTTPStatus, <Ens>ErrFailureTimeout, "
+    set p = p _ "<Ens>ErrTCPTerminatedReadTimeoutExpired -- then the queue is the SYMPTOM and the "
+    set p = p _ "unreachable target is the cause. More workers would only fail faster, so "
+    set p = p _ "recommendedAction MUST be null and the fix belongs in manualRemediation: the "
+    set p = p _ "operator repoints the host at a reachable target or restores the downstream. "
+    set p = p _ "Recommend set_pool_size only when the host is processing successfully and simply "
+    set p = p _ "cannot keep up -- messages completing, few or no errors, and work accumulating "
+    set p = p _ "behind a single worker. "
+
     // MVP 3. The two fields are described as MUTUALLY EXCLUSIVE and as differing in AUTHORITY rather
     // than in format, because that is the distinction the model has to get right: one is a change we
     // may make, the other is a change only a person may make. A prompt that described them as "a

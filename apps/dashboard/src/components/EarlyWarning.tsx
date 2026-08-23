@@ -46,7 +46,29 @@ const SHOWN_REASONS: Record<string, string> = {
   warming: 'Baseline still warming — no projection yet',
   insufficient_samples: 'Not enough samples yet for a projection',
   already_crossed: 'Threshold reached — see the finding below',
+  /*
+   * `not_rising` was silent, and that made the module INVISIBLE on a healthy production — which is
+   * every demo before a trigger is armed, and is what "I don't see the early warning" meant
+   * (@Ari-Glikman). The projection only appears in the narrow window where a metric is rising but
+   * has not yet crossed, roughly 100 seconds on the queue scenario, so anyone looking outside that
+   * window saw nothing at all and reasonably concluded the feature was missing.
+   *
+   * This is the SAME defect the comment above records for `already_crossed`, in the opposite
+   * direction: hiding a steady state hides the fact that anything is watching. The earlier reasoning
+   * -- "those are steady states on a healthy host and a row per host saying nothing is noise" -- is
+   * right about the noise and wrong about the cost. A module that is silent when there is nothing to
+   * report is indistinguishable from a module that does not exist, and an operator cannot tell which
+   * they have.
+   *
+   * So it renders as a WATCHING state rather than a forecast, and reads as reassurance rather than
+   * as a pending result. `pg-forecast--quiet` styles it below the pending tone so three calm rows do
+   * not compete with a real projection when one appears.
+   */
+  not_rising: 'Watching — not trending toward a threshold',
 };
+
+/** Reasons that mean "nothing is happening", styled quieter than a pending forecast. */
+const QUIET_REASONS = new Set(['not_rising']);
 
 /**
  * Seconds to a human span, rounded coarsely on purpose.
@@ -75,8 +97,14 @@ export function EarlyWarning({ projection }: EarlyWarningProps): JSX.Element | n
        reporting that the thing it was watching for has happened. The other two are genuinely
        "not yet", so they keep the muted pending styling. */
     const spent = reason === 'already_crossed';
+    const quiet = reason !== null && QUIET_REASONS.has(reason);
+    const tone = spent
+      ? 'pg-forecast--spent'
+      : quiet
+        ? 'pg-forecast--quiet'
+        : 'pg-forecast--pending';
     return (
-      <div className={`pg-forecast ${spent ? 'pg-forecast--spent' : 'pg-forecast--pending'}`}>
+      <div className={`pg-forecast ${tone}`}>
         <span className="pg-forecast__label">Early warning</span>
         <span className="pg-forecast__body">{shown}</span>
       </div>

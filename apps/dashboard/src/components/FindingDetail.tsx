@@ -95,7 +95,7 @@ export function FindingDetail({
 
   if (finding === null) return null;
 
-  const meta = findingMeta(finding.type);
+  const meta = findingMeta(finding.type, finding.message);
   const kind = valueKind(finding.type);
   const severity = toSeverity(finding.severity);
 
