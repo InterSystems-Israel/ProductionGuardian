@@ -94,7 +94,11 @@ export function TriggerRail(): JSX.Element | null {
   const refresh = useCallback(async () => {
     try {
       const res = await fetch(`${BASE}/triggers`);
-      setState(parseState(await res.json()));
+      // Same text-then-parse as the writes below. Here the catch already swallows it, so this is
+      // about the FAILURE MODE rather than the message: a thrown SyntaxError and a truthful
+      // "triggers are off" both hide the rail, and the second is what an HTML error page means.
+      const raw = await res.text();
+      setState(parseState(JSON.parse(raw)));
     } catch {
       // Silent. A failed status poll must not render an error over the whole rail: the endpoint is
       // optional by construction, and the connection banner already owns "the engine is unreachable".
@@ -119,7 +123,36 @@ export function TriggerRail(): JSX.Element | null {
           headers: { 'Content-Type': 'application/json' },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
-        const payload = (await res.json()) as Record<string, unknown>;
+
+        /*
+         * READ AS TEXT, THEN PARSE, so a non-JSON response becomes a sentence rather than a
+         * `SyntaxError` shown to the operator. `res.json()` threw
+         *
+         *     Unexpected token '<', "<html> <h"... is not valid JSON
+         *
+         * when nginx timed out and returned its own HTML error page (@Ari-Glikman). The nginx read
+         * timeout is fixed separately -- but a proxy, a load balancer or an auth gateway returning
+         * HTML is a permanent possibility, not a bug to be fixed once, and a parse error names the
+         * wrong layer entirely: it reads as "the dashboard is broken" when the request never
+         * reached the engine.
+         *
+         * The status code carries the meaning here, so it is reported instead of the body.
+         */
+        const raw = await res.text();
+        let payload: Record<string, unknown>;
+        try {
+          payload = JSON.parse(raw) as Record<string, unknown>;
+        } catch {
+          // 504/502 specifically, because for a long arm that is the likely one and "still running"
+          // is materially different advice from "it failed".
+          setError(
+            res.status === 504 || res.status === 502
+              ? `The request timed out at the proxy after ${res.status}. Arming may still be ` +
+                `running in IRIS — check the armed state before retrying.`
+              : `The server returned a non-JSON response (HTTP ${res.status}).`,
+          );
+          return;
+        }
         if (typeof payload['error'] === 'string' && payload['error'] !== '') {
           setError(payload['error']);
         } else if (typeof payload['note'] === 'string' && payload['note'] !== '') {

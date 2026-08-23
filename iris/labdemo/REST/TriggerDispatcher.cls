@@ -49,6 +49,14 @@ Class ProductionGuardian.LabDemo.REST.TriggerDispatcher Extends %CSP.REST
 /// recompile to turn off, and "turn this off now" is the operation most likely to be urgent.
 Parameter FLAGVAR = "PG_DEMO_TRIGGERS";
 
+/// Scenarios that take longer to arm than the web server will wait, so they run as a background job.
+///
+/// A LIST RATHER THAN A DURATION THRESHOLD, because the cost is not measurable before the call: the
+/// only way to know a scenario is slow is to know what it does. `pool_bottleneck` warms a baseline
+/// for 75s; the other two return in under a second. Adding a scenario means deciding which side of
+/// this it falls on, which is the decision that should be explicit.
+Parameter SLOWSCENARIOS = {$listbuild("pool_bottleneck")};
+
 XData UrlMap [ XMLNamespace = "http://www.intersystems.com/urlmap" ]
 {
 <Routes>
@@ -93,9 +101,23 @@ ClassMethod Status() As %Status
     // What is actually armed, read from the trigger globals rather than inferred, so the UI can
     // show state instead of assuming its own button presses are the whole truth. Someone driving
     // the terminal at the same time is a normal thing to do in a rehearsal.
+    // KEYED ON WHAT THE SCENARIO *SETS*, NOT ON WHAT IT STASHED. `PoolWas` was the first choice and
+    // it is wrong: every stash is conditional on the value differing from the shipped one, so
+    // arming `pool_bottleneck` on an instance already at pool 1 stashes nothing and the button read
+    // "not armed" while the scenario was fully armed. Measured -- DispatcherMs, RateSecs and
+    // MaxQueued were all set and the UI showed false.
+    //
+    // `DispatcherMs` is set unconditionally and only by this scenario, so it is the honest witness.
+    // It is also set AFTER the 75-second warm-up, which makes the indicator mean "arming has taken
+    // effect" rather than "a request was accepted" -- exactly what a presenter needs from it while a
+    // jobbed scenario is still warming.
+    do out.armed.%Set("pool_bottleneck", ''$data(^ProductionGuardian.Trigger("DispatcherMs")), "boolean")
+
+    // `PathWas` and `PortWas` ARE correct witnesses for their scenarios, because both repoint a
+    // setting to a value that cannot be the shipped one -- so the stash always happens. Kept, rather
+    // than changed for symmetry with the line above.
     do out.armed.%Set("missing_folder", ''$data(^ProductionGuardian.Trigger("PathWas")), "boolean")
     do out.armed.%Set("closed_port", ''$data(^ProductionGuardian.Trigger("PortWas")), "boolean")
-    do out.armed.%Set("pool_bottleneck", ''$data(^ProductionGuardian.Trigger("PoolWas")), "boolean")
 
     write out.%ToJSON()
     quit $$$OK
@@ -148,6 +170,44 @@ ClassMethod Arm() As %Status
             return $$$OK
         }
 
+        // SCENARIOS THAT BLOCK LONGER THAN THE WEB SERVER WILL WAIT MUST BE JOBBED.
+        //
+        // The embedded Apache in this image answers **504 after exactly 60 seconds**, regardless of
+        // what the engine or nginx allow. Measured directly against IRIS with no proxy in front:
+        //
+        //     POST /labdemo/trigger/arm {"scenario":"pool_bottleneck"}  ->  HTTP 504 in 60.2s
+        //
+        // `PoolBottleneck()` waits 75s BEFORE arming anything -- the baseline has to warm at exactly
+        // zero or `queue_buildup` can never fire (see that method's comment, and #43). So the wait is
+        // load-bearing and cannot be shortened, which means the REQUEST has to stop being long.
+        //
+        // Raising timeouts was the wrong fix and I tried it first: nginx 35s -> 180s and the engine
+        // at 150s both sat outside a limit neither of them owned, and the symptom was unchanged.
+        // The 504 came from IRIS itself.
+        //
+        // So a slow scenario is JOBBED and the route answers immediately with `pending`. The UI
+        // already polls the armed state, so it learns the outcome from the state it was reading
+        // anyway rather than from this response -- which is why this is a small change rather than a
+        // new progress channel.
+        //
+        // No captured log for a jobbed scenario: there is no output to capture yet when the response
+        // is written. `detail` carries what the scenario will do instead, which is the same text a
+        // reader wants and is knowable in advance.
+        if $listfind(..#SLOWSCENARIOS, scenario) {
+            job ..JobScenario(scenario)::5
+            if '$test {
+                // Built first: a concatenation inside a %DynamicObject literal is #1021. Second time
+                // in this class, so it is worth the note rather than the silent fix.
+                set jobErr = "could not start the background job for '" _ scenario _ "'"
+                set %response.Status = "503 Service Unavailable"
+                write { "error": (jobErr) }.%ToJSON()
+                return $$$OK
+            }
+            write { "armed": (scenario), "ok": true, "pending": true, "log": "",
+                "note": "Warming the baseline at zero for ~75s before arming, so queue_buildup can fire. The armed indicator will appear when it starts." }.%ToJSON()
+            return $$$OK
+        }
+
         open capturePath:("NRW"):5
         if '$test {
             // Could not open the capture file. Run the trigger anyway with output going nowhere
@@ -181,6 +241,24 @@ ClassMethod Arm() As %Status
         write { "error": ("arm failed: " _ ex.DisplayString()) }.%ToJSON()
         return $$$OK
     }
+}
+
+/// Entry point for a JOBBED scenario. Public because `job` cannot reach a private method.
+///
+/// `job ..Invoke(...)` starts a NEW PROCESS, and a private method is not callable from one --
+/// measured as `<PRIVATE METHOD> 197 Arm+66`, returned as a 200 with an error rather than a crash,
+/// which is why it looked like a logic bug rather than a visibility one.
+///
+/// PUBLIC BUT NOT A WIDER SURFACE. It is not a `%CSP.REST` route, so it is unreachable over HTTP;
+/// it re-checks `Enabled()` so a jobbed call cannot outlive the flag being turned off mid-run; and it
+/// takes only a scenario name, which `Invoke` validates against the same fixed `$case`. An unknown
+/// name is a no-op status rather than a dispatch.
+ClassMethod JobScenario(scenario As %String) As %Status
+{
+    if '..Enabled() {
+        quit $$$ERROR($$$GeneralError, "demo triggers are not enabled")
+    }
+    quit ..Invoke(scenario)
 }
 
 /// Run one named scenario. Private, and the only place the scenario names map to methods.
