@@ -415,7 +415,27 @@ ClassMethod BuildGoal(body As %DynamicObject) As %String [ Private ]
     if $isobject(body.trend) {
         set g = g _ " Trend: " _ body.trend.%ToJSON()
     }
-    set g = g _ " Use the tools to confirm the configuration before concluding."
+    // NAMES THE TWO TOOLS THAT ANSWER *WHY*, because "use the tools" did not get them called
+    // reliably and the finding itself never says why. Measured over three consecutive live runs on
+    // the armed missing-folder scenario, only one produced a `manualRemediation` -- the other two
+    // returned a diagnosis with no fix, having never read the error codes or the setting values.
+    // Honest, and useless: the evidence was one tool call away.
+    //
+    // The failure is asymmetric, which is why this is worth a directive rather than a hope. A
+    // status and a queue depth describe THAT something is wrong; only the error catalogue and the
+    // configuration describe WHAT. A model that stops after the first two has enough to write a
+    // fluent paragraph and nothing to recommend.
+    set g = g _ " Before concluding you MUST call get_recent_errors and get_host_settings on this"
+    set g = g _ " host: the first names the KIND of failure, the second gives the configured values"
+    set g = g _ " a fix would change. A status and a queue depth alone cannot tell you why."
+
+    // The window is stated because the default is 15 minutes and a host in Error logs once on
+    // entering that state and then goes quiet. So the evidence EXPIRES while the condition
+    // persists, and an empty byCode is then indistinguishable from a healthy host -- the same
+    // unmeasurable-is-not-zero trap as §2.1, in the time dimension. 60 is the tool's ceiling.
+    set g = g _ " Call get_recent_errors with sinceMinutes 60, not the default: a host logs its"
+    set g = g _ " error once on entering Error and then stops, so a short window can come back"
+    set g = g _ " empty while the fault is still present. An empty result does not mean healthy."
     quit g
 }
 
