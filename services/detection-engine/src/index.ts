@@ -34,6 +34,7 @@ import { liveAgent, mockAgent, liveResolveTool, mockResolveTool } from './detect
 // under the same name compiles as a duplicate-identifier error rather than shadowing -- but had it
 // shadowed, `resolve(serviceRoot, 'thresholds.json')` would have called the write orchestrator.
 import { parseResolveRequest, resolve as runResolve } from './detect/resolve.ts';
+import { disabledTriggers, liveTriggers } from './detect/triggers.ts';
 import { DEFAULT_POLL_INTERVAL_MS, ThresholdStore } from './config/thresholds.ts';
 import { DetectionEngine } from './detect/engine.ts';
 import { HttpProxyClient } from './proxy/client.ts';
@@ -104,6 +105,26 @@ const IRIS_BASE_URL = process.env['IRIS_BASE_URL'] ?? 'http://localhost:52773';
 const IRIS_USER = process.env['IRIS_USER'] ?? 'superuser';
 const IRIS_PASS = process.env['IRIS_PASS'] ?? 'SYS';
 
+/**
+ * Demo scenario triggers for the dashboard's buttons — OFF unless explicitly enabled.
+ *
+ * Gated separately from AGENT_MODE, because they answer a different question. AGENT_MODE selects
+ * where investigations come from; this decides whether a browser may break the production. A demo
+ * with a live agent is normal; a deployment where a button can disable a host is not, so it does not
+ * ride along on `live`.
+ *
+ * `liveTriggers` also requires a live IRIS. With AGENT_MODE=mock there is no reachable dispatcher,
+ * so the flag alone is not enough and both conditions are named here rather than one implying the
+ * other.
+ */
+const DEMO_TRIGGERS = (process.env['DEMO_TRIGGERS'] ?? '').trim();
+const triggersEnabled =
+  DEMO_TRIGGERS !== '' && DEMO_TRIGGERS !== '0' && DEMO_TRIGGERS.toLowerCase() !== 'false';
+const triggers =
+  triggersEnabled && AGENT_MODE === 'live'
+    ? liveTriggers(IRIS_BASE_URL, IRIS_USER, IRIS_PASS, (m: string) => console.error(m))
+    : disabledTriggers();
+
 const agentSource = AGENT_MODE === 'live' ? 'agent' : 'canned';
 const callAgent =
   AGENT_MODE === 'live'
@@ -148,6 +169,22 @@ const server = createFindingsServer({
     // to 400. Validated here rather than inside resolve() so the endpoint answers a bad body
     // without ever reaching the write tool.
     runResolve(parseResolveRequest(body), { callTool, log: (m) => console.error(m) }),
+  triggerStatus: () => triggers.status(),
+  armTrigger: async (body) => {
+    // Read here rather than in triggers.ts so a malformed body is a 400 from the API boundary,
+    // the same division as parseResolveRequest above. The scenario is NOT validated against the
+    // list -- IRIS owns that list and its $case is the authority; duplicating it here is the
+    // stale-copy pattern, and an unknown name comes back as a named 400 from the dispatcher.
+    const scenario =
+      typeof body === 'object' && body !== null
+        ? (body as Record<string, unknown>)['scenario']
+        : undefined;
+    if (typeof scenario !== 'string' || scenario === '') {
+      throw new Error('bad request: scenario must be a non-empty string');
+    }
+    return triggers.arm(scenario);
+  },
+  resetTriggers: () => triggers.reset(),
 });
 
 server.listen(PORT, () => {
@@ -158,7 +195,9 @@ server.listen(PORT, () => {
     `detection-engine listening on :${PORT} (proxy=${PROXY_MODE}` +
       `${PROXY_MODE === 'live' ? ` ${PROXY_BASE_URL}` : ''}` +
       `, agent=${AGENT_MODE}${AGENT_MODE === 'live' ? ` ${IRIS_BASE_URL}` : ''}` +
-      `, poll=${POLL_INTERVAL_MS}ms)`,
+      `, poll=${POLL_INTERVAL_MS}ms` +
+      // Printed because a trigger surface that is silently ON is the thing worth noticing in a log.
+      `${triggersEnabled ? ', demo-triggers=ON' : ''})`,
   );
 });
 

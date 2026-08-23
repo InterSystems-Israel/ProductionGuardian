@@ -27,6 +27,20 @@ export interface ServerOptions {
   investigate?: (findingId: string) => Promise<unknown>;
   /** Handles `POST /api/resolve`. Same 503-not-404 reasoning. */
   resolve?: (body: unknown) => Promise<unknown>;
+  /**
+   * Demo trigger routes, present even when triggers are DISABLED.
+   *
+   * Unlike `investigate`/`resolve`, these are always wired: `disabledTriggers()` answers
+   * `{enabled: false, scenarios: []}` for the status GET and an error for the writes. So the GET is
+   * a 200 with a truthful "off" rather than a 503, because the UI polls it to decide whether to
+   * render the buttons at all -- and a 503 there would be indistinguishable from the engine being
+   * unhealthy, which is what the connection banner is for.
+   */
+  triggerStatus?: () => Promise<unknown>;
+  /** Handles `POST /api/demo/trigger`. Declines when triggers are off; never 404s. */
+  armTrigger?: (body: unknown) => Promise<unknown>;
+  /** Handles `POST /api/demo/reset`. */
+  resetTriggers?: () => Promise<unknown>;
 }
 
 /**
@@ -44,9 +58,11 @@ const GET_PATHS = new Set([
   '/api/healthscan/findings',
   '/api/healthscan/health',
   '/api/earlywarning',
+  // Under /api/demo/ so the demo surface is one prefix, greppable and removable as a unit.
+  '/api/demo/triggers',
 ]);
 
-const POST_PATHS = new Set(['/api/investigate', '/api/resolve']);
+const POST_PATHS = new Set(['/api/investigate', '/api/resolve', '/api/demo/trigger', '/api/demo/reset']);
 
 /**
  * Origins permitted to POST — the fix for `resolve-api.md` §13.2's confused deputy.
@@ -165,7 +181,16 @@ export function createFindingsServer(options: ServerOptions): Server {
           ? options.investigate === undefined
             ? undefined
             : async (body: unknown) => options.investigate!(readFindingId(body))
-          : options.resolve;
+          : path === '/api/demo/trigger'
+            ? options.armTrigger
+            : path === '/api/demo/reset'
+              ? // Takes no body. Ignoring it rather than validating an empty object: reset is the
+                // operation that recovers from every other one, and it must not be refusable on a
+                // malformed request.
+                options.resetTriggers === undefined
+                ? undefined
+                : async () => options.resetTriggers!()
+              : options.resolve;
 
       if (handler === null) {
         // A POST to a path that exists as a GET route is 405, not 404 -- the endpoint is real, the
@@ -237,6 +262,26 @@ export function createFindingsServer(options: ServerOptions): Server {
           // share its freshness by construction.
           sendJson(res, 200, snapshot.projections, snapshot.state);
           return;
+        case '/api/demo/triggers': {
+          // THE ONE ASYNC GET, because the armed state lives in IRIS and this must report what is
+          // actually armed rather than what the UI last asked for -- someone driving the terminal
+          // during a rehearsal is normal, and a button showing stale state is worse than no button.
+          //
+          // A failure is a 200 with `enabled: false`, not a 5xx: this endpoint answers "should the
+          // trigger buttons exist", and if IRIS cannot be reached the honest answer is "no". A 5xx
+          // would put the connection banner into an error state over an optional demo affordance.
+          if (options.triggerStatus === undefined) {
+            sendJson(res, 200, { enabled: false, scenarios: [], armed: {} }, snapshot.state);
+            return;
+          }
+          options.triggerStatus()
+            .then((payload) => sendJson(res, 200, payload, snapshot.state))
+            .catch((err: unknown) => {
+              log(`trigger status unavailable: ${String(err)}`);
+              sendJson(res, 200, { enabled: false, scenarios: [], armed: {} }, snapshot.state);
+            });
+          return;
+        }
         case '/api/healthscan/health':
           // Not in the contract — operational only, for "is the engine up".
           sendJson(

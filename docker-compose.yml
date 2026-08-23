@@ -99,6 +99,17 @@ services:
       # degrades to a labelled canned investigation. A default here would be a committed key.
       PG_LLM_API_KEY: ${PG_LLM_API_KEY:-}
       PG_LLM_MODEL: ${PG_LLM_MODEL:-}
+      # The dashboard's trigger buttons. UNSET BY DEFAULT and that is the safety property, not a
+      # convenience: TriggerDispatcher returns 404 on every route without it, so a `compose up` with
+      # no flag has no way to break the production from a browser. Set it only on a throwaway demo
+      # instance -- the triggers deliberately disable hosts and repoint paths, which is the opposite
+      # of the governed, bounded, audited Smart Resolve write.
+      #
+      # Passed to IRIS *and* to the engine below, because both need it: IRIS to decide whether the
+      # routes exist, the engine to decide whether to advertise them to the UI. Two reads of one
+      # variable rather than the engine trusting a 404, so a misconfigured pair is visible instead
+      # of looking like a network fault.
+      PG_DEMO_TRIGGERS: ${PG_DEMO_TRIGGERS:-}
     depends_on:
       iris-init:
         condition: service_completed_successfully
@@ -247,6 +258,10 @@ services:
       # holds no LLM credential, and turning this to `live` without the provider gives a 503
       # from the dispatcher rather than a broken investigation.
       AGENT_MODE: ${PG_AGENT_MODE:-mock}
+      # Mirrors the iris service's flag -- see there for why it is off by default. The engine only
+      # PROXIES to IRIS's trigger routes; it holds no trigger logic of its own, so with the flag off
+      # it declines before making a request rather than forwarding one that would 404.
+      DEMO_TRIGGERS: ${PG_DEMO_TRIGGERS:-}
       IRIS_BASE_URL: http://iris:52773
       # The ENGINE's IRIS credentials, for the RBAC-gated dispatcher. Same variables as the
       # proxy above, so one override moves both. These authenticate to IRIS; they carry no
