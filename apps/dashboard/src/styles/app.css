@@ -1834,3 +1834,142 @@ button {
   opacity: 0.55;
   cursor: default;
 }
+
+/* ── Brochure reader (enlarge + zoom) ──────────────────────────────────────── */
+
+/* The card's image is now a click target. A button wrapper would otherwise bring a
+   browser's default chrome — border, padding, grey background — around a 1.7 MB
+   page. */
+.pg-brochure__open {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+
+.pg-brochure__open:focus-visible {
+  outline: 2px solid var(--pg-teal-500);
+  outline-offset: 2px;
+}
+
+/* Full viewport, INCLUDING over the header and rail — unlike `.pg-drawer`, which
+   starts below the header because the operator must keep seeing the dashboard behind
+   it. Here the point is the opposite: the brochure gets every pixel there is, which is
+   the only thing that makes its body copy readable on a projector. z-index above the
+   drawer's 20 for the same reason. */
+.pg-reader {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  background: var(--pg-surface-alt);
+  animation: pg-reader-in 160ms ease-out 1;
+}
+
+@keyframes pg-reader-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.pg-reader__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--pg-space-4);
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  padding: var(--pg-space-3) var(--pg-space-5);
+  background: var(--pg-surface);
+  border-bottom: 1px solid var(--pg-border);
+  box-shadow: var(--pg-shadow-card);
+}
+
+.pg-reader__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--pg-text);
+}
+
+.pg-reader__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--pg-space-3);
+  flex-wrap: wrap;
+}
+
+/* Monospaced and min-width so stepping the ladder cannot shift the buttons either
+   side of it — the same anti-jitter rule the metric rows follow (§7.3). Sized in `ch`
+   against the longest label ("Whole page") rather than a magic pixel count. */
+.pg-reader__level {
+  min-width: 11ch;
+  text-align: center;
+  font-family: var(--pg-font-mono);
+  font-size: 12px;
+  color: var(--pg-text-muted);
+}
+
+/* The scroll container, and therefore the pan surface. `overflow: auto` on a focusable
+   element is what makes the arrow keys work; no drag handler and no dependency. */
+.pg-reader__stage {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: var(--pg-space-4);
+  background: var(--pg-surface-sunk);
+  text-align: center;
+}
+
+.pg-reader__stage:focus-visible {
+  outline: 2px solid var(--pg-teal-500);
+  outline-offset: -2px;
+}
+
+.pg-reader__img {
+  display: block;
+  margin: 0 auto;
+  border-radius: var(--pg-radius);
+  background: var(--pg-surface);
+}
+
+/* THE ZOOM LADDER. Width, not `transform: scale()`: a transform leaves layout alone,
+   so the stage's scrollable area would stay the unscaled size and most of a zoomed
+   page would be unreachable. Widths are relative to the stage, so "fit width" means
+   the same thing on a 1024px projector and a 2560px laptop.
+   `height: auto` on every rung keeps the 2:3 aspect ratio — a fixed height with a
+   growing width would stretch the page. */
+.pg-reader__img--w1,
+.pg-reader__img--w15,
+.pg-reader__img--w2,
+.pg-reader__img--w3,
+.pg-reader__img--w4 {
+  height: auto;
+  max-width: none;
+}
+
+.pg-reader__img--w1  { width: 100%; }
+.pg-reader__img--w15 { width: 150%; }
+.pg-reader__img--w2  { width: 200%; }
+.pg-reader__img--w3  { width: 300%; }
+.pg-reader__img--w4  { width: 400%; }
+
+/* "Whole page" — bounded by BOTH axes so the full portrait page is on screen at once.
+   Not a rung on the ladder above: it answers "what shape is this document", where the
+   ladder answers "let me read it". */
+.pg-reader__img--page {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+/* Only the fade is suppressed. The zoom itself is a layout change with no transition
+   on it, so there is nothing there to honour — and removing it would remove the
+   feature rather than the motion. */
+@media (prefers-reduced-motion: reduce) {
+  .pg-reader {
+    animation: none;
+  }
+}
