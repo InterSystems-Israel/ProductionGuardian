@@ -12,6 +12,7 @@
  */
 
 import type { FindingView, HostView } from '../types/healthscan';
+import type { HostSeriesView } from '../types/hostseries';
 import type {
   ChatAnswerView,
   ChatTurnView,
@@ -33,6 +34,22 @@ export interface HealthScanApi {
    * rather than raising, same as the two list endpoints.
    */
   getProjections(signal?: AbortSignal): Promise<HostProjectionView[]>;
+
+  /**
+   * One host's recent metric series — GET /api/hostseries?host=…
+   *
+   * The history behind the host panel's three graphs. Read from the engine's rolling baseline, which
+   * already holds a timestamped sample per (host, metric) — nothing is measured or stored for this.
+   *
+   * TAKES A HOST, unlike every other method here, because it is the only one scoped to a selection.
+   * The full-roster alternative would serve three series for every host on every 2s tick to draw a
+   * panel that is usually closed.
+   *
+   * Resolves with `null` when the payload cannot be read, rather than rejecting: a graph is
+   * decoration over metric rows that are real, and it must not be able to raise the connection
+   * banner. Same reasoning as `getProjections` returning `[]`.
+   */
+  getHostSeries(host: string, signal?: AbortSignal): Promise<HostSeriesView | null>;
 
   /**
    * AI Detective — POST /api/investigate. Resolves for every outcome including failure: the

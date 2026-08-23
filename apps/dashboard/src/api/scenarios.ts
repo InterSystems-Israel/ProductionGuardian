@@ -69,8 +69,13 @@ export const PROGRESSION: readonly string[] = [
  * (`…52.000Z`) and the contract's pattern forbids the fractional part. Dropping it
  * keeps the mock's bytes valid under both the pattern and a plain `date-time`
  * format check, so demo data cannot be looser than what the live engine may send.
+ *
+ * EXPORTED because `mockClient` stamps its demo series with it. Duplicating the one-liner there
+ * would give the app two definitions of "the contract's timestamp shape", and the whole point of
+ * this function is that `toISOString()` is the wrong one — a second copy is a second chance to get
+ * that wrong. `apps/dashboard/CLAUDE.md` §2.3 already names this as the function to use.
  */
-function toContractIso(epochMs: number): string {
+export function toContractIso(epochMs: number): string {
   return `${new Date(epochMs).toISOString().slice(0, 19)}Z`;
 }
 

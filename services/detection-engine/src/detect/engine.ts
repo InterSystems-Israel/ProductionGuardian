@@ -24,6 +24,7 @@ import { isFrameworkHost } from '../types/proxy.ts';
 import { FindingRegistry } from './registry.ts';
 import { HOST_RULES } from './rules/index.ts';
 import { projectHost, type HostProjection } from './earlywarning.ts';
+import { buildHostSeries, type HostSeries } from './series.ts';
 import type { RuleVerdict } from './rules/types.ts';
 
 /** Metrics that must be warm before a host counts as fully baselined. */
@@ -266,6 +267,37 @@ export class DetectionEngine {
       state: this.#state(hosts),
       lastPollAt: this.#lastPollAt,
     };
+  }
+
+  /**
+   * One host's recent metric series, read out of the rolling baseline.
+   *
+   * NOT PART OF `snapshot()`, deliberately, and that is the whole reason this is a separate
+   * method. `snapshot()` is called on EVERY request to five endpoints, and folding three series
+   * into it would build up to a few hundred points per poll for a panel that is usually closed.
+   * This is called only when a host is selected, and only for that host.
+   *
+   * `known` is computed HERE rather than by the caller, because `#hosts` is this class's state:
+   * the roster is what `applyPoll` last saw, and a name absent from it is either a typo or a host
+   * that left the production between a render and a click. Both answer honestly rather than
+   * erroring -- see `series.ts` on why that is not a 404.
+   *
+   * A read, not a computation: `buildHostSeries` only walks the window. `now` is passed in for the
+   * same testability reason every rule takes it.
+   */
+  hostSeries(host: string, spanSeconds: number, pollIntervalMs: number, now: number): HostSeries {
+    return buildHostSeries({
+      host,
+      known: this.#hosts.has(host),
+      baselines: this.#baselines,
+      spanSeconds,
+      // Read from the live config rather than captured at construction, so a hot-reloaded window
+      // length (ADR 0003) moves the ceiling with it instead of advertising the old one.
+      windowSeconds: this.#config.baselineWindowSeconds,
+      pollIntervalMs,
+      now,
+      lastPollAt: this.#lastPollAt,
+    });
   }
 
   /**

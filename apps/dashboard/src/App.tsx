@@ -12,6 +12,7 @@ import { createLiveClient } from './api/liveClient';
 import { createMockClient, type MockClient } from './api/mockClient';
 import { useChat } from './hooks/useChat';
 import { useHealthScan } from './hooks/useHealthScan';
+import { useHostSeries } from './hooks/useHostSeries';
 import { useInvestigation } from './hooks/useInvestigation';
 import { useProjections } from './hooks/useProjections';
 import { pollIntervalMs, usePolling } from './hooks/usePolling';
@@ -22,12 +23,14 @@ import { BrochureView } from './components/BrochureView';
 import { ConnectionBanner, type ConnectionState } from './components/ConnectionBanner';
 import { SeveritySummary } from './components/SeveritySummary';
 import { HostGrid } from './components/HostGrid';
+import { HostDetail } from './components/HostDetail';
 import { FindingsList } from './components/FindingsList';
 import { FindingDetail } from './components/FindingDetail';
 import { InvestigationPanel } from './components/InvestigationPanel';
 import { IconRestart } from './components/icons';
 import { formatAge } from './lib/format';
 import { readMode, readScenario, writeMode } from './lib/mode';
+import { toSeverity, worstSeverity } from './lib/severity';
 
 /** Relative timestamps re-render on this cadence, independent of data polling. */
 const CLOCK_TICK_MS = 1000;
@@ -38,6 +41,15 @@ const STALE_AFTER_INTERVALS = 3;
 export function App(): JSX.Element {
   const [mode, setMode] = useState<Mode>(() => readMode());
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /* The selected HOST, which filters the findings list and opens the graphs panel.
+     Held here rather than in `HostGrid` because both the grid and the findings list read it, and
+     state owned by one of two consumers is state that gets lifted later anyway.
+
+     A NAME, not an index or a Host object. Names are the join key everywhere else in this app
+     (`finding.host` is exactly a `host.host` value, contract Q8), and holding the object would pin a
+     stale copy of the host's metrics across every poll -- the same reason `selectedId` holds an id and
+     `selected` is looked up from the live array below. */
+  const [selectedHost, setSelectedHost] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   /* Which top-level view is on screen (MVP 3).
@@ -82,6 +94,11 @@ export function App(): JSX.Element {
      the hook -- a missing forecast must never blank a host card that has real metrics on it. */
   const projections = useProjections(api, failureCount);
 
+  /* The selected host's three series, on the SAME tick as everything else -- so the graphs and the
+     numbers beside them describe one moment. Requests nothing while `selectedHost` is null, which is
+     most of the time. `failureCount` is the poll signal, exactly as for `useProjections`. */
+  const hostSeries = useHostSeries(api, selectedHost, failureCount);
+
   /* The activity conversation, NOT keyed to a finding -- unlike `useInvestigation` below, which
      clears itself when the selection changes because an investigation explains one finding. A chat
      is about the production as a whole, so it survives opening and closing the drawer and is cleared
@@ -107,6 +124,11 @@ export function App(): JSX.Element {
       // would make the new mode's findings all look pre-existing.
       resetSeen();
       setSelectedId(null);
+      /* And the host panel, for the same reason the drawer closes: the two clients describe different
+         worlds, so a panel left open would show one world's history under the other's heading -- and
+         a findings list left filtered to a host the new mode may not report would render empty. */
+      setSelectedHost(null);
+      returnFocusToHost.current = null;
       /* The transcript goes too. Demo mode declines to answer at all, so a live conversation left on
          screen after switching would sit above a composer that now refuses -- and answers about the
          real production must not stay visible while the pill reads Demo. */
@@ -125,6 +147,41 @@ export function App(): JSX.Element {
     () => findings.find((finding) => finding.id === selectedId) ?? null,
     [findings, selectedId],
   );
+
+  /* THE SELECTED HOST, LOOKED UP EVERY POLL, for exactly the reason above: the panel shows the
+     host's CURRENT metrics beside its history, so holding the object would freeze them at click
+     time. Null when the host leaves the production, which closes the panel by itself. */
+  const selectedHostView = useMemo(
+    () => hosts.find((host) => host.host === selectedHost) ?? null,
+    [hosts, selectedHost],
+  );
+
+  /* The findings list is filtered when a host is selected, and is the full list otherwise.
+     ONE DERIVATION, so the list and the panel's own count cannot disagree -- filtering in two places
+     is how a "3 findings" heading ends up over four rows. */
+  const visibleFindings = useMemo(
+    () =>
+      selectedHost === null ? findings : findings.filter((finding) => finding.host === selectedHost),
+    [findings, selectedHost],
+  );
+
+  /* Worst severity on the selected host, for the panel's badge. `worstSeverity` over the filtered
+     list rather than a second grouping pass: `HostGrid` computes the same thing per card, and two
+     independent loops over findings are how a card and a panel come to disagree (#130's severityByHost
+     note makes the same argument). */
+  const selectedHostWorst = useMemo(
+    () =>
+      visibleFindings.length === 0 || selectedHost === null
+        ? null
+        : worstSeverity(visibleFindings.map((finding) => toSeverity(finding.severity))),
+    [selectedHost, visibleFindings],
+  );
+
+  /* Focus returns to the card that opened the panel, the same contract the finding drawer honours.
+     A separate ref from `returnFocusTo` because the two panels are mutually exclusive but their
+     return targets are different elements -- sharing one would send focus to a finding row after
+     closing a host panel. */
+  const returnFocusToHost = useRef<string | null>(null);
 
   /* Returning focus to the row that opened the drawer is required (§7.3), and it
      is also what makes the drawer keyboard-usable at all: Esc has to land
@@ -153,6 +210,20 @@ export function App(): JSX.Element {
     }
   }, [loading, selected, selectedId]);
 
+  /* The same rule for a host that leaves the production: drop the selection rather than leaving the
+     panel open over a host nothing reports, and rather than leaving the findings list filtered to a
+     name that can no longer match anything -- which would render as an empty list with no explanation.
+
+     Guarded on `loading` for the same reason as above: the transient empty first paint must not count
+     as "disappeared", or the panel would close itself on a reload. A failed poll keeps the last-good
+     hosts array, so it cannot fire either. */
+  useEffect(() => {
+    if (!loading && selectedHost !== null && selectedHostView === null) {
+      setSelectedHost(null);
+      returnFocusToHost.current = null;
+    }
+  }, [loading, selectedHost, selectedHostView]);
+
   const closeDetail = useCallback((): void => {
     setSelectedId(null);
     const id = returnFocusTo.current;
@@ -171,6 +242,42 @@ export function App(): JSX.Element {
       returnFocusTo.current = next === null ? null : id;
       return next;
     });
+    /* CLEARS THE HOST SELECTION. Both panels are `position: fixed` at the same edge, so two open at
+       once would sit on top of each other -- and the operator is looking at one thing. Enforced here
+       rather than with a z-index, because stacking would leave the hidden panel mounted and polling.
+
+       Note this also restores the UNFILTERED findings list, which is right: opening a finding is a
+       deliberate move to a different subject, and a list still filtered to a host the operator has
+       navigated away from would hide the rest of them. */
+    setSelectedHost(null);
+    returnFocusToHost.current = null;
+  }, []);
+
+  const closeHostDetail = useCallback((): void => {
+    setSelectedHost(null);
+    const name = returnFocusToHost.current;
+    returnFocusToHost.current = null;
+    if (name === null) return;
+    // Deferred a frame, like `closeDetail`: the panel is still mounted this tick and focusing before
+    // it unmounts loses the focus ring to its own teardown.
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLButtonElement>(`[data-host="${CSS.escape(name)}"]`)?.focus();
+    });
+  }, []);
+
+  /* Clicking the open host again closes it -- the "click away restores the full list" half of the
+     requirement, and the same toggle `selectFinding` implements for a row. */
+  const selectHost = useCallback((name: string): void => {
+    setSelectedHost((current) => {
+      const next = current === name ? null : name;
+      returnFocusToHost.current = next === null ? null : name;
+      return next;
+    });
+    /* And the mirror of the clear above: opening a host closes any finding drawer. This is the state
+       the brief names explicitly -- clicking a host while a finding drawer is open -- and the answer
+       is that the host wins, because it is the click that was just made. */
+    setSelectedId(null);
+    returnFocusTo.current = null;
   }, []);
 
   const isStale =
@@ -183,6 +290,9 @@ export function App(): JSX.Element {
     mockClient.restart();
     resetSeen();
     setSelectedId(null);
+    // Restart clears the mock's recorded series, so a panel left open would show an empty one.
+    setSelectedHost(null);
+    returnFocusToHost.current = null;
     pollNow();
   }
 
@@ -279,16 +389,40 @@ export function App(): JSX.Element {
             now={now}
             loading={loading}
             skeletonCount={hostCountHint}
+            onSelectHost={selectHost}
+            selectedHost={selectedHost}
           />
         </section>
 
         <section className="pg-section" aria-labelledby="pg-findings-heading">
           <h2 id="pg-findings-heading" className="pg-section__title">
             Findings
-            {findings.length > 0 && <span className="pg-section__count">{findings.length}</span>}
+            {/* The count follows the FILTER, so the heading can never describe more rows than are
+                below it. `visibleFindings`, not `findings`, for that reason. */}
+            {visibleFindings.length > 0 && (
+              <span className="pg-section__count">{visibleFindings.length}</span>
+            )}
+            {/* THE FILTER IS SAID IN WORDS, and it has to be: an operator who has scrolled past the
+                grid sees a shorter list with no indication that anything is hidden, and would read
+                "1 finding" as the production's total. The button clears it from here as well, so the
+                filter is escapable without scrolling back up to the card. */}
+            {selectedHost !== null && (
+              <span className="pg-section__filter">
+                <span>
+                  filtered to <strong>{selectedHost}</strong>
+                </span>
+                <button
+                  type="button"
+                  className="pg-button pg-button--link"
+                  onClick={closeHostDetail}
+                >
+                  Show all
+                </button>
+              </span>
+            )}
           </h2>
           <FindingsList
-            findings={findings}
+            findings={visibleFindings}
             selectedId={selectedId}
             newFindingIds={newFindingIds}
             now={now}
@@ -307,6 +441,20 @@ export function App(): JSX.Element {
         asking={chat.asking}
         onAsk={chat.ask}
         onClear={chat.clear}
+      />
+
+      {/* The host panel, outside the dimming wrapper for the same reason as the drawer below.
+          MUTUALLY EXCLUSIVE WITH IT by construction, not by stacking: `selectHost` clears
+          `selectedId` and `selectFinding` clears `selectedHost`, so at most one of these two is
+          non-null and at most one fixed panel is ever mounted. */}
+      <HostDetail
+        host={selectedHostView}
+        findings={visibleFindings}
+        worst={selectedHostWorst}
+        series={hostSeries.series}
+        seriesLoading={hostSeries.loading}
+        now={now}
+        onClose={closeHostDetail}
       />
 
       {/* Outside the dimming wrapper: stale data dims the grid, but the drawer the

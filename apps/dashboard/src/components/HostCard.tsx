@@ -59,6 +59,15 @@ export interface HostCardProps {
    * care about forecasting, need no new prop.
    */
   projection?: HostProjectionView | null;
+  /**
+   * Opens the host detail panel and filters the findings list to this host.
+   *
+   * Optional, and the card renders as an inert `<article>` without it — so every existing test and
+   * any future read-only grid keeps working unchanged. Its presence is what makes the card a button.
+   */
+  onSelect?: (host: string) => void;
+  /** True while this card's panel is open. Drives the pressed state and the selected styling. */
+  selected?: boolean;
 }
 
 export function HostCard({
@@ -67,11 +76,15 @@ export function HostCard({
   findingCount,
   now,
   projection = null,
+  onSelect,
+  selected = false,
 }: HostCardProps): JSX.Element {
   const severityClass = worst === null ? '' : ` pg-host--${worst}`;
+  const selectedClass = selected ? ' pg-host--selected' : '';
+  const interactive = onSelect !== undefined;
 
-  return (
-    <article className={`pg-host${severityClass}`}>
+  const body = (
+    <>
       {/* THE BADGE IS HERE BECAUSE THE BORDER IS A COLOUR, and §7.3 forbids severity signalled by
           colour alone. The `pg-host--<severity>` left border already made this card honest before
           the badge existed — verified on the live stack, Cloud API carrying three critical findings
@@ -118,6 +131,37 @@ export function HostCard({
           {findingCount === 1 ? '1 active finding' : `${findingCount} active findings`}
         </footer>
       )}
-    </article>
+    </>
+  );
+
+  /* A REAL `<button>` WHEN IT IS CLICKABLE, never a div with an onClick (§7.3). That gets keyboard
+     reachability, Enter/Space activation and the focus ring for free, and it is what makes `aria-
+     pressed` meaningful — the same choice `FindingRow` makes for the same reason.
+
+     `<h3>` inside a button is legal (a heading is flow content, and a button may contain phrasing and
+     flow content other than interactive elements) and it is kept deliberately: the host name is the
+     card's identity and the grid's heading structure, and demoting it to a span to satisfy an
+     intuition about buttons would flatten the document outline.
+
+     `data-host` mirrors `FindingRow`'s `data-finding-id`: it is how `App` finds this card again to
+     return focus when the panel closes. An attribute rather than a ref per card, because the card may
+     have re-rendered or moved on any poll since it was clicked. */
+  if (!interactive) {
+    return <article className={`pg-host${severityClass}${selectedClass}`}>{body}</article>;
+  }
+
+  return (
+    <button
+      type="button"
+      className={`pg-host pg-host--interactive${severityClass}${selectedClass}`}
+      onClick={() => onSelect(host.host)}
+      aria-pressed={selected}
+      /* Says what the click does. The visible content is a name and six numbers, none of which
+         announce that this opens a panel and filters the list. */
+      aria-label={`${host.host} — show recent history and filter findings to this host`}
+      data-host={host.host}
+    >
+      {body}
+    </button>
   );
 }

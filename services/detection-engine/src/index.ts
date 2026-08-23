@@ -36,6 +36,7 @@ import { chat, liveChatAgent, parseChatRequest } from './detect/chat.ts';
 // shadowed, `resolve(serviceRoot, 'thresholds.json')` would have called the write orchestrator.
 import { parseResolveRequest, resolve as runResolve } from './detect/resolve.ts';
 import { disabledTriggers, liveTriggers } from './detect/triggers.ts';
+import { DEFAULT_SPAN_SECONDS } from './detect/series.ts';
 import { DEFAULT_POLL_INTERVAL_MS, ThresholdStore } from './config/thresholds.ts';
 import { DetectionEngine } from './detect/engine.ts';
 import { HttpProxyClient } from './proxy/client.ts';
@@ -196,6 +197,12 @@ const server = createFindingsServer({
             log: (m: string) => console.error(m),
           }),
       }),
+  /* One host's recent metric series, for the dashboard's host graphs.
+     POLL_INTERVAL_MS is threaded through rather than read inside the engine: the engine does not
+     own the poll loop -- this file does -- and having it guess the cadence it is fed at is how a
+     published `pollIntervalSeconds` would quietly disagree with reality after an env override. */
+  hostSeries: (host, spanSeconds) =>
+    engine.hostSeries(host, spanSeconds ?? DEFAULT_SPAN_SECONDS, POLL_INTERVAL_MS, Date.now()),
   triggerStatus: () => triggers.status(),
   armTrigger: async (body) => {
     // Read here rather than in triggers.ts so a malformed body is a 400 from the API boundary,
