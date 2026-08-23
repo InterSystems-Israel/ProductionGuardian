@@ -234,3 +234,77 @@ describe('chat', () => {
     assert.match(res.answeredAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   });
 });
+
+/**
+ * `source: "static"` — the small-talk reply, and the two directions that matter.
+ *
+ * A greeting is classified in `ChatDispatcher.SmallTalkKind` and answered from a fixed catalogue with
+ * no model call and no tool call. This service only has to carry the label through faithfully, and
+ * these tests pin BOTH failure directions rather than only the happy one:
+ *
+ *   - a `static` reply must not report `agent`, or the panel would tag catalogue text "Live agent"
+ *   - anything that is NOT the literal `static` must report `agent`, because that is the field
+ *     `iris/CLAUDE.md`'s pre-demo check treats as load-bearing and defaulting the other way would let
+ *     a garbled payload present a real agent answer as canned text
+ */
+describe('chat — a small-talk reply from IRIS', () => {
+  const greeting = { question: 'hello', history: [] };
+
+  /** What the dispatcher sends for a classified utterance: an answer, no evidence, zero tools. */
+  function staticReply(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      answer: 'Hello. I can answer questions about this production’s recorded activity.',
+      evidence: [],
+      confidence: null,
+      model: null,
+      toolCalls: 0,
+      question: 'hello',
+      source: 'static',
+      smallTalk: 'greeting',
+      ...over,
+    };
+  }
+
+  it('carries source static through, with a complete state and a real answer', async () => {
+    const res = await chat(greeting, deps(staticReply()));
+    // COMPLETE, not unavailable: a greeting answered IS an answer, and `answer` is non-null.
+    assert.equal(res.state, 'complete');
+    assert.equal(res.source, 'static');
+    assert.match(res.answer ?? '', /^Hello\./);
+  });
+
+  it('reports zero tool calls and no model, which is the honest shape for it', async () => {
+    const res = await chat(greeting, deps(staticReply()));
+    // 0 rather than null: nothing was read, and the panel says so without flagging it as a warning
+    // (that flag is for an AGENT answer with no reads).
+    assert.equal(res.diagnostics.toolCalls, 0);
+    // Null rather than a model name, because no metered call happened and naming one would claim it.
+    assert.equal(res.diagnostics.model, null);
+    assert.deepEqual(res.evidence, []);
+    assert.equal(res.confidence, null);
+  });
+
+  for (const [name, value] of [
+    ['absent', undefined],
+    ['agent', 'agent'],
+    ['an unrecognised string', 'canned'],
+    ['a non-string', 7],
+    ['null', null],
+  ] as const) {
+    it(`reports agent when source is ${name}, never static`, async () => {
+      // FAILS TOWARDS `agent`, deliberately. An older IRIS sends no `source` at all and still means
+      // agent; and a garbled value must not downgrade a real agent answer into catalogue text.
+      const res = await chat(greeting, deps(reply({ source: value })));
+      assert.equal(res.source, 'agent');
+    });
+  }
+
+  it('still returns unavailable when a static-shaped reply has no answer text', async () => {
+    // `SmallTalkText` returns "" for a kind it does not know, and the correct outcome is the same
+    // refusal any unreadable reply gets -- NOT a `static` answer with an empty bubble.
+    const res = await chat(greeting, deps(staticReply({ answer: '' })));
+    assert.equal(res.state, 'unavailable');
+    assert.equal(res.source, 'none');
+    assert.equal(res.answer, null);
+  });
+});

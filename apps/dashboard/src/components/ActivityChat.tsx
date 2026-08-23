@@ -53,8 +53,15 @@ const DEFAULT_MAX_LENGTH = 600;
  * exactly what went stale when `FHIR Transform` was removed. These read as questions an operator
  * would ask of any production, and the agent's own `get_activity_coverage` call is what discovers
  * the host names.
+ *
+ * "WHAT CAN YOU DO?" IS FIRST, AND IT IS THE ONE THAT COSTS NOTHING. IRIS classifies it as a
+ * capability question and answers it from a fixed catalogue — no model call, no tool call — so it is
+ * the cheapest chip here as well as the one that teaches an operator what the other three are
+ * examples of. It leads for that reason: the reported defect was that the assistant did not behave
+ * like one, and the first thing an assistant should be able to say is what it is for.
  */
 const SUGGESTIONS: readonly string[] = [
+  'What can you do?',
   'Which host is handling the most messages right now?',
   'Is anything falling behind? Compare queueing time across hosts.',
   'How has throughput changed over the last few hours?',
@@ -241,6 +248,11 @@ function ChatAnswer({ answer, onRetry, asking }: ChatAnswerProps): JSX.Element {
   const declined = answer.answer === null;
   const confidence = confidenceText(answer.confidence);
   const toolCalls = answer.diagnostics.toolCalls;
+  /* A greeting, a thanks, a farewell or a "what can you do", classified in IRIS and answered from a
+     fixed catalogue with no model call and no tool call. It changes what the provenance row may claim:
+     see the two branches below, and `types/mvp2.ts` `ChatSource` for why it is a third value rather
+     than a degraded `agent`. */
+  const isStatic = answer.source === 'static';
 
   if (declined) {
     return (
@@ -264,18 +276,32 @@ function ChatAnswer({ answer, onRetry, asking }: ChatAnswerProps): JSX.Element {
   return (
     <div className="pg-chat__answer">
       <div className="pg-chat__provenance">
-        <span className="pg-tag pg-tag--ok">Live agent</span>
+        {/* NOT "Live agent" FOR A STATIC REPLY. That tag is the panel's claim that a governed agent
+            ran, and wearing it over catalogue text would assert a metered call that never happened --
+            the same class of over-claim as labelling a mock's output as measured. */}
+        {isStatic ? (
+          <span className="pg-tag">No data needed</span>
+        ) : (
+          <span className="pg-tag pg-tag--ok">Live agent</span>
+        )}
         {answer.diagnostics.model !== null && (
           <span className="pg-tag">{answer.diagnostics.model}</span>
         )}
         {toolCalls !== null &&
           (toolCalls === 0 ? (
-            /* ZERO IS CALLED OUT, not shown as another grey tag. An answer with no tool calls was
-               produced from the model's priors rather than from this production, and that is the one
-               diagnostic a reader must not skim past. */
-            <span className="pg-tag pg-tag--warn">
-              0 tool calls — not read from this production
-            </span>
+            /* ZERO MEANS TWO DIFFERENT THINGS AND THE SOURCE IS WHAT SEPARATES THEM. From the agent it
+               is the warning it has always been: a model answered from its priors about a production
+               it has never seen, and that is the one diagnostic a reader must not skim past. From a
+               static reply it is the honest signal that nothing needed reading -- so it is stated
+               plainly rather than flagged, because a warning on a greeting trains a reader to ignore
+               the warning that matters. */
+            isStatic ? (
+              <span className="pg-tag">0 tool calls — nothing was read</span>
+            ) : (
+              <span className="pg-tag pg-tag--warn">
+                0 tool calls — not read from this production
+              </span>
+            )
           ) : (
             <span className="pg-tag">
               {toolCalls} tool call{toolCalls === 1 ? '' : 's'}

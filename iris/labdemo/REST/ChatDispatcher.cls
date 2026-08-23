@@ -81,6 +81,57 @@
 /// There is deliberately NO attempt to detect a "malicious" question by pattern. A denylist of
 /// phrasings is the shape `Tools.Read.ClassifyError` rejects for PHI and it is weaker here: the
 /// model is not the boundary, the tool surface is.
+///
+/// ─────────────────────────────────────────────────────────────────────────────────────────────
+/// SMALL TALK NEVER REACHES THE MODEL, AND THAT IS A CODE DECISION RATHER THAN A PROMPT ONE
+///
+/// Reported: "if i say ""hello"" it spits back some numbers at me. it should read me back the numbers
+/// when asked for." Reproduced through the dashboard's own path before changing anything, and the
+/// numbers are the point -- every one of these READ THE PRODUCTION to answer a pleasantry:
+///
+///     "hello"            -> toolCalls 2 -> "Over the last 3 days, the busiest host was the EMR
+///                                          Source, handling 35,112 messages ..."
+///     "thanks!"          -> toolCalls 2 -> "From August 20, 2026, to August 23, 2026, ..."
+///     "what can you do?" -> toolCalls 1 -> "... Over the last three days, I've recorded activity
+///                                          from 7 hosts ..."
+///
+/// `..SmallTalkKind` classifies the utterance BEFORE an agent is built, and a match is answered from
+/// `..SmallTalkReply` -- fixed text, no provider, no metered call, no tool, `toolCalls: 0`, and
+/// `source: "static"` on the wire so nothing downstream can mistake it for the agent's work.
+///
+/// WHY NOT AN AGENT TURN WITH THE TOOLS WITHHELD, which was the other candidate. Withholding the tool
+/// set would make `toolCalls: 0` structural, exactly as `GovernAgent(agent, 0, "activity")` makes
+/// `SetPoolSize` unreachable -- but it would still be a model composing the sentence, and a model with
+/// no tools can still assert a number from its priors. For a greeting that is a small risk with no
+/// upside: nothing about "hello" needs generating. Static text cannot hallucinate, costs nothing, and
+/// answers identically at every rehearsal. `Tools.Read.ErrorSummary` is the precedent -- a fixed
+/// catalogue looked up by a verified key, chosen so the model cannot author it.
+///
+/// THE CAPABILITY ANSWER IS THE STRONGEST CASE FOR STATIC TEXT, not the weakest. "What can you do" is
+/// a question about THIS SYSTEM, not about the data, so a model answering it is guessing at its own
+/// tool list -- and the observed answer did exactly that, describing itself and then reporting
+/// statistics nobody asked for. The catalogue entry is grounded in the three tools `Tools.Activity`
+/// actually publishes, and if that set ever changes this text is part of the change:
+/// `Setup.AIHub.ReportTools()` already fails a boot on an unexpected tool count, so the drift is
+/// visible at the same place the tool itself is.
+///
+/// FAIL OPEN, DELIBERATELY, AND THE ASYMMETRY IS THE WHOLE DESIGN. An unmatched utterance goes to the
+/// agent with its tools. So the cost of a miss is today's behaviour -- a pleasantry answered with
+/// statistics, which is untidy -- while the cost of a false positive is a real question answered with
+/// a canned greeting, which is worse than the bug being fixed. That is why the match is on the WHOLE
+/// normalised utterance against a closed phrase list and never on a substring: "hello, which host is
+/// busiest?" is a data question and must stay one. `..StripLead` is the one concession, and it only
+/// ever removes a leading pleasantry and re-tests what is left -- so it can turn small talk into a
+/// data question but never the reverse.
+///
+/// AND THE PROMPT IS UNCHANGED, WHICH IS ALSO A DECISION. The obvious edit is a sentence telling the
+/// model not to call a tool for a non-activity question. `BuildGoal` closes with "Answer it using the
+/// tools. Read the values before answering" -- and that line is load-bearing: `AgentDispatcher`
+/// records that without it, two of three live runs wrote a fluent paragraph having read nothing. A
+/// conditional beside it is #131 exactly -- two directives in one prompt, one saying read and one
+/// saying you may not need to, with the model applying the discount where it should not. That defect
+/// cost two of three runs on a live outage. So the classification is decided in code and the prompt
+/// keeps saying one thing.
 Class ProductionGuardian.LabDemo.REST.ChatDispatcher Extends %CSP.REST
 {
 
@@ -129,6 +180,69 @@ Parameter MAXQUESTION = 600;
 /// caller controls.
 Parameter MAXHISTORY = 6;
 
+/// Utterances answered as a greeting, matched on the WHOLE normalised question.
+///
+/// A CLOSED PHRASE LIST COMPARED WHOLE, never a substring or a pattern, and that is what makes the
+/// classifier fail open (class comment). `"hello"` matches; `"hello, which host is busiest?"` does not
+/// -- it is a data question with a pleasantry in front, and `..StripLead` removes the pleasantry and
+/// sends the rest to the agent rather than answering the greeting and dropping the question.
+///
+/// "how are you" and "are you there" sit here rather than in their own kind: both are asking after the
+/// assistant rather than after the production, and a greeting reply answers them correctly.
+///
+/// `"test"` AND `"testing"` ARE DELIBERATELY ABSENT, and they were on this list first. Someone typing
+/// them is checking whether the agent is live, and a static reply is the one answer that makes a dead
+/// agent look alive -- which is the exact failure `iris/CLAUDE.md`'s pre-demo check exists to catch
+/// ("`source: canned` builds a plausible narrative from real measured values, so a rehearsal looks
+/// correct while demonstrating nothing"). Those two go to the agent, where an unconfigured provider
+/// answers 503 and says so.
+Parameter GREETINGS = {$listbuild(
+    "hello", "hi", "hey", "yo", "howdy", "hiya", "greetings", "hello there", "hi there", "hey there",
+    "good morning", "good afternoon", "good evening", "morning", "afternoon", "evening",
+    "how are you", "how are you doing", "hows it going", "how is it going", "are you there",
+    "you there", "anyone there")};
+
+/// Utterances answered as an acknowledgement.
+Parameter THANKS = {$listbuild(
+    "thanks", "thank you", "thankyou", "thanks a lot", "thanks very much", "thank you very much",
+    "many thanks", "much appreciated", "appreciated", "cheers", "ta", "nice one", "great",
+    "perfect", "lovely", "ok", "okay", "got it", "understood", "makes sense", "good to know",
+    "ok thanks", "okay thanks", "great thanks", "perfect thanks", "thanks that helps",
+    "that helps", "helpful")};
+
+/// Utterances answered as a farewell.
+Parameter FAREWELLS = {$listbuild(
+    "bye", "goodbye", "good bye", "bye bye", "byebye", "see you", "see you later", "cya",
+    "later", "good night", "goodnight", "night", "thats all", "that is all",
+    "done", "im done", "i am done", "nothing else", "no more questions", "no thanks",
+    "that will be all", "were done")};
+
+/// Utterances answered with the capability description.
+///
+/// A QUESTION ABOUT THE SYSTEM, NOT ABOUT THE DATA, which is why it is here at all rather than left to
+/// the agent -- see the class comment. `"help"` is included as a bare word because an operator typing
+/// it wants to know what to ask, and the reply is exactly that.
+Parameter CAPABILITY = {$listbuild(
+    "what can you do", "what can you do for me", "what do you do", "what can you help with",
+    "what can you help me with", "what can you tell me", "what can you answer",
+    "what are your capabilities", "capabilities", "what can i ask", "what can i ask you",
+    "what should i ask", "what questions can i ask", "what kind of questions can i ask",
+    "what sort of questions can i ask", "who are you", "what are you", "what is this",
+    "whats this", "how does this work", "how do you work", "how do i use this",
+    "help", "help me", "what now")};
+
+/// Leading pleasantries `..StripLead` will remove before re-testing what is left.
+///
+/// ONE DIRECTION ONLY, and that is the safety property: stripping a lead can turn small talk into a
+/// data question (`"hi, which host is busiest?"` -> a data question) and can never turn a data
+/// question into small talk, because removing words from a real question leaves a real question that
+/// still will not match a phrase above. Ordered LONGEST FIRST so `"hi there"` is removed whole rather
+/// than leaving a stray `"there"`.
+Parameter LEADS = {$listbuild(
+    "good afternoon", "good morning", "good evening", "thank you", "hello there", "hey there",
+    "hi there", "greetings", "howdy", "thanks", "hello", "hiya", "cheers", "hey", "okay", "hi",
+    "ok", "yo", "so", "also", "and", "please")};
+
 XData UrlMap [ XMLNamespace = "http://www.intersystems.com/urlmap" ]
 {
 <Routes>
@@ -151,6 +265,20 @@ ClassMethod Ask() As %Status
         }
         if $length(question) > ..#MAXQUESTION {
             return ..Fail(400, "question must be " _ ..#MAXQUESTION _ " characters or fewer")
+        }
+
+        // SMALL TALK IS ANSWERED HERE, BEFORE AN AGENT EXISTS. See the class comment for why the
+        // classification is code rather than prompt wording, and for the fail-open direction: an
+        // unmatched utterance falls through to the agent with its tools, so a miss costs tidiness
+        // and a false positive would cost a real answer.
+        //
+        // AFTER the length checks, not before. A 600-character "hello" is still a malformed request
+        // by the bound that applies to every question, and answering it would make the cap
+        // conditional on content.
+        set kind = ..SmallTalkKind(question)
+        if kind '= "" {
+            write ..SmallTalkAnswer(kind, question).%ToJSON()
+            return $$$OK
         }
 
         set agent = ..BuildAgent(.sc)
@@ -193,6 +321,210 @@ ClassMethod Ask() As %Status
     } catch ex {
         return ..Fail(500, "chat failed: " _ ex.DisplayString())
     }
+}
+
+/// Classify small talk, or "" for anything that should reach the agent. Private.
+///
+/// Returns one of "greeting", "thanks", "farewell", "capability", or "" -- and "" is the answer for
+/// everything the four phrase lists do not match WHOLE. That is the fail-open direction argued in the
+/// class comment: an unmatched utterance is treated as a data question, so the classifier being wrong
+/// costs a pleasantry answered with statistics rather than a real question answered with a greeting.
+///
+/// THE ORDER OF THE FOUR IS NOT ARBITRARY, though only one overlap exists in practice: `capability`
+/// is tested LAST so that a phrase reading as both a pleasantry and a request for help resolves to the
+/// pleasantry. Nothing currently appears in two lists -- worth keeping true, and cheap to check,
+/// because a phrase in two lists would resolve silently by position rather than by intent.
+ClassMethod SmallTalkKind(question As %String) As %String [ Private ]
+{
+    set normalised = ..Normalise(question)
+    if normalised = "" {
+        // Cannot happen from `Ask` -- a blank question is refused with a 400 before this is called --
+        // but returning "" rather than a kind keeps the method honest if it is ever called directly:
+        // an empty utterance is not a greeting.
+        quit ""
+    }
+    set kind = ..MatchKind(normalised)
+    if kind '= "" {
+        quit kind
+    }
+    // ONE RETRY, on the utterance with a leading pleasantry removed. `"hi, thanks"` and `"ok, bye"`
+    // are small talk with a lead; `"hi, which host is busiest?"` is a data question with one, and
+    // stripping resolves both correctly because the remainder is re-tested against the same closed
+    // lists rather than assumed to be small talk. Not looped: two stacked leads is not an utterance
+    // anyone types, and each additional pass widens what can be swallowed.
+    set stripped = ..StripLead(normalised)
+    if stripped = normalised {
+        quit ""
+    }
+    quit ..MatchKind(stripped)
+}
+
+/// The whole-utterance test against the four lists. Private.
+ClassMethod MatchKind(normalised As %String) As %String [ Private ]
+{
+    if $listfind(..#GREETINGS, normalised) {
+        quit "greeting"
+    }
+    if $listfind(..#THANKS, normalised) {
+        quit "thanks"
+    }
+    if $listfind(..#FAREWELLS, normalised) {
+        quit "farewell"
+    }
+    if $listfind(..#CAPABILITY, normalised) {
+        quit "capability"
+    }
+    quit ""
+}
+
+/// Lowercase, strip punctuation, collapse whitespace. Private.
+///
+/// WHAT IT DOES AND WHY EACH STEP IS NEEDED for the whole-utterance comparison to work at all:
+///
+///   case folded          `"Hello"` and `"hello"` are the same utterance
+///   apostrophes DELETED  `"what's this"` -> `"whats this"`, `"that's all"` -> `"thats all"`. Deleted
+///                        rather than replaced with a space, so the phrase lists above hold the
+///                        contracted form as one word. Both the ASCII `'` and the typographic `'`,
+///                        because a browser or an operating system may substitute the latter and the
+///                        two must not classify differently.
+///   other punctuation    to a SPACE, so `"hello, there"` normalises to `"hello there"` and
+///                        `"hello!"` to `"hello"`
+///   whitespace collapsed to single spaces, then trimmed
+///
+/// NOT a general text sanitiser and not a security control -- the question still reaches the model
+/// verbatim when this does not match (`Ask` passes the original, never the normalised form). This
+/// exists only so a comparison against a fixed list is not defeated by a trailing exclamation mark.
+ClassMethod Normalise(question As %String) As %String [ Private ]
+{
+    set text = $zconvert($zstrip(question, "<>W"), "L")
+    // Apostrophes out first, before the punctuation-to-space pass would turn them into word breaks.
+    set text = $translate(text, "'" _ $char(8217), "")
+    // Every remaining non-alphanumeric to a space. $zstrip with a *-replacement is not available for
+    // "keep these, replace the rest", so this walks the string -- 600 characters at most, and it runs
+    // once per request.
+    set out = ""
+    for i = 1:1:$length(text) {
+        set c = $extract(text, i)
+        set out = out _ $select((c ? 1A) || (c ? 1N): c, 1: " ")
+    }
+    // Collapse runs of spaces. `$zstrip(...,"*C")` would not do it and a loop is clearer than a
+    // repeated $replace whose termination depends on the input.
+    for {
+        set before = out
+        set out = $replace(out, "  ", " ")
+        quit:out=before
+    }
+    quit $zstrip(out, "<>W")
+}
+
+/// Remove one leading pleasantry, or return the input unchanged. Private.
+///
+/// LONGEST MATCH WINS, which is why `..#LEADS` is ordered longest-first -- removing `"hi"` from
+/// `"hi there thanks"` would leave `"there thanks"`, which matches nothing, where removing
+/// `"hi there"` leaves `"thanks"`. Matched on a WORD BOUNDARY (the lead followed by a space, or the
+/// whole string), so `"history"` never has `"hi"` taken off the front.
+ClassMethod StripLead(normalised As %String) As %String [ Private ]
+{
+    // An explicit result variable rather than leaning on what `lead` holds when the loop ends --
+    // `Tools.Activity.IsConfigItem` carries the same note, because breaking a loop leaves the
+    // iteration variable holding whatever was last examined rather than what matched.
+    set found = ""
+    set ptr = 0
+    set leads = ..#LEADS
+    while $listnext(leads, ptr, lead) {
+        // THE LEAD MUST BE FOLLOWED BY A SPACE, so `"history"` never has `"hi"` taken off the front
+        // and there is always a remainder to re-test. An utterance that IS a bare lead therefore does
+        // not match here -- correctly: it already failed `MatchKind`, so a bare lead not in the four
+        // lists is not small talk, and emptying it would make `SmallTalkKind` retry against "".
+        if $extract(normalised, 1, $length(lead) + 1) = (lead _ " ") {
+            set found = lead
+            quit
+        }
+    }
+    if found = "" {
+        quit normalised
+    }
+    quit $zstrip($extract(normalised, $length(found) + 2, $length(normalised)), "<>W")
+}
+
+/// The wire response for a classified utterance. Private.
+///
+/// SHAPED EXACTLY LIKE THE AGENT'S REPLY, field for field, because `chat.ts` validates one shape and
+/// `parseChatReply` returning null would turn a greeting into `state: "unavailable"`. So `answer`,
+/// `evidence`, `confidence`, `model`, `toolCalls` and `question` are all present and all honest:
+///
+///   toolCalls  0   -- TRUE, and the honest signal. Nothing was read because nothing needed reading.
+///                     The panel labels a zero rather than showing it as a bare tag, and #132 made
+///                     that warning about a MODEL answering from its priors -- which this is not, so
+///                     `source` below is what tells the two apart.
+///   model      ""  -- JSON null. No model was called, and naming one would claim a metered call that
+///                     never happened. `iris/CLAUDE.md`'s pre-demo check reads `model: non-null`
+///                     together with `source: agent`, so a null here cannot be mistaken for the agent
+///                     path failing open into a canned reply.
+///   evidence   []  -- there is nothing to cite. A bullet reading "this is a greeting" would be
+///                     provenance theatre.
+///   confidence ""  -- JSON null. A fixed string has no confidence to report; 1 would be a
+///                     self-report about text nobody generated.
+///
+/// `source: "static"` IS THE NEW FIELD AND IT IS THE POINT. `chat.ts` sets `source: "agent"` for
+/// anything the agent answered and `"none"` for a failure, and a greeting is neither -- so it says so.
+/// Without a third value a zero-tool-call answer would be indistinguishable from the agent having
+/// answered from its priors, which is the one thing `toolCalls` exists to surface.
+ClassMethod SmallTalkAnswer(kind As %String, question As %String) As %DynamicObject [ Private ]
+{
+    // Built into a variable first: a concatenation inside a %DynamicObject literal fails to compile
+    // with #1021 Expected right bracket, which this project has hit before.
+    set answer = ..SmallTalkText(kind)
+    quit { "answer": (answer), "evidence": [], "confidence": null, "model": null,
+        "toolCalls": 0, "question": (question), "source": "static", "smallTalk": (kind) }
+}
+
+/// The fixed reply text for each kind. Private.
+///
+/// A CATALOGUE KEYED BY A CLASSIFICATION, and `Tools.Read.ErrorSummary` is the precedent named in the
+/// class comment: fixed strings looked up by a verified key, never text a model authored. The reason
+/// is the same one, arriving from the other direction -- `ErrorSummary` is fixed so a log row cannot
+/// leak through it, and this is fixed so a model cannot invent a capability the system does not have.
+///
+/// THE CAPABILITY TEXT IS GROUNDED IN THE THREE TOOLS `Tools.Activity` PUBLISHES and says nothing
+/// beyond them. It names what CANNOT be answered as well, because the two most likely follow-ups are
+/// both out of reach: the current instantaneous state (this agent has the history tools only -- see
+/// `Governance.ACTIVITYTOOLS`) and anything about message content (no tool will return it).
+/// Deliberately no host names: root `CLAUDE.md` §6 makes `Production.cls`'s item set the authority and
+/// a copied list here is what went stale when `FHIR Transform` was removed. The three example
+/// questions are about SHAPE for the same reason the panel's suggestion chips are.
+///
+/// EACH REPLY INVITES A QUESTION rather than only being polite. A greeting that says "hello" and stops
+/// leaves an operator looking at an empty input, and the reported defect is fundamentally about the
+/// assistant not behaving like one.
+ClassMethod SmallTalkText(kind As %String) As %String [ Private ]
+{
+    if kind = "greeting" {
+        quit "Hello. I can answer questions about this production's recorded interoperability "
+            _ "activity -- message volume, throughput, and processing and queueing times over a "
+            _ "period you choose. Ask me something and I will read the activity tables for it."
+    }
+    if kind = "thanks" {
+        quit "You're welcome. Ask again whenever you want another look at the activity figures."
+    }
+    if kind = "farewell" {
+        quit "Goodbye. The activity history stays here whenever you want to come back to it."
+    }
+    if kind = "capability" {
+        quit "I answer questions about this production's recorded interoperability activity, by "
+            _ "reading the IRIS activity tables through governed, audited tools. Three things: "
+            _ "which hosts have recorded activity and how far back the history goes; how one host's "
+            _ "throughput and latency have moved over time, bucket by bucket; and how all the hosts "
+            _ "compare over one window, ranked by volume. So ""which host is busiest"", ""is anything "
+            _ "falling behind on queueing time"" and ""how has throughput changed today"" are all "
+            _ "answerable, at ten-second, hourly or daily resolution. Two things I cannot do: I see "
+            _ "recorded history rather than the current instantaneous state of a host, and I never "
+            _ "see message content or patient data -- counts, durations and configuration only."
+    }
+    // NO DEFAULT SENTENCE. Every kind `SmallTalkKind` can return is handled above, and "" here would
+    // fail `chat.ts`'s `answer` check and surface as `unavailable` -- which is the correct outcome for
+    // a kind this method does not know, and far better than a generic reply standing in for one.
+    quit ""
 }
 
 /// Build and initialise the governed agent. Private.
