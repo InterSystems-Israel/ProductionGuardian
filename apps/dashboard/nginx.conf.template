@@ -52,6 +52,46 @@ server {
     # so a per-endpoint list here would be a second copy of its routing table. That is the #84
     # stale-copy pattern, and it is what caused this bug: the block was written when
     # /api/healthscan/* was the only route family and never revisited when MVP 2 added three more.
+    # THE ONE PER-PREFIX EXCEPTION, and it exists because a timeout is a property of the ROUTE
+    # rather than of the routing table. The block below deliberately refuses to enumerate endpoints
+    # -- see its comment -- and that argument still holds for everything a 35s read timeout suits.
+    # It does not suit arming a demo scenario.
+    #
+    # `PoolBottleneck()` warms a baseline at zero for 75 seconds before it returns, so the whole
+    # call blocks for ~80s. Against `proxy_read_timeout 35s` nginx gave up first and answered its own
+    # HTML gateway-timeout page, which the browser then tried to parse:
+    #
+    #     Unexpected token '<', "<html> <h"... is not valid JSON
+    #
+    # The trigger had armed correctly. So the visible failure was a JSON parse error on a control
+    # that worked -- the same disagree-about-what-happened shape as the captured `write` output in
+    # TriggerDispatcher, arriving one layer further out. Reported by @Ari-Glikman; my own curl tests
+    # only exercised the two FAST scenarios and never went through nginx for the slow one.
+    #
+    # 180s, matching the engine's own 150s arm timeout with headroom, so the engine is still the
+    # component that reports a genuine hang. Raising the shared 35s instead would have undone the
+    # reasoning below, where 35s exists precisely so the engine's 30s investigate timeout fires
+    # first.
+    #
+    # Scoped to /api/demo/ so only the trigger routes get it. The status GET is fast and does not
+    # need it, but it lives under the same prefix and a long read timeout costs nothing on a request
+    # that returns immediately.
+    location /api/demo/ {
+        resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+        set $demo_upstream "http://${HEALTHSCAN_UPSTREAM}";
+        proxy_pass $demo_upstream$request_uri;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 180s;
+        # Also the SEND timeout: nginx's default is 60s and arming sends a tiny body, so this is
+        # belt-and-braces rather than load-bearing -- but a 60s send timeout on a 180s read timeout
+        # is the kind of mismatch that produces an unexplainable failure at the 60 second mark.
+        proxy_send_timeout 180s;
+        add_header Cache-Control "no-store" always;
+    }
+
     location /api/ {
         # RESOLVE AT REQUEST TIME, NOT AT CONFIG LOAD. A literal hostname in proxy_pass is
         # resolved when nginx reads its config, so this container refused to start at all
