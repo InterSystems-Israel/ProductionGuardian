@@ -348,6 +348,36 @@ plugins: [react(), viteSingleFile()]
 - `docs/production-guardian-demo.html` stays as the belt-and-braces concept fallback. Do not modify it.
 - The **screencast** and the **presenter cue sheet** (`docs/demo/`) are **descoped from MVP 1** — see §8. Demo mode itself is the deliverable; the artefacts describing it come later.
 
+### 6.1 `npm run build` is not the build that ships — the image is
+
+**A change here is not verified until `docker compose up -d --build dashboard` succeeds.** Two
+separate things follow, and each has already cost a cycle.
+
+**Rebuilding is not optional after a `git pull`.** The bundle is compiled *into* the image, so
+`docker compose up` and `docker compose restart` serve whatever was built last. A synced checkout with
+new source shows the **old UI**, silently, with a healthy container and nothing in the output saying
+why — which is exactly how MVP 3's rail entries appeared to be missing when they were merely not built.
+
+```bash
+docker compose up -d --build dashboard
+```
+
+**And `npm run build` can pass where the image build fails,** because on a host the whole repo is on
+disk and in the image only what a `COPY` put there is. MVP 3's brochure import
+(`../../../../docs/Brochure.png`) type-checked, passed `npm run build`, was reported as verified, and
+failed the image build with `Could not resolve`.
+
+The resolution is in `docker-compose.yml` and the `Dockerfile` and is worth knowing before adding any
+asset: **the build context is the repo root, not this directory.** `WORKDIR` is `/repo/apps/dashboard`
+and the source tree is reproduced at the same depth, so a repo-relative import resolves inside the
+image exactly as on a host — and `docs/Brochure.png` is copied in on its own, so the 1.7 MB asset keeps
+**one copy in git** rather than a duplicate here.
+
+So an import that reaches outside this directory is fine **provided the `Dockerfile` copies that file
+too.** Adding one without the other is the failure above, and it is invisible to `tsc` and to
+`npm run build`. The Dockerfile already states the principle — it exists so "the container and the
+fallback cannot drift apart"; this is the operational half of it.
+
 ---
 
 ## 7. Visual design — InterSystems brand-aligned
