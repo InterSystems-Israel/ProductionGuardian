@@ -248,3 +248,122 @@ describe('the null-complement invariant', () => {
     }
   });
 });
+
+/**
+ * A drain inside the fit window used to poison the slope.
+ *
+ * Reported from a live demo walkthrough: "I don't see it activated when Pool Bottleneck is used. it
+ * just goes from nothing to Critical." Reproduced on the running stack — the 300s window straddled a
+ * reset, holding
+ *
+ *     263 268 ... 350 355 | 0 0 ... 0 | 8 13 ... 124 129
+ *
+ * and the fit returned **-52.7/min** while the queue climbed ~1/sec. Early Warning therefore reported
+ * `not_rising` throughout the ramp and jumped straight to `already_crossed`.
+ *
+ * These tests pin the fix from both sides: the cliff must not poison a real rise, and an ordinary
+ * drain must NOT be mistaken for one — a queue that dips while draining and refilling is the normal
+ * case, and discarding history on every dip would throw away the trend this module exists to find.
+ */
+describe('a drain inside the fit window does not poison the slope', () => {
+  /** Rise, collapse to zero, then rise again — the shape a reset leaves behind. */
+  function withDrain(preDrain: number, postDrain: number, perSample: number) {
+    const cfg = config();
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    let at = T0;
+    let q = 0;
+    for (let i = 0; i < preDrain; i += 1) {
+      store.record(HOST, 'queued', q, at);
+      at += POLL;
+      q += perSample;
+    }
+    // The cliff: one poll, all the way to zero.
+    q = 0;
+    for (let i = 0; i < postDrain; i += 1) {
+      store.record(HOST, 'queued', q, at);
+      at += POLL;
+      q += perSample;
+    }
+    const lastAt = at - POLL;
+    const lastValue = q - perSample;
+    return projectHost(HOST, raw(lastValue), store, cfg, lastAt);
+  }
+
+  it('projects from the samples after the drain, not across it', () => {
+    // Pre-drain climbs to 95 (well past the floor of 50); post-drain climbs only to 30, so the
+    // EXPECTED outcome is a projection rather than already_crossed. Fitted across the cliff the
+    // slope is steeply negative; fitted after it, it is +60/min. Getting this wrong first time is
+    // instructive: a post-drain series above the threshold is already_crossed and says nothing
+    // about the slope, so it cannot test this at all.
+    // 14 post-drain samples reach 65, which is past the floor of 50 and therefore already_crossed --
+    // true, but it tests nothing about the slope. 8 reaches 35, under the floor, so a projection is
+    // the correct expectation. minFitSamples is 12, so the truncated window must still be large
+    // enough to fit: 8 alone would be insufficient_samples, which is why the assertion below also
+    // checks the sample count rather than only the reason.
+    const p = withDrain(20, 12, 3);
+    assert.equal(
+      p.projectionUnavailable,
+      null,
+      `a queue rising after a drain must still project, got ${String(p.projectionUnavailable)}`,
+    );
+    assert.ok(p.projection !== null, 'expected a projection');
+    assert.ok(
+      p.projection.slope > 0,
+      `slope must be positive for a rising queue, got ${p.projection.slope}`,
+    );
+  });
+
+  it('does not treat ordinary draining as a discontinuity', () => {
+    // A queue shedding a fifth of itself each poll is draining, not restarting. It must NOT project
+    // a crossing, and the reason must be `not_rising` rather than a cliff-truncated window.
+    const cfg = config();
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    let at = T0;
+    let q = 400;
+    const values: number[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      values.push(Math.round(q));
+      store.record(HOST, 'queued', Math.round(q), at);
+      at += POLL;
+      q *= 0.8;
+    }
+    const lastValue = values[values.length - 1] as number;
+    const p = projectHost(HOST, raw(lastValue), store, cfg, at - POLL);
+    // A 20%-per-poll drain never trips the 80% cliff test, so the window is intact and the slope is
+    // negative -- which is `not_rising`. What must NOT happen is the window being truncated to a
+    // couple of samples, which would report insufficient_samples and hide a real drain.
+    assert.equal(p.projectionUnavailable, 'not_rising');
+    assert.ok(
+      p.fitSampleCount >= 12,
+      `an ordinary drain must keep its window, got ${p.fitSampleCount} samples`,
+    );
+  });
+
+  it('keeps the whole window when nothing collapsed', () => {
+    // The no-discontinuity path must be unchanged: a plain ramp still projects exactly as before.
+    // 20 samples at +2 reaches 38, under the floor of 50, so a projection is the right expectation --
+    // +5 would reach 95 and be already_crossed, which tests the wrong thing (I made that mistake
+    // twice in this suite before reading the floor).
+    const p = ramp(20, 2);
+    assert.equal(p.projectionUnavailable, null);
+    assert.ok(p.projection !== null && p.projection.slope > 0);
+  });
+
+  it('treats a rise from zero as a ramp starting, not a collapse', () => {
+    // 0 -> 8 is an 800% RISE, but the guard divides by the previous value, so a zero previous must
+    // not be read as a discontinuity. Without the `previous > 0` guard every ramp's first sample
+    // would truncate the window to itself.
+    const cfg = config();
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    let at = T0;
+    for (const v of [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 13, 18, 23, 28, 33, 38, 43]) {
+      store.record(HOST, 'queued', v, at);
+      at += POLL;
+    }
+    const p = projectHost(HOST, raw(43), store, cfg, at - POLL);
+    assert.ok(
+      p.fitSampleCount > 2,
+      `the window must not be truncated to the rise itself, got ${p.fitSampleCount} samples`,
+    );
+  });
+});

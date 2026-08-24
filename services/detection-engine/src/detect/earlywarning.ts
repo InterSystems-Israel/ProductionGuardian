@@ -65,6 +65,20 @@ export interface HostProjection {
  * single-scenario boundary is visible: adding a second is a contract change, not a config edit.
  */
 const METRIC: MetricName = 'queued';
+
+/**
+ * How much of a fall counts as a DISCONTINUITY rather than ordinary draining, as a fraction of the
+ * previous value.
+ *
+ * Deliberately not in `thresholds.json`: ADR 0003 governs the numbers that decide what FIRES, and an
+ * operator would never tune this. It is the definition of "the series restarted", i.e. a sanity check
+ * on the arithmetic rather than a detection threshold.
+ *
+ * 80% is far above ordinary draining. At the shipped 5s poll, a host clearing 4/sec sheds 20 messages
+ * a tick — 6% of a 350-deep queue, nowhere near this. A drain to zero, which is what an operator's
+ * reset or an approved fix produces, is 100%.
+ */
+const DISCONTINUITY_FRACTION = 0.8;
 const FINDING_TYPE = 'queue_buildup';
 const SLOPE_UNIT = 'items/minute';
 
@@ -79,6 +93,47 @@ const SLOPE_UNIT = 'items/minute';
  * by zero rather than a flat line — a distinction worth keeping, since a flat line is
  * `not_rising` and this is "cannot fit".
  */
+/**
+ * Drop everything before the most recent DISCONTINUITY in the series.
+ *
+ * WHY, and this is the defect that made Early Warning useless on the demo scenario: a queue that is
+ * drained — by an operator, by `Triggers.Reset()`, or by the approved fix itself — falls to zero in a
+ * single poll. The trailing window then straddles that cliff, and a least-squares fit over both sides
+ * reports the CLIFF rather than the trend. Measured on a live ramp, the 300s window held:
+ *
+ *     263 268 273 ... 350 355 | 0 0 0 ... 0 | 8 13 18 ... 124 129
+ *
+ * a fall of 355 followed by a genuine climb to 129 — and the fitted slope came out at **-52.7/min**
+ * while the queue was visibly rising about 1/sec. So Early Warning reported `not_rising` right through
+ * the ramp and then jumped straight to `already_crossed`. That is exactly what was reported: "I don't
+ * see it activated when Pool Bottleneck is used. it just goes from nothing to Critical."
+ *
+ * THE SAME RULE THE ERROR RATE ALREADY USES. `engine.ts`'s `#errorsPerMinute` treats a counter going
+ * backwards as "the production restarted, so reset rather than report a negative rate". The difference
+ * is that a queue is NOT a monotonic counter: it drains and refills constantly, and the trend across
+ * that is the real signal. So a small dip must not reset anything, and the test is proportional rather
+ * than "any decrease".
+ *
+ * Returns the samples AFTER the cliff, which means a freshly drained host reports
+ * `insufficient_samples` — an honest "ask again shortly" — rather than a projection fitted across a
+ * discontinuity. That is the right trade: a wrong forecast is worse than a withheld one.
+ */
+function sinceLastDiscontinuity(samples: readonly Sample[]): readonly Sample[] {
+  // Backwards, because only the NEWEST cliff matters: anything older is already excluded by it.
+  // Stopping at the first hit keeps this O(n) and allocation-free when there is no discontinuity,
+  // which is the common case.
+  for (let i = samples.length - 1; i >= 1; i -= 1) {
+    const previous = samples[i - 1]?.value ?? 0;
+    const current = samples[i]?.value ?? 0;
+    // `previous > 0` guards two things: a division that would be meaningless at zero, and the far
+    // more important case of a ramp STARTING from zero — 0 -> 8 is the signal, not a collapse.
+    if (previous > 0 && current < previous * (1 - DISCONTINUITY_FRACTION)) {
+      return samples.slice(i);
+    }
+  }
+  return samples;
+}
+
 function fitSlopePerMs(samples: readonly Sample[]): number | null {
   const n = samples.length;
   if (n < 2) return null;
@@ -163,7 +218,9 @@ export function projectHost(
   now: number,
 ): HostProjection {
   const ew = config.earlyWarning;
-  const samples = baselines.recent(host, METRIC, now, ew.fitWindowSeconds * 1000);
+  const samples = sinceLastDiscontinuity(
+    baselines.recent(host, METRIC, now, ew.fitWindowSeconds * 1000),
+  );
   const first = samples[0];
   const last = samples.at(-1);
 
