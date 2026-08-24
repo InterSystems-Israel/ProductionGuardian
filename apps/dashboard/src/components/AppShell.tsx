@@ -17,6 +17,20 @@
  * way to tell which of the nine items respond, and the existing design goes out
  * of its way to ensure "inert" is legible. Ours are grouped, headed, and styled
  * as controls; theirs stay flat text.
+ *
+ * THRESHOLD SETTINGS JOINS THE SECOND GROUP, NOT THE INERT "Settings" ITEM ABOVE,
+ * and the temptation to reuse that item is exactly what the paragraph above warns
+ * against. Health Connect's "Settings" stands for the whole product's
+ * configuration; ours edits three detection thresholds. Making that one item real
+ * would promise the former and deliver the latter, and it would break the "six of
+ * seven do nothing" rule an operator has already learned from the other five inert
+ * items. So it stays inert and ours is a separately labelled control, consistent
+ * with how Brochure and Architecture were added.
+ *
+ * IT IS A DRAWER, NOT A VIEW, so it does not join the `View` union: it opens over
+ * the dashboard rather than replacing it, because an operator changing what fires
+ * wants to watch the findings list respond. `onOpenSettings` is therefore separate
+ * from `onNavigate`.
  */
 
 import type { ReactNode } from 'react';
@@ -107,10 +121,21 @@ export interface AppShellProps {
   headerActions: ReactNode;
   view: View;
   onNavigate: (view: View) => void;
+  /** Opens the threshold settings drawer. Separate from `onNavigate` — see the file comment. */
+  onOpenSettings: () => void;
+  /** True while the drawer is open, for `aria-expanded` on the rail control. */
+  settingsOpen: boolean;
   children: ReactNode;
 }
 
-export function AppShell({ headerActions, view, onNavigate, children }: AppShellProps): JSX.Element {
+export function AppShell({
+  headerActions,
+  view,
+  onNavigate,
+  onOpenSettings,
+  settingsOpen,
+  children,
+}: AppShellProps): JSX.Element {
   return (
     <div className="pg-shell">
       <nav className="pg-rail" aria-label="Health Connect">
@@ -159,6 +184,26 @@ export function AppShell({ headerActions, view, onNavigate, children }: AppShell
               </button>
             </li>
           ))}
+          {/* Last in our group, and it carries `aria-expanded` rather than `aria-current` because it
+              opens a drawer instead of navigating -- the two items above change the page, this one
+              does not, and claiming `page` for it would be wrong. */}
+          <li>
+            <button
+              type="button"
+              className={`pg-rail__item pg-rail__item--action${
+                settingsOpen ? ' pg-rail__item--active' : ''
+              }`}
+              aria-expanded={settingsOpen}
+              /* The focus-return target when the drawer closes (`App.tsx` `closeSettings`). An
+                 explicit attribute rather than an `[aria-expanded]` selector, which would match any
+                 expandable control added later. */
+              data-rail-settings=""
+              onClick={onOpenSettings}
+            >
+              <IconSettings size={17} />
+              Thresholds
+            </button>
+          </li>
         </ul>
 
         {/* Renders nothing unless the deployment enables it — see TriggerRail. Placed last in the

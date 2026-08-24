@@ -2270,3 +2270,197 @@ button {
     transition: none;
   }
 }
+
+/* ── Threshold settings drawer ──────────────────────────────────────────────────
+   Appended as ONE headed block at the end of the file, per apps/dashboard/CLAUDE.md's
+   note about this file being contended.
+
+   REUSES `.pg-drawer` for geometry, animation and the reduced-motion rule rather than
+   redeclaring any of it -- the same approach `.pg-drawer--host` takes above. Only the
+   things unique to a FORM are declared here, since nothing else in this file styles a
+   labelled numeric input. All colours, spacing and radii come from tokens (§7.1). */
+
+.pg-drawer--settings {
+  /* Wider than the finding drawer: each row carries a label, an input, two lines of
+     prose and the two reference values, and at 420px the blast-radius sentence wrapped
+     to four lines and buried the number it describes. */
+  width: min(480px, 92vw);
+}
+
+.pg-settings__status {
+  margin: 0;
+  color: var(--pg-text-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.pg-settings__status code {
+  font-family: var(--pg-font-mono);
+  font-size: 11.5px;
+}
+
+/* The blast-radius notice. Tinted by what it is telling you: info for demo (nothing is
+   being changed), warning for live (this edits a running production). Never colour
+   alone -- each variant leads with a bold sentence naming the mode (§7.3). */
+.pg-settings__notice {
+  margin: 0 0 var(--pg-space-4);
+  padding: var(--pg-space-3);
+  border-radius: var(--pg-radius);
+  border-left: 3px solid transparent;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pg-settings__notice--demo {
+  background: var(--pg-info-bg);
+  border-left-color: var(--pg-info);
+  color: var(--pg-text);
+}
+
+.pg-settings__notice--live {
+  background: var(--pg-warning-bg);
+  border-left-color: var(--pg-warning);
+  color: var(--pg-text);
+}
+
+.pg-settings__notice--overridden {
+  background: var(--pg-surface-sunk);
+  border-left-color: var(--pg-navy-600);
+  color: var(--pg-text);
+}
+
+.pg-settings__notice code {
+  font-family: var(--pg-font-mono);
+  font-size: 11px;
+}
+
+.pg-settings__fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pg-space-5);
+}
+
+.pg-settings__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pg-space-1);
+  padding-bottom: var(--pg-space-4);
+  border-bottom: 1px solid var(--pg-border-soft);
+}
+
+.pg-settings__label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--pg-text);
+}
+
+/* Monospaced and not full-width: it holds a short number, and a 480px-wide box for
+   "50" invites the impression that prose belongs in it. Numbers are monospaced
+   throughout this app so they do not jitter as values change (§7.3). */
+.pg-settings__input {
+  width: 140px;
+  padding: var(--pg-space-2) var(--pg-space-3);
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-radius);
+  background: var(--pg-surface);
+  color: var(--pg-text);
+  font-family: var(--pg-font-mono);
+  font-size: 13px;
+}
+
+.pg-settings__input:focus {
+  outline: none;
+  border-color: var(--pg-teal-500);
+  box-shadow: var(--pg-focus-ring);
+}
+
+.pg-settings__input:disabled {
+  background: var(--pg-surface-sunk);
+  color: var(--pg-text-muted);
+}
+
+/* An unsaved edit. A left border as well as the tint, so "changed but not applied" is
+   not carried by background colour alone. */
+.pg-settings__input--edited {
+  border-left: 3px solid var(--pg-warning);
+  background: var(--pg-warning-bg);
+}
+
+.pg-settings__help {
+  margin: var(--pg-space-1) 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--pg-text-muted);
+}
+
+/* The consequence, distinguished from the description above it: same size, but it keeps
+   the text colour rather than the muted one, because it is the sentence that matters for
+   a control over a live production. */
+.pg-settings__radius {
+  margin: var(--pg-space-1) 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--pg-text);
+}
+
+.pg-settings__refs {
+  display: flex;
+  gap: var(--pg-space-5);
+  margin: var(--pg-space-2) 0 0;
+}
+
+.pg-settings__refs div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pg-settings__refs dt {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--pg-text-muted);
+}
+
+.pg-settings__refs dd {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--pg-text);
+}
+
+.pg-settings__mono {
+  font-family: var(--pg-font-mono);
+}
+
+/* Hidden when empty, so the always-mounted live region takes no vertical space until it
+   has something to announce -- the same technique `.pg-triggers__msg` uses. */
+.pg-settings__error:empty {
+  display: none;
+}
+
+.pg-settings__error {
+  margin: var(--pg-space-4) 0 0;
+  padding: var(--pg-space-3);
+  border-radius: var(--pg-radius);
+  border-left: 3px solid var(--pg-critical);
+  background: var(--pg-critical-bg);
+  color: var(--pg-text);
+  font-size: 12px;
+  line-height: 1.5;
+  /* The engine's problem strings are semicolon-joined and can be long; wrapping a dotted
+     config path mid-token is better than a horizontal scrollbar in a drawer. */
+  overflow-wrap: break-word;
+}
+
+.pg-settings__error-tag {
+  font-weight: 700;
+  color: var(--pg-critical);
+}
+
+.pg-settings__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--pg-space-3);
+  margin-top: var(--pg-space-5);
+}

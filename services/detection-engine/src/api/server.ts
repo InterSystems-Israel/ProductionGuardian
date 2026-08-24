@@ -67,6 +67,20 @@ export interface ServerOptions {
    * nothing outside the process.
    */
   hostSeries?: (host: string, spanSeconds: number | null) => unknown;
+  /**
+   * `GET /api/settings/thresholds` -- the current effective threshold settings.
+   *
+   * WIRED RATHER THAN OPTIONAL-WITH-A-503, like `hostSeries` and for the same reason: it reads
+   * the config every engine has by construction, with no external dependency that a deployment
+   * might lack. Absent means an engine built before this endpoint, and the GET then answers an
+   * empty field list -- which the panel renders as "this engine has no editable settings",
+   * rather than raising the connection banner over an optional control.
+   */
+  settings?: () => unknown;
+  /** Handles `PUT /api/settings/thresholds`. Absent means 503, naming the deployment. */
+  applySettings?: (body: unknown) => unknown;
+  /** Handles `POST /api/settings/thresholds/reset`. Takes no body; see `resetSettings`. */
+  resetSettings?: () => unknown;
 }
 
 /**
@@ -92,6 +106,11 @@ const GET_PATHS = new Set([
   '/api/hostseries',
   // Under /api/demo/ so the demo surface is one prefix, greppable and removable as a unit.
   '/api/demo/triggers',
+  // Sibling of the ratified prefix, same precedent as /api/earlywarning and /api/hostseries: an
+  // operational read over state the engine already holds, so `contracts/` needs no change to add
+  // one. NOT under /api/demo/ either -- threshold tuning is ADR 0003 product configuration that
+  // ships enabled, not demo scaffolding to be removed as a unit.
+  '/api/settings/thresholds',
 ]);
 
 const POST_PATHS = new Set([
@@ -103,6 +122,15 @@ const POST_PATHS = new Set([
   // is read-only. Putting it under that prefix would also give it the 180s nginx timeout meant for
   // arming a slow scenario, which is longer than IRIS will hold a request open anyway.
   '/api/chat',
+  // POST, not PUT, for the write. The path is also a GET route, so `/api/settings/thresholds`
+  // appears in BOTH sets -- which the 405/404 logic below already handles correctly, and is what
+  // makes a wrong method on it a 405 naming the method rather than a 404 denying the endpoint.
+  // PUT would have needed a third method branch in this file for one route; POST reuses the
+  // origin check, the body cap and the error mapping the two MVP 2 writes already go through.
+  // These ARE writes -- they change what fires on a live production -- so they belong behind
+  // WRITE_ORIGINS with the others rather than looking like a read.
+  '/api/settings/thresholds',
+  '/api/settings/thresholds/reset',
 ]);
 
 /**
@@ -224,7 +252,18 @@ export function createFindingsServer(options: ServerOptions): Server {
             : async (body: unknown) => options.investigate!(readFindingId(body))
           : path === '/api/chat'
             ? options.chat
-            : path === '/api/demo/trigger'
+            : path === '/api/settings/thresholds'
+              ? options.applySettings === undefined
+                ? undefined
+                : async (body: unknown) => options.applySettings!(body)
+              : path === '/api/settings/thresholds/reset'
+                ? // Takes no body, ignored rather than validated -- the same reasoning as
+                  // /api/demo/reset below: reset recovers from every other operation and must not
+                  // be refusable on a malformed request.
+                  options.resetSettings === undefined
+                  ? undefined
+                  : async () => options.resetSettings!()
+                : path === '/api/demo/trigger'
             ? options.armTrigger
             : path === '/api/demo/reset'
               ? // Takes no body. Ignoring it rather than validating an empty object: reset is the
@@ -336,6 +375,19 @@ export function createFindingsServer(options: ServerOptions): Server {
           sendJson(res, 200, options.hostSeries(host, span), snapshot.state);
           return;
         }
+        case '/api/settings/thresholds':
+          // Empty field list rather than an error when unwired, per the `settings` option's
+          // comment: the panel renders "no editable settings" and the connection banner stays out
+          // of it. SYNCHRONOUS, like every GET but /api/demo/triggers -- it reads in-memory config.
+          sendJson(
+            res,
+            200,
+            options.settings === undefined
+              ? { fields: [], effective: {}, file: {}, overridden: false, persistence: '' }
+              : options.settings(),
+            snapshot.state,
+          );
+          return;
         case '/api/demo/triggers': {
           // THE ONE ASYNC GET, because the armed state lives in IRIS and this must report what is
           // actually armed rather than what the UI last asked for -- someone driving the terminal
