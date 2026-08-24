@@ -127,9 +127,14 @@ type Phase = 'idle' | 'activating' | 'activated';
  *
  * `refused` is the local answer to a click that made no request — a different fact from `error`,
  * which is something the server said, and rendered differently for that reason.
+ *
+ * THERE IS NO `log` KIND ANY MORE. The dispatcher still captures and returns the trigger's own
+ * multi-line narration and the engine still carries it — see the `log` comment in `post` — it is
+ * simply not rendered. A kind nothing can construct would be the dead branch that invites someone
+ * to reach for it again.
  */
 interface TriggerMessage {
-  kind: 'log' | 'note' | 'error' | 'refused';
+  kind: 'note' | 'error' | 'refused';
   text: string;
 }
 
@@ -220,25 +225,51 @@ export function TriggerRail(): JSX.Element | null {
         }
 
         /*
-         * THE CAPTURED `log` IS THE POINT OF THIS SLOT, not a debugging leftover. Each trigger writes
-         * what it armed, which findings to expect and which deliberately will NOT fire; the
-         * dispatcher captures that text to a file so it cannot corrupt the JSON body and returns it
-         * (see `TriggerDispatcher.Arm`). It then crossed one process boundary and was dropped by the
-         * engine's own parser, and would have been dropped here too.
+         * ── `log` IS NOT RENDERED. THIS IS A DISPLAY DECISION, MADE HERE. ──
          *
-         * BOTH FIELDS WHEN BOTH ARE PRESENT. A reset returns a long `log` of what it restored AND a
-         * `note` about the one thing it cannot — the buffered `system_alert` — and that note is the
-         * question a presenter asks ten seconds later, so it must not be shadowed by the log. A
-         * jobbed arm is the reverse: `log` is empty because there is no output yet, and `note`
-         * explains the warm-up. Neither case needs a branch.
+         * The field is still returned by `TriggerDispatcher.Arm` and still parsed by the engine's
+         * `triggers.ts`, and both keep their tests and their reasons. It remains genuinely useful to
+         * a `curl` caller: it is each trigger's own account of what it armed, which findings to
+         * expect and which deliberately will NOT fire, and it is the best written explanation of
+         * these scenarios anywhere. Nothing about capturing it was wrong — @Ari-Glikman asked for it
+         * on screen, saw it there, and asked for it to go: "the demo triggers output too much info
+         * when I click on them. I don't need that message. trigger activating/activated is enough."
+         *
+         * ELEVEN LINES OF MONOSPACED NARRATION IN A NAV RAIL was the measured reality, not a
+         * paraphrase: `missing_folder` rendered 11 lines / 726 characters and `closed_port` 4 lines,
+         * under a button whose own state word is two. So it is cut at the point where it becomes
+         * pixels rather than at the point where it is produced — deleting the capture would remove
+         * the text from the API too, and one presenter not wanting it on a projector is not a reason
+         * to stop a terminal from being able to read it.
+         *
+         * ── `note` SURVIVES, AND IT IS THE ONE JUDGEMENT CALL HERE ──
+         *
+         * Both notes this system produces are ONE LINE and each answers a question the state word
+         * immediately provokes, rather than restating it:
+         *
+         *   pool_bottleneck   "Warming the baseline at zero for ~75s before arming, so
+         *                      queue_buildup can fire..."
+         *   reset             "Findings clear within ~10s. A system_alert finding persists until it
+         *                      ages out of the proxy's buffer."
+         *
+         * The first is close to load-bearing. `pool_bottleneck` reads "trigger activating…" for
+         * about 75 seconds — the longest wait in the demo, and the whole reason the middle state
+         * exists (#135) — and a word that sits unchanged that long reads as a hang to everyone
+         * except the person who wrote it. The note is what makes the wait legible. Cutting it would
+         * re-create the defect the three-state rail was built to fix, one layer up.
+         *
+         * The second answers the question a presenter asks ten seconds after pressing Reset: the
+         * finding is still on screen, and the note is the difference between "the reset failed" and
+         * "that one finding lives in the proxy, not in IRIS". Cheaper on screen than being asked.
+         *
+         * So the line kept is the one that explains a state the operator can see and cannot
+         * otherwise account for; the text cut is the one that explains a scenario they chose
+         * deliberately and already know. Both notes are prose, so the `log` kind and its monospaced
+         * styling have no remaining caller.
          */
-        const log = typeof payload['log'] === 'string' ? payload['log'].trim() : '';
         const note = typeof payload['note'] === 'string' ? payload['note'].trim() : '';
-        const text = [log, note].filter((part) => part !== '').join('\n\n');
-        if (text !== '') {
-          // `log` when there is captured output, because that text is preformatted and aligned and is
-          // rendered monospaced; a bare note is prose.
-          say(key, { kind: log !== '' ? 'log' : 'note', text });
+        if (note !== '') {
+          say(key, { kind: 'note', text: note });
         }
       } catch (err) {
         say(key, { kind: 'error', text: err instanceof Error ? err.message : 'request failed' });
@@ -412,9 +443,11 @@ export function TriggerRail(): JSX.Element | null {
  * including errors: swapping a node's role between `status` and `alert` is unreliable, and a failed
  * demo trigger is not an emergency. The error tone is carried by a class and a leading word.
  *
- * The dispatcher's captured log is PLAIN TEXT, not markup, and is rendered as text. `white-space:
- * pre-wrap` keeps its line breaks and two-space indents, which is the whole reason it is readable;
- * `dangerouslySetInnerHTML` would be both wrong and unsafe for output that quotes settings and paths.
+ * WHAT REACHES HERE IS NOW ONE LINE AT MOST — a one-sentence `note`, a server `error`, or a local
+ * `refused` — since the dispatcher's multi-line captured log is no longer rendered (see `post`). All
+ * three are prose rather than preformatted output, so nothing here depends on the log's alignment
+ * surviving. Every kind is still rendered as TEXT and never as markup: these strings quote settings
+ * and filesystem paths, so `dangerouslySetInnerHTML` would be both wrong and unsafe.
  */
 function TriggerNote({ message }: { message: TriggerMessage | undefined }): JSX.Element {
   return (

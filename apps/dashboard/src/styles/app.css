@@ -1875,9 +1875,10 @@ button {
   padding: 0 var(--pg-space-4);
   font-size: 10.5px;
   line-height: 1.45;
-  /* The dispatcher's captured log is preformatted plain text — indented lines, aligned arithmetic, an
-     ARMED header. `pre-wrap` is what makes it legible; without it the whole explanation collapses
-     into one paragraph. `break-word` because it quotes filesystem paths that do not wrap. */
+  /* `pre-wrap` KEPT although the preformatted log it was added for is no longer rendered: these are
+     server and dispatcher strings, and one arriving with a line break should break there rather than
+     be reflowed into a run-on sentence. `break-word` because they quote filesystem paths, which have
+     no wrap opportunity of their own. */
   white-space: pre-wrap;
   overflow-wrap: break-word;
   color: rgb(255 255 255 / 62%);
@@ -1887,17 +1888,11 @@ button {
   display: none;
 }
 
-/* The captured trigger log, monospaced because its own alignment is load-bearing. Inset with a rule
-   down the left so a block of narration reads as output belonging to the button above it rather than
-   as more rail chrome. */
-.pg-triggers__msg--log {
-  margin-left: var(--pg-space-4);
-  padding: var(--pg-space-1) 0 var(--pg-space-1) var(--pg-space-2);
-  border-left: 1px solid rgb(255 255 255 / 18%);
-  font-family: var(--pg-font-mono);
-  font-size: 10px;
-  color: rgb(255 255 255 / 66%);
-}
+/* `.pg-triggers__msg--log` was the monospaced, left-ruled block for the dispatcher's captured
+   narration and is gone: the log is no longer rendered, so nothing can construct that kind. Removed
+   rather than left as a dead rule, for the same reason the shared-slot rules above were — a rule
+   matching nothing is what someone reaches for next time. The `log` field itself is unchanged and
+   still returned; see `post` in TriggerRail.tsx. */
 
 /* A refusal is not a failure — nothing went wrong and nothing was sent. Accent tone rather than
    warning, and italic so it reads as the panel answering rather than the server reporting. */

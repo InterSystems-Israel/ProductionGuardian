@@ -93,18 +93,23 @@ export function App(): JSX.Element {
     [refresh],
   );
 
-  const { failureCount, pollNow } = usePolling({ onTick, intervalMs });
+  const { failureCount, tickCount, pollNow } = usePolling({ onTick, intervalMs });
 
   /* Early Warning rides the SAME tick as the findings poll rather than its own timer: a projection
      shown next to a queue depth from a different moment would be two readings pretending to be one,
      and two independent intervals would drift apart within minutes. Failures are swallowed inside
      the hook -- a missing forecast must never blank a host card that has real metrics on it. */
-  const projections = useProjections(api, failureCount);
+  const projections = useProjections(api, tickCount);
 
   /* The selected host's three series, on the SAME tick as everything else -- so the graphs and the
      numbers beside them describe one moment. Requests nothing while `selectedHost` is null, which is
-     most of the time. `failureCount` is the poll signal, exactly as for `useProjections`. */
-  const hostSeries = useHostSeries(api, selectedHost, failureCount);
+     most of the time. `tickCount` is the poll signal, exactly as for `useProjections`.
+
+     BOTH READ `tickCount`, NOT `failureCount`, and that is the fix for "the graphs are frozen": a
+     success following a success leaves `failureCount` at 0, so the effect keyed on it never re-ran
+     and each of these fetched once per host selection and never again. `failureCount` still goes to
+     the banner below, which is the thing it actually measures. */
+  const hostSeries = useHostSeries(api, selectedHost, tickCount);
 
   /* The activity conversation, NOT keyed to a finding -- unlike `useInvestigation` below, which
      clears itself when the selection changes because an investigation explains one finding. A chat

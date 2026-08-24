@@ -1,10 +1,21 @@
 /**
  * One host's metric series, refetched on the same cadence as the findings poll.
  *
- * WHY IT PIGGYBACKS ON `failureCount` RATHER THAN OWNING A TIMER — the same reasoning as
+ * WHY IT PIGGYBACKS ON `usePolling`'s TICK RATHER THAN OWNING A TIMER — the same reasoning as
  * `useProjections`, which this deliberately mirrors rather than reinventing. `usePolling` already
  * pauses while the tab is hidden, backs off on failure and refetches on becoming visible; a second
  * interval here would drift out of step, so the panel's graphs could show a moment the cards do not.
+ *
+ * THE GRAPHS WERE FROZEN AT CLICK TIME UNTIL `tick` BECAME `tickCount` (reported by @Ari-Glikman:
+ * "I would like the graphs to be live, I think they are only to the moment I click on the host").
+ * The mechanism was always right and the SIGNAL was wrong: `tick` was `usePolling`'s `failureCount`,
+ * which on a healthy stack is 0 forever, so the effect below ran once per host selection and never
+ * again. Measured in the served bundle before the fix — one request to `/api/hostseries` across 14
+ * seconds at a 2s cadence, and the queued polyline pinned at 36 points for all of them.
+ *
+ * Nothing in this file needed a new mechanism for that, which is the point of riding a shared timer:
+ * the abort-per-tick, the visibility pausing and the keep-the-previous-series-on-failure rules below
+ * were all written for the polling case and were already correct for it.
  *
  * KEYED ON THE SELECTED HOST, and `null` means no request at all. The panel is closed most of the
  * time and a series is the largest payload the dashboard fetches, so nothing is asked for until a
