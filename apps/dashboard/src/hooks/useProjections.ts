@@ -1,15 +1,17 @@
 /**
  * Early Warning projections, on the same cadence as the findings poll.
  *
- * WHY IT PIGGYBACKS ON `failureCount` RATHER THAN OWNING A TIMER. `usePolling` already decides when
- * to fetch — it pauses while the tab is hidden, backs off on failure, and refetches on becoming
+ * WHY IT PIGGYBACKS ON `usePolling`'s TICK RATHER THAN OWNING A TIMER. `usePolling` already decides
+ * when to fetch — it pauses while the tab is hidden, backs off on failure, and refetches on becoming
  * visible. A second interval here would drift out of step within minutes, so a card could show a
  * queue depth from one moment beside a projection from another. Two readings pretending to be one
  * is the defect `earlywarning-api.md` §1.4 is written against, one level up.
  *
- * `failureCount` changes on every tick (success resets it to 0, failure increments), which makes it
- * a usable "the poll just happened" signal without threading a new callback through `usePolling`.
- * That is a little indirect and it is the reason this comment exists.
+ * `tick` IS `usePolling`'s `tickCount`, AND IT USED TO BE `failureCount`, WHICH DID NOT WORK. The
+ * claim was that `failureCount` "changes on every tick (success resets it to 0, failure
+ * increments)" — but 0 reset to 0 is not a change, so on a healthy stack this effect ran once at
+ * mount and never again. Measured in the served bundle: 0 requests to `/api/earlywarning` over 12s
+ * against 6 to `/hosts`. `tickCount` is monotonic, so it cannot have that failure mode.
  *
  * FAILURES ARE SWALLOWED, DELIBERATELY. A projection is decoration on a card whose metrics are real;
  * losing the forecast must not blank the card or raise the connection banner. So the previous value
