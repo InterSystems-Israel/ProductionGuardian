@@ -19,9 +19,11 @@ import type {
 } from '../types/mvp2';
 import { parseChatAnswer, parseInvestigation, parseProjections, parseResolve } from './mvp2Guards';
 import { parseHostSeries } from './seriesGuards';
+import { parseThresholdSettings } from './settingsGuards';
 import { parseFindings, parseHosts } from './guards';
 import type { FindingView, HostView } from '../types/healthscan';
 import type { HostSeriesView } from '../types/hostseries';
+import type { ThresholdSettingsView } from '../types/settings';
 
 const DEFAULT_BASE_URL = '/api/healthscan';
 
@@ -246,6 +248,42 @@ export function createLiveClient(): HealthScanApi {
       const parsed = parseChatAnswer(await postJson('/chat', { question, history }, signal));
       if (parsed === null) {
         throw new HealthScanRequestError('The chat response could not be read', null);
+      }
+      return parsed;
+    },
+
+    async getThresholdSettings(signal?: AbortSignal): Promise<ThresholdSettingsView | null> {
+      /* Sibling of /api/healthscan, like /api/earlywarning -- same one-level strip. `getJsonAbsolute`
+         maps 404 to `[]`, which is the wrong shape here and is exactly what makes an engine
+         predating this endpoint parse to null: the guard sees a non-record and says so. Relied on
+         deliberately rather than by coincidence -- see `getHostSeries` for the same note. */
+      const root = baseUrl().replace(/\/healthscan\/?$/, '');
+      return parseThresholdSettings(await getJsonAbsolute(`${root}/settings/thresholds`, signal));
+    },
+
+    async applyThresholdSettings(
+      values: Record<string, number>,
+      signal?: AbortSignal,
+    ): Promise<ThresholdSettingsView> {
+      /* `postJson` is the right helper here and `getJsonAbsolute` would not be: it does NOT map 404
+         to an empty result, and it lifts the engine's `{"error": "..."}` body into the thrown
+         message. That body carries `validateConfig`'s own problem string, which is the reason the
+         panel can show why a value was refused without inventing wording for it. */
+      const parsed = parseThresholdSettings(await postJson('/settings/thresholds', { values }, signal));
+      if (parsed === null) {
+        throw new HealthScanRequestError('The settings response could not be read', null);
+      }
+      return parsed;
+    },
+
+    async resetThresholdSettings(signal?: AbortSignal): Promise<ThresholdSettingsView> {
+      // An empty object rather than no body: `readJsonBody` rejects an empty body as
+      // `bad request`, and reset must not be refusable on a technicality.
+      const parsed = parseThresholdSettings(
+        await postJson('/settings/thresholds/reset', {}, signal),
+      );
+      if (parsed === null) {
+        throw new HealthScanRequestError('The settings response could not be read', null);
       }
       return parsed;
     },

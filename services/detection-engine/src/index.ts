@@ -28,6 +28,12 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFindingsServer } from './api/server.ts';
+import {
+  applySettings,
+  parseSettingsRequest,
+  resetSettings,
+  settingsPayload,
+} from './api/settings.ts';
 import { investigate } from './detect/investigate.ts';
 import { liveAgent, mockAgent, liveResolveTool, mockResolveTool } from './detect/agents.ts';
 import { chat, liveChatAgent, parseChatRequest } from './detect/chat.ts';
@@ -203,6 +209,21 @@ const server = createFindingsServer({
      published `pollIntervalSeconds` would quietly disagree with reality after an env override. */
   hostSeries: (host, spanSeconds) =>
     engine.hostSeries(host, spanSeconds ?? DEFAULT_SPAN_SECONDS, POLL_INTERVAL_MS, Date.now()),
+  /* Threshold settings — ADR 0003's numbers, editable in memory only. See api/settings.ts for why
+     this is an overlay rather than a file write, and why only `queue_buildup` is exposed.
+
+     ALWAYS WIRED, with no mode flag, unlike the demo triggers. A trigger deliberately BREAKS the
+     production; a threshold decides what gets reported about it, which is the configurability ADR
+     0003 exists to provide and MVP §6 names as the false-positive mitigation. It is also bounded by
+     construction: the only reachable values are ones `thresholds.json` could already have held, and
+     the origin allow-list in server.ts gates the writes.
+
+     `parseSettingsRequest` runs HERE rather than inside applySettings, so a malformed body is a 400
+     from the API boundary and never reaches the store -- the same division as parseResolveRequest
+     and the armTrigger body read. */
+  settings: () => settingsPayload(thresholds),
+  applySettings: (body) => applySettings(thresholds, parseSettingsRequest(body)),
+  resetSettings: () => resetSettings(thresholds),
   triggerStatus: () => triggers.status(),
   armTrigger: async (body) => {
     // Read here rather than in triggers.ts so a malformed body is a 400 from the API boundary,

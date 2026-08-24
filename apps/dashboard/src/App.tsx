@@ -15,6 +15,7 @@ import { useHealthScan } from './hooks/useHealthScan';
 import { useHostSeries } from './hooks/useHostSeries';
 import { useInvestigation } from './hooks/useInvestigation';
 import { useProjections } from './hooks/useProjections';
+import { useThresholdSettings } from './hooks/useThresholdSettings';
 import { pollIntervalMs, usePolling } from './hooks/usePolling';
 import { ActivityChat } from './components/ActivityChat';
 import { AppShell, type View } from './components/AppShell';
@@ -27,6 +28,7 @@ import { HostDetail } from './components/HostDetail';
 import { FindingsList } from './components/FindingsList';
 import { FindingDetail } from './components/FindingDetail';
 import { InvestigationPanel } from './components/InvestigationPanel';
+import { ThresholdSettings } from './components/ThresholdSettings';
 import { IconRestart } from './components/icons';
 import { formatAge } from './lib/format';
 import { readMode, readScenario, writeMode } from './lib/mode';
@@ -59,6 +61,11 @@ export function App(): JSX.Element {
      across views on purpose -- pausing it would have the dashboard show a stale
      "updated 4m ago" the moment the presenter came back from the brochure. */
   const [view, setView] = useState<View>('dashboard');
+
+  /* The threshold settings drawer. NOT part of `view` -- it opens OVER the dashboard rather than
+     replacing it, because an operator changing what fires wants to watch the findings list respond.
+     Not in the URL either, for the same reason `view` is not: which panel is open is transient. */
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const intervalMs = useMemo(() => pollIntervalMs(), []);
 
@@ -114,6 +121,11 @@ export function App(): JSX.Element {
      failure, since the reference sits inside a callback body. */
   const chat = useChat(api);
   const chatClear = chat.clear;
+
+  /* Threshold settings. Gated on the drawer being open, so a closed panel makes no request at all --
+     and deliberately NOT on `failureCount` like the two hooks above: a threshold changes only
+     because somebody changed it, so there is nothing for a poll to discover. See the hook. */
+  const thresholds = useThresholdSettings(api, settingsOpen);
 
   // One shared clock for every relative timestamp on the page.
   useEffect(() => {
@@ -229,6 +241,39 @@ export function App(): JSX.Element {
     }
   }, [loading, selectedHost, selectedHostView]);
 
+  /* Toggling from the rail, and the rail button is its own focus-return target -- unlike the two
+     panels below, which return focus to a card or a row looked up by data attribute. The button is
+     a stable element that never unmounts, so the browser keeps focus on it through the open and the
+     close and nothing needs restoring. That is why there is no `returnFocusTo` ref here. */
+  const toggleSettings = useCallback((): void => {
+    setSettingsOpen((current) => {
+      /* Opening this closes the other two fixed panels -- all three are `position: fixed` at the
+         same edge, so the exclusion is what keeps them from stacking. Same pattern as
+         `selectFinding` and `selectHost`, which already clear each other. */
+      if (!current) {
+        setSelectedId(null);
+        returnFocusTo.current = null;
+        setSelectedHost(null);
+        returnFocusToHost.current = null;
+      }
+      return !current;
+    });
+  }, []);
+
+  const closeSettings = useCallback((): void => {
+    setSettingsOpen(false);
+    /* Focus back to the rail control that opened it, matching the contract the other two panels
+       honour. Deferred a frame for the same reason as `closeDetail`: the drawer is still mounted
+       this tick and focusing before it unmounts loses the ring to its own teardown.
+
+       Selected by an explicit `data-rail-settings` attribute rather than by `[aria-expanded]`,
+       which would match any expandable control added later and send focus to whichever came first
+       in the document. */
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLButtonElement>('[data-rail-settings]')?.focus();
+    });
+  }, []);
+
   const closeDetail = useCallback((): void => {
     setSelectedId(null);
     const id = returnFocusTo.current;
@@ -256,6 +301,8 @@ export function App(): JSX.Element {
        navigated away from would hide the rest of them. */
     setSelectedHost(null);
     returnFocusToHost.current = null;
+    // And the thresholds drawer, the third panel at the same edge.
+    setSettingsOpen(false);
   }, []);
 
   const closeHostDetail = useCallback((): void => {
@@ -283,6 +330,8 @@ export function App(): JSX.Element {
        is that the host wins, because it is the click that was just made. */
     setSelectedId(null);
     returnFocusTo.current = null;
+    // And the thresholds drawer, the third panel at the same edge.
+    setSettingsOpen(false);
   }, []);
 
   const isStale =
@@ -363,14 +412,41 @@ export function App(): JSX.Element {
      confusing. They return early rather than being wrapped in the dashboard's chrome. */
   if (view !== 'dashboard') {
     return (
-      <AppShell headerActions={headerActions} view={view} onNavigate={setView}>
+      <AppShell
+        headerActions={headerActions}
+        view={view}
+        onNavigate={setView}
+        onOpenSettings={toggleSettings}
+        settingsOpen={settingsOpen}
+      >
         {view === 'brochure' ? <BrochureView /> : <ArchitectureView />}
+        {/* Reachable from these views too, unlike the connection banner and the drawer above. The
+            rail control is on screen here, so hiding the panel it opens would make it a button that
+            does nothing on two of the three views. */}
+        <ThresholdSettings
+          open={settingsOpen}
+          settings={thresholds.settings}
+          loading={thresholds.loading}
+          saving={thresholds.saving}
+          error={thresholds.error}
+          demo={mode === 'demo'}
+          onApply={thresholds.apply}
+          onReset={thresholds.reset}
+          onClearError={thresholds.clearError}
+          onClose={closeSettings}
+        />
       </AppShell>
     );
   }
 
   return (
-    <AppShell headerActions={headerActions} view={view} onNavigate={setView}>
+    <AppShell
+      headerActions={headerActions}
+      view={view}
+      onNavigate={setView}
+      onOpenSettings={toggleSettings}
+      settingsOpen={settingsOpen}
+    >
       <ConnectionBanner
         state={connectionState}
         error={error}
@@ -460,6 +536,26 @@ export function App(): JSX.Element {
         seriesLoading={hostSeries.loading}
         now={now}
         onClose={closeHostDetail}
+      />
+
+      {/* The thresholds drawer, outside the dimming wrapper like the two panels below: staleness
+          dims READINGS that may have moved, and a configuration value is not a reading.
+
+          MUTUALLY EXCLUSIVE WITH BOTH by construction, not by stacking -- `toggleSettings` clears
+          the two selections, and opening either of those closes this. All three are
+          `position: fixed` at the same edge, so two mounted at once would sit on top of each other
+          and the hidden one would keep polling. */}
+      <ThresholdSettings
+        open={settingsOpen}
+        settings={thresholds.settings}
+        loading={thresholds.loading}
+        saving={thresholds.saving}
+        error={thresholds.error}
+        demo={mode === 'demo'}
+        onApply={thresholds.apply}
+        onReset={thresholds.reset}
+        onClearError={thresholds.clearError}
+        onClose={closeSettings}
       />
 
       {/* Outside the dimming wrapper: stale data dims the grid, but the drawer the

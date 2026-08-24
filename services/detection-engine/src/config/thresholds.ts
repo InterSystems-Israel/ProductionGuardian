@@ -511,10 +511,59 @@ export function inertOverrideHosts(
 }
 
 /**
+ * Deep-merge a patch over a base, for plain objects only.
+ *
+ * Used to lay a runtime override on top of the file's raw JSON before validation, so an
+ * override of `rules.queue_buildup.severityBands.warning` does not erase the sibling
+ * `critical` band — which a shallow spread at any level would.
+ *
+ * Arrays and non-objects REPLACE rather than merge. Nothing in a threshold config is an
+ * array, so this is a guard against a future field rather than a behaviour anyone relies on,
+ * and replacing is the less surprising of the two for a value a caller stated explicitly.
+ */
+function mergePatch(base: unknown, patch: unknown): unknown {
+  if (!isPlainObject(base) || !isPlainObject(patch)) return patch;
+  const out: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(patch)) {
+    out[key] = key in base ? mergePatch(base[key], value) : value;
+  }
+  return out;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
  * Live config holder. Reads once at construction, then re-reads on file change.
  * A bad file is logged and ignored — `current` keeps the last good value.
+ *
+ * SINCE THE SETTINGS PANEL (`api/settings.ts`) IT ALSO HOLDS AN IN-MEMORY OVERRIDE, and the
+ * two compose rather than one winning outright: `current` is always
+ * `validateConfig(file JSON + override patch)`. Three properties follow, and the middle one is
+ * the reason the override is kept as a RAW PATCH rather than as a finished config.
+ *
+ *   1. An override is validated by exactly the code a file is, so it cannot introduce a value
+ *      the file could not have held, and it produces the same problem strings.
+ *   2. A FILE RELOAD RE-APPLIES THE OVERRIDE rather than clobbering it. Holding a finished
+ *      config would mean the next `fs.watch` event silently reverted whatever the operator had
+ *      just set — a knob that undoes itself is worse than one that does not exist. Holding the
+ *      patch means the file's other edits land AND the override survives.
+ *   3. `clearOverride()` returns to whatever the file says now, which is what makes "reset to
+ *      shipped defaults" mean the committed values rather than a snapshot from process start.
+ *
+ * THE OVERRIDE IS NOT PERSISTED, deliberately. The mount is read-only (`docker-compose.yml`)
+ * and writing to a tracked repo file from a browser during a demo is the trap ADR 0003's
+ * "tunable without redeploying" was never asking for. So a restart reverts to the file, and
+ * the panel says so rather than leaving it to be discovered.
  */
 export class ThresholdStore {
+  /** Last-good raw JSON from the file. The base every override composes over. */
+  #fileRaw: unknown;
+  /** The file alone, validated — what `clearOverride()` returns to. */
+  #fileConfig: ThresholdConfig;
+  /** The raw override patch, or null when none is in force. Never persisted. */
+  #override: Record<string, unknown> | null = null;
   #current: ThresholdConfig;
   #watcher: ReturnType<typeof watch> | undefined;
 
@@ -524,10 +573,47 @@ export class ThresholdStore {
   constructor(path: string, log: (msg: string) => void = console.error) {
     this.#path = path;
     this.#log = log;
-    this.#current = this.#read() ?? structuredClone(DEFAULT_CONFIG);
+    const read = this.#read();
+    // DEFAULT_CONFIG as the base when the file is missing or invalid, matching the previous
+    // behaviour exactly — an override then composes over the defaults instead of the file.
+    this.#fileRaw = read?.raw ?? structuredClone(DEFAULT_CONFIG);
+    this.#fileConfig = read?.config ?? structuredClone(DEFAULT_CONFIG);
+    this.#current = this.#fileConfig;
   }
 
   get current(): ThresholdConfig {
+    return this.#current;
+  }
+
+  /** The file's own values, ignoring any override. What a reset restores. */
+  get fileConfig(): ThresholdConfig {
+    return this.#fileConfig;
+  }
+
+  /** True while an in-memory override is in force. */
+  get overridden(): boolean {
+    return this.#override !== null;
+  }
+
+  /**
+   * Compose a raw patch over the file and make it live, or throw.
+   *
+   * VALIDATES BEFORE APPLYING and leaves `current` untouched on failure, which is the same
+   * last-good discipline `#read` uses for the file: a rejected override must not partly land,
+   * because a half-applied threshold set is a detection policy nobody chose. The
+   * `ConfigValidationError` propagates so the caller can surface its `problems` verbatim.
+   */
+  applyOverride(patch: Record<string, unknown>): ThresholdConfig {
+    const next = validateConfig(mergePatch(this.#fileRaw, patch));
+    this.#override = patch;
+    this.#current = next;
+    return next;
+  }
+
+  /** Drop the override and return to the file's own values. Cannot fail — see `api/settings.ts`. */
+  clearOverride(): ThresholdConfig {
+    this.#override = null;
+    this.#current = this.#fileConfig;
     return this.#current;
   }
 
@@ -538,11 +624,28 @@ export class ThresholdStore {
       this.#watcher = watch(this.#path, () => {
         const next = this.#read();
         if (next !== undefined) {
-          this.#current = next;
+          this.#fileRaw = next.raw;
+          this.#fileConfig = next.config;
+          this.#current = next.config;
           this.#log(
-            `thresholds reloaded: sustainedSamples=${next.sustainedSamples} ` +
-              `sustainedSeconds=${next.sustainedSeconds}`,
+            `thresholds reloaded: sustainedSamples=${next.config.sustainedSamples} ` +
+              `sustainedSeconds=${next.config.sustainedSeconds}`,
           );
+          // RE-APPLIED, NOT DROPPED, per the class comment: a file event must not silently
+          // revert a live override. A patch that the NEW file makes invalid is dropped rather
+          // than kept — the file is the authority, and refusing to reload would leave the
+          // engine running values that are in neither the file nor a request.
+          if (this.#override !== null) {
+            try {
+              this.#current = validateConfig(mergePatch(this.#fileRaw, this.#override));
+              this.#log('threshold override re-applied over the reloaded file');
+            } catch (err) {
+              this.#override = null;
+              this.#log(
+                `threshold override dropped — the reloaded file makes it invalid: ${errorMessage(err)}`,
+              );
+            }
+          }
         }
       });
     } catch (err) {
@@ -555,10 +658,18 @@ export class ThresholdStore {
     this.#watcher = undefined;
   }
 
-  /** Returns undefined on any failure, so the caller keeps the previous config. */
-  #read(): ThresholdConfig | undefined {
+  /**
+   * Returns undefined on any failure, so the caller keeps the previous config.
+   *
+   * Hands back the RAW JSON alongside the validated config, because an override composes over
+   * the raw form. Composing over the validated form would work today but would bake every
+   * default into the base, so a later `DEFAULT_CONFIG` change would stop reaching a deployment
+   * that had ever set an override.
+   */
+  #read(): { raw: unknown; config: ThresholdConfig } | undefined {
     try {
-      return validateConfig(JSON.parse(readFileSync(this.#path, 'utf8')));
+      const raw: unknown = JSON.parse(readFileSync(this.#path, 'utf8'));
+      return { raw, config: validateConfig(raw) };
     } catch (err) {
       this.#log(`threshold config rejected, keeping previous values: ${errorMessage(err)}`);
       return undefined;

@@ -13,6 +13,7 @@
 
 import type { FindingView, HostView } from '../types/healthscan';
 import type { HostSeriesView } from '../types/hostseries';
+import type { ThresholdSettingsView } from '../types/settings';
 import type {
   ChatAnswerView,
   ChatTurnView,
@@ -94,6 +95,34 @@ export interface HealthScanApi {
     history: ChatTurnView[],
     signal?: AbortSignal,
   ): Promise<ChatAnswerView>;
+
+  /**
+   * Threshold settings — GET /api/settings/thresholds.
+   *
+   * Resolves with `null` when the payload cannot be read or the engine has no editable settings,
+   * rather than rejecting: the panel is an optional control and must not be able to raise the
+   * connection banner. Same reasoning as `getHostSeries`.
+   */
+  getThresholdSettings(signal?: AbortSignal): Promise<ThresholdSettingsView | null>;
+
+  /**
+   * Apply threshold changes — POST /api/settings/thresholds.
+   *
+   * REJECTS on an invalid value, unlike `resolve`'s refusal-resolves rule, and the difference is
+   * who was wrong. A Smart Resolve refusal is the SYSTEM declining a legitimate request and
+   * carries a reason worth rendering as an outcome; an invalid threshold is the CALLER sending a
+   * number the validator rejects, which arrives as a 400 with `validateConfig`'s own problem
+   * string. Surfacing that as an error next to the input that caused it is what the operator needs.
+   *
+   * `values` is keyed by the `key` of a field the engine published. Nothing here constructs a key.
+   */
+  applyThresholdSettings(
+    values: Record<string, number>,
+    signal?: AbortSignal,
+  ): Promise<ThresholdSettingsView>;
+
+  /** Reset to the engine's committed values — POST /api/settings/thresholds/reset. */
+  resetThresholdSettings(signal?: AbortSignal): Promise<ThresholdSettingsView>;
 }
 
 export type Mode = 'demo' | 'live';
