@@ -14,6 +14,7 @@ import type { ThresholdConfig } from '../config/thresholds.ts';
 import { configFor, inertOverrideHosts } from '../config/thresholds.ts';
 import type {
   Finding,
+  FindingType,
   HealthScanState,
   Host,
   HostStatus,
@@ -25,7 +26,7 @@ import { FindingRegistry } from './registry.ts';
 import { HOST_RULES } from './rules/index.ts';
 import { projectHost, type HostProjection } from './earlywarning.ts';
 import { buildHostSeries, type HostSeries } from './series.ts';
-import type { RuleVerdict } from './rules/types.ts';
+import type { RawHostMetrics, RuleInputKey, RuleVerdict } from './rules/types.ts';
 
 /** Metrics that must be warm before a host counts as fully baselined. */
 const BASELINED_METRICS = [
@@ -63,6 +64,8 @@ export class DetectionEngine {
   #projections = new Map<string, HostProjection>();
   /** Cumulative errored counts from the previous poll, for the per-minute rate. */
   #priorErrored = new Map<string, { errored: number; at: number }>();
+  /** Hosts missing from recent payloads, awaiting the absence bar in applyPoll(). */
+  #absent = new Map<string, { firstAbsentAt: number; polls: number }>();
   /** Alert timestamps already reported, so system_alert only fires on new ones. */
   #seenAlerts = new Set<string>();
   #lastPollAt: number | null = null;
@@ -100,6 +103,9 @@ export class DetectionEngine {
       this.#baselines = new BaselineStore(next.baselineWindowSeconds, next.minBaselineSamples);
       this.#registry = new FindingRegistry(next.sustainedSamples, next.sustainedSeconds);
       this.#priorErrored.clear();
+      // The absence bar reads the same two knobs, so a partly-counted absence measured
+      // against the old ones is not comparable to the new ones.
+      this.#absent.clear();
     }
   }
 
@@ -158,21 +164,29 @@ export class DetectionEngine {
         this.#baselines.record(host.host, 'errorsPerMinute', errorsPerMinute, now);
       }
 
+      // Raw nullable values, so a rule can tell "measured zero" from "unknown".
+      // normalizeHost() collapses these for the wire; rules must not see that.
+      const raw = {
+        queued: proxyHost.queued,
+        messagesPerSec: proxyHost.messagesPerSec,
+        errored: proxyHost.errored,
+        avgProcessingTime: proxyHost.avgProcessingTime,
+        avgQueueingTime: proxyHost.avgQueueingTime,
+        lastActivityElapsedSeconds: proxyHost.lastActivityElapsedSeconds,
+      };
+
       const verdicts: RuleVerdict[] = [];
+      // Rules whose silence this poll means "cannot tell", not "not breaching" — one of
+      // their declared inputs was absent. The registry must not read these as a clear.
+      const unmeasurable = new Set<FindingType>();
       for (const rule of HOST_RULES) {
+        if (rule.requires.some((key) => inputValue(raw, errorsPerMinute, key) === null)) {
+          unmeasurable.add(rule.type);
+        }
         const verdict = rule.evaluate({
           host,
           errorsPerMinute,
-          // Raw nullable values, so a rule can tell "measured zero" from "unknown".
-          // normalizeHost() collapses these for the wire; rules must not see that.
-          raw: {
-            queued: proxyHost.queued,
-            messagesPerSec: proxyHost.messagesPerSec,
-            errored: proxyHost.errored,
-            avgProcessingTime: proxyHost.avgProcessingTime,
-            avgQueueingTime: proxyHost.avgQueueingTime,
-            lastActivityElapsedSeconds: proxyHost.lastActivityElapsedSeconds,
-          },
+          raw,
           baselines: this.#baselines,
           config: this.#config,
           now,
@@ -183,38 +197,50 @@ export class DetectionEngine {
       const alertVerdict = this.#evaluateAlerts(host.host, response.alerts, now);
       if (alertVerdict !== null) verdicts.push(alertVerdict);
 
-      this.#registry.update(host.host, verdicts, now);
+      this.#registry.update(host.host, verdicts, now, unmeasurable);
 
       // AFTER recordIfMeasured above, so the fit window includes this poll's sample. Before
       // it, every projection would be one poll stale and `measuredAt` would disagree with
       // `currentValue`.
       this.#projections.set(
         host.host,
-        projectHost(
-          host.host,
-          {
-            queued: proxyHost.queued,
-            messagesPerSec: proxyHost.messagesPerSec,
-            errored: proxyHost.errored,
-            avgProcessingTime: proxyHost.avgProcessingTime,
-            avgQueueingTime: proxyHost.avgQueueingTime,
-            lastActivityElapsedSeconds: proxyHost.lastActivityElapsedSeconds,
-          },
-          this.#baselines,
-          this.#config,
-          now,
-        ),
+        projectHost(host.host, raw, this.#baselines, this.#config, now),
       );
     }
 
-    // A host that left the production should not linger with stale findings.
+    // A host that left the production should not linger with stale findings — but ONE poll
+    // that omits it is not proof it left, and forgetting on that poll is the other half of
+    // "findings appear and disappear with no clear cause".
+    //
+    // It is the worse half, because it does not just retract the finding — it takes the
+    // BASELINE with it. At the shipped minBaselineSamples of 12 and a 5s poll, a host that
+    // dropped out of one payload came back with an empty window, so every comparative rule
+    // was `warming` and SILENT for a further minute. The finding does not flicker; it goes
+    // away and cannot return, for a reason invisible from the outside.
+    //
+    // So absence gets the same two gates as a breach, from the same two knobs — see the
+    // symmetry note in registry.ts. sustainedSamples 1 / sustainedSeconds 0 forgets on the
+    // first absent poll, i.e. the old behaviour exactly.
     for (const known of [...this.#hosts.keys()]) {
-      if (seenHosts.has(known)) continue;
+      if (seenHosts.has(known)) {
+        this.#absent.delete(known);
+        continue;
+      }
+
+      const absent = this.#absent.get(known) ?? { firstAbsentAt: now, polls: 0 };
+      absent.polls += 1;
+      this.#absent.set(known, absent);
+      const gone =
+        absent.polls >= this.#config.sustainedSamples &&
+        now - absent.firstAbsentAt >= this.#config.sustainedSeconds * 1000;
+      if (!gone) continue;
+
       this.#hosts.delete(known);
       this.#projections.delete(known);
       this.#registry.forget(known);
       this.#baselines.forget(known);
       this.#priorErrored.delete(known);
+      this.#absent.delete(known);
     }
 
     this.#warnInertOverrides(seenHosts);
@@ -461,6 +487,18 @@ export function normalizeHost(proxyHost: ProxyHost, now: number): Host {
  */
 function orZero(value: number | null): number {
   return value ?? 0;
+}
+
+/**
+ * One of a rule's declared inputs, by name. `errorsPerMinute` is derived across polls
+ * rather than carried on the sample, so it is not in `raw` and is passed alongside.
+ */
+function inputValue(
+  raw: RawHostMetrics,
+  errorsPerMinute: number | null,
+  key: RuleInputKey,
+): number | null {
+  return key === 'errorsPerMinute' ? errorsPerMinute : raw[key];
 }
 
 /** Contract Q10: IRIS 'actor' means a business process. */

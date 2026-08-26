@@ -28,6 +28,10 @@ import {
 const deadHost: Rule = {
   type: 'dead_host',
   absolute: true,
+  // Nothing. It judges `status`, which is always present, and the queue depth below is
+  // decoration it omits when absent rather than a gate. So an unmeasurable poll IS a real
+  // "not breaching" answer here, and this finding must still clear on one.
+  requires: [],
   evaluate({ host, raw, config }: RuleInput): RuleVerdict | null {
     const rule = configFor(config, 'dead_host', host.host);
     if (!rule.enabled) return null;
@@ -56,6 +60,7 @@ const deadHost: Rule = {
 const stalledHost: Rule = {
   type: 'stalled_host',
   absolute: true,
+  requires: ['queued', 'lastActivityElapsedSeconds'],
   evaluate({ host, raw, config, now }: RuleInput): RuleVerdict | null {
     const rule = configFor(config, 'stalled_host', host.host);
     if (!rule.enabled) return null;
@@ -118,6 +123,7 @@ const stalledHost: Rule = {
 const queueBuildup: Rule = {
   type: 'queue_buildup',
   absolute: false,
+  requires: ['queued'],
   evaluate({ host, raw, baselines, config }: RuleInput): RuleVerdict | null {
     const rule = configFor(config, 'queue_buildup', host.host);
     if (!rule.enabled) return null;
@@ -161,6 +167,9 @@ const queueBuildup: Rule = {
 const elevatedErrorRate: Rule = {
   type: 'elevated_error_rate',
   absolute: false,
+  // The DERIVED rate, not `errored`. It is null both when IRIS could not count errors and
+  // on the first poll for a host, where there is no prior sample to difference against.
+  requires: ['errorsPerMinute'],
   evaluate({ host, errorsPerMinute, baselines, config }: RuleInput): RuleVerdict | null {
     const rule = configFor(config, 'elevated_error_rate', host.host);
     if (!rule.enabled) return null;
@@ -200,6 +209,12 @@ function durationRule(
   return {
     type,
     absolute: false,
+    // This pair reads the NORMALIZED host, where an absent duration has already become 0
+    // and falls under the floor — so it never sees a null and cannot return "cannot tell".
+    // Declared anyway, and read from `raw`: the input really is unmeasurable on such a
+    // poll, and a finding that was breaching should hold rather than be retracted by a
+    // gap in the metrics text. Without this the rule clears on the coerced zero.
+    requires: [metric],
     evaluate({ host, baselines, config }: RuleInput): RuleVerdict | null {
       const rule = configFor(config, type, host.host);
       if (!rule.enabled) return null;
@@ -249,6 +264,7 @@ function durationRule(
 const throughputDrop: Rule = {
   type: 'throughput_drop',
   absolute: false,
+  requires: ['messagesPerSec'],
   evaluate({ host, raw, baselines, config }: RuleInput): RuleVerdict | null {
     const rule = configFor(config, 'throughput_drop', host.host);
     if (!rule.enabled) return null;
