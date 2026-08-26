@@ -377,22 +377,31 @@ ClassMethod CreateRoles() As %Status
 /// Printed on every setup run so the regression is visible at boot rather than in a review.
 ClassMethod ReportTools()
 {
-    // TEN since the activity chat assistant, from seven. `Tools.Activity` adds three read tools over
-    // `Ens_Activity_Data.{Seconds,Hours,Days}` -- get_activity_coverage, get_activity_trend,
-    // compare_host_activity (mcp-tools.md §3.7-3.9).
+    // TWELVE since the chat assistant gained the event log, from ten. `Tools.EventLog` adds two read
+    // tools over `Ens_Util.Log` -- GetEventLogSummary and GetEventLogTrend (mcp-tools.md §3.10-3.11).
+    // Before that it was ten, from seven, when `Tools.Activity` added three over
+    // `Ens_Activity_Data.{Seconds,Hours,Days}` (§3.7-3.9).
     //
-    // Moved DELIBERATELY and with the tool list read back, which is the discipline the previous bump
-    // to 7 established: the guard's whole value is that an unexpected count is loud, and bumping it
-    // without reading the names would defeat it. Checked on the first compile -- `Tools.Activity`
-    // discovered exactly three, so nine reads plus one write, no helper left public. The three
-    // helpers on that class (`ClassifyDimension`, `IsHL7Structure`, `TableFor` and the rest) are all
-    // `[ Private ]`, which is what keeps the count at three rather than eleven.
-    set expected = 10
+    // Moved DELIBERATELY and with the tool list read back, which is the discipline the bump to 7
+    // established: the guard's whole value is that an unexpected count is loud, and bumping it without
+    // reading the names would defeat it. Read back on the first compile of each bump -- `Tools.Activity`
+    // discovered exactly three, `Tools.EventLog` exactly two, so eleven reads plus one write and no
+    // helper left public. Both classes keep their helpers `[ Private ]`, which is what holds the count
+    // down: `Tools.EventLog` has nine of them and would otherwise discover eleven.
+    //
+    // `Tools.ErrorCatalogue` AND `Tools.HostRoster` ARE DELIBERATELY ABSENT FROM THIS LIST, and that is
+    // not an oversight. Between them they hold four methods that used to be private on `Tools.Read` and
+    // `Tools.Activity`, made public so `Tools.EventLog` could share them rather than copy them -- and
+    // neither extends `%AI.Tool`, so `%AI.ToolMgr.FindTools`'s `$$issubclassof` filter cannot see them.
+    // Verified rather than assumed: `%IsA("%AI.Tool")` on `Tools.ErrorCatalogue` returns 0, and the
+    // count read back as 12 after `Tools.HostRoster` landed with two public methods. Listing either here
+    // would call `%Discover()` on a class that has no such method.
+    set expected = 12
     set found = 0
-    // Tools.Activity IS LISTED HERE, not only registered in Governance. A tool class the count does
+    // EVERY TOOL CLASS IS LISTED HERE, not only registered in Governance. A tool class the count does
     // not cover is a class whose accidental extra method nothing catches at boot -- which is the one
     // thing this method exists to prevent.
-    for class = "ProductionGuardian.LabDemo.Tools.Read", "ProductionGuardian.LabDemo.Tools.Activity", "ProductionGuardian.LabDemo.Tools.Resolve" {
+    for class = "ProductionGuardian.LabDemo.Tools.Read", "ProductionGuardian.LabDemo.Tools.Activity", "ProductionGuardian.LabDemo.Tools.EventLog", "ProductionGuardian.LabDemo.Tools.Resolve" {
         if '##class(%Dictionary.CompiledClass).%ExistsId(class) {
             write "3. tools ", class, ": NOT COMPILED", !
             continue

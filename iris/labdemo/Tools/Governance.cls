@@ -27,7 +27,9 @@
 ///
 /// NOT A `%AI.Tool` SUBCLASS, deliberately. `%AI.ToolMgr.FindTools` filters on
 /// `$$issubclassof(className, "%AI.Tool")` -- verified by reading it -- so nothing here can become a
-/// seventh LLM-callable tool no matter how many public methods it grows.
+/// thirteenth LLM-callable tool no matter how many public methods it grows. `Tools.ErrorCatalogue`
+/// relies on the same fact for the same reason, and that is what let two `[ Private ]` helpers become
+/// public without changing the count `Setup.AIHub.ReportTools()` guards.
 Class ProductionGuardian.LabDemo.Tools.Governance
 {
 
@@ -58,11 +60,32 @@ Parameter READTOOLS = "ProductionGuardian.LabDemo.Tools.Read";
 /// Prompt wording did not fix it and was tried first: the chat prompt already named each tool and
 /// what it was for. That is the fifth time on this project that a behaviour something depended on
 /// needed a deterministic guard rather than politer instruction, so the guard is the tool surface --
-/// a model cannot prefer a tool that is not registered. The chat assistant gets `"activity"`;
+/// a model cannot prefer a tool that is not registered. The chat assistant gets `"chat"`, which is
+/// this family plus `EVENTLOGTOOLS` and still excludes the current-state tools; `"activity"` remains
+/// this family alone for any caller that wants exactly that.
 /// AI Detective keeps `"all"`, because a root-cause investigation genuinely needs the instantaneous
 /// status, queue depth and pool size, and it is given ONE finding to explain rather than an open
 /// question about a time range.
 Parameter ACTIVITYTOOLS = "ProductionGuardian.LabDemo.Tools.Activity";
+
+/// The event-log read tools — `Ens_Util.Log`, aggregated and classified.
+///
+/// A THIRD READ CLASS, on the same reasoning as the second: see `Tools.EventLog`'s class comment for
+/// the nullability argument, which is the one that made a separate class necessary rather than tidy.
+/// Gated by `PG_Read` like the other two, and it cannot mutate anything.
+///
+/// IT TRAVELS WITH `ACTIVITYTOOLS`, NOT WITH `READTOOLS`, and that pairing is the point of the `"chat"`
+/// option below. Both answer "what happened over a period"; `Tools.Read` answers "what is true now".
+/// The measurement in the `ACTIVITYTOOLS` comment is about a model preferring an instantaneous reading
+/// over a recorded one, and an event-log history is on the recorded side of that line.
+///
+/// THE OVERLAP WITH `Tools.Read.GetRecentErrors` IS REAL AND IS NOT THE SAME RISK. Both read
+/// `Ens_Util.Log`. But `GetRecentErrors` takes one host and `Type <= 2` over at most 60 minutes, and
+/// `GetEventLogSummary` groups every host and severity over up to a day -- so given both, a model that
+/// picks the "wrong" one still gets a true answer at a different scope, not an answer three orders of
+/// magnitude out. Measured difference in what they can see at all: 13 of the 60 error and warning rows
+/// on this instance have a NULL `ConfigName`, which no host-filtered query can reach.
+Parameter EVENTLOGTOOLS = "ProductionGuardian.LabDemo.Tools.EventLog";
 
 /// The write-tool class, in its own class so the RBAC requirement does not leak onto the reads.
 Parameter WRITETOOLS = "ProductionGuardian.LabDemo.Tools.Resolve";
@@ -99,6 +122,10 @@ ClassMethod ToolManager(pIncludeWrite As %Boolean = 1, Output pStatus As %Status
         quit $$$NULLOREF
     }
     set pStatus = mgr.RegisterToolSet(..#ACTIVITYTOOLS)
+    if $$$ISERR(pStatus) {
+        quit $$$NULLOREF
+    }
+    set pStatus = mgr.RegisterToolSet(..#EVENTLOGTOOLS)
     if $$$ISERR(pStatus) {
         quit $$$NULLOREF
     }
@@ -158,22 +185,43 @@ ClassMethod GovernAgent(pAgent As %AI.Agent, pIncludeWrite As %Boolean = 1, pToo
         quit sc
     }
 
-    // A FIXED $case over three names, not a list the caller composes. An unrecognised value is an
+    // A FIXED $listfind over four names, not a list the caller composes. An unrecognised value is an
     // ERROR rather than a default, because the two failure directions are not symmetric: defaulting
     // to "all" on a typo would silently widen what an agent can reach, which is the one mistake this
     // method must not make quietly.
-    if '$listfind($listbuild("all", "activity", "current"), pToolSets) {
-        quit $$$ERROR($$$GeneralError, "pToolSets must be 'all', 'activity' or 'current'")
+    //
+    // "chat" IS A NEW NAME RATHER THAN A WIDENING OF "activity", and that is deliberate. The chat
+    // assistant now needs the activity tools AND the event-log tools; redefining "activity" to mean
+    // both would have changed what every existing caller of that string gets, silently, which is the
+    // same class of mistake as defaulting on a typo. "activity" still means exactly `ACTIVITYTOOLS`.
+    if '$listfind($listbuild("all", "chat", "activity", "current"), pToolSets) {
+        quit $$$ERROR($$$GeneralError, "pToolSets must be 'all', 'chat', 'activity' or 'current'")
     }
 
-    if pToolSets '= "activity" {
+    // ONE POSITIVE CONDITION PER TOOL SET, spelling the membership out:
+    //
+    //     all       READTOOLS  ACTIVITYTOOLS  EVENTLOGTOOLS      AI Detective
+    //     chat                 ACTIVITYTOOLS  EVENTLOGTOOLS      ChatDispatcher
+    //     activity             ACTIVITYTOOLS                     unchanged from before "chat"
+    //     current   READTOOLS                                    live state only
+    //
+    // Written positively rather than as the `'= "activity"` exclusions this used to hold. With two
+    // options an exclusion reads fine; with four, "not activity and not current" is a set a reader has
+    // to compute, and adding a fifth name would silently opt it into every tool set it did not exclude.
+    if (pToolSets = "all") || (pToolSets = "current") {
         set sc = pAgent.ToolManager.RegisterToolSet(..#READTOOLS)
         if $$$ISERR(sc) {
             quit sc
         }
     }
-    if pToolSets '= "current" {
+    if (pToolSets = "all") || (pToolSets = "chat") || (pToolSets = "activity") {
         set sc = pAgent.ToolManager.RegisterToolSet(..#ACTIVITYTOOLS)
+        if $$$ISERR(sc) {
+            quit sc
+        }
+    }
+    if (pToolSets = "all") || (pToolSets = "chat") {
+        set sc = pAgent.ToolManager.RegisterToolSet(..#EVENTLOGTOOLS)
         if $$$ISERR(sc) {
             quit sc
         }

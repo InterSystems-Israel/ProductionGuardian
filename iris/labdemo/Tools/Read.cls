@@ -1,6 +1,7 @@
 /// MCP read tools for AI Detective — evidence gathering, no mutation.
 ///
-/// Implements the five read tools in `contracts/mcp-tools.md`. That contract is authoritative;
+/// Implements the six read tools in `contracts/mcp-tools.md` §3.1-3.5 — five, plus `get_host_settings`
+/// added in MVP 3 (§3.4b), which this line said "five" through. That contract is authoritative;
 /// where this class and the contract disagree, the contract is right and this is a bug.
 ///
 /// HOW A TOOL IS DEFINED, verified by reading %AI.Tool.Generator rather than assumed: every
@@ -8,7 +9,7 @@
 /// method's DESCRIPTION becomes the tool description the model reads, and argument descriptions
 /// come from the formal spec. `%Invoke` and `%Discover` are GENERATED at compile time — do not
 /// write them, and do not add helper ClassMethods here unless they are meant to be callable by
-/// an LLM. A private helper is fine; a public one silently becomes a sixth tool.
+/// an LLM. A private helper is fine; a public one silently becomes a seventh tool.
 ///
 /// RETURNS %DynamicObject THROUGHOUT. The generator produces an untyped schema from the return
 /// value, so the field names below are a prose contract rather than an enforced one — which is
@@ -45,8 +46,13 @@ ClassMethod GetHostStatus(host As %String) As %DynamicObject
         set out.error = "no such config item in " _ ..#PRODUCTION
         quit out
     }
-    set out.found = 1
-    set out.enabled = ''item.Enabled
+    // TYPED, and every `found` / `measured` / `enabled` in this class is set the same way for one
+    // reason: `set out.found = 1` on a %DynamicObject emits the NUMBER 1, while the literal above
+    // initialises the same key to `false`. So the key's JSON type depended on which branch ran, and
+    // `contracts/mcp-tools.md` §3.1 shows `true`. Found by reading emitted output rather than by
+    // reasoning about it — `Tools.Activity.GetActivityCoverage` carries the measurement.
+    do out.%Set("found", 1, "boolean")
+    do out.%Set("enabled", ''item.Enabled, "boolean")
     // Status comes from EnumerateHostStatus, not from Enabled: an enabled host can be in Error
     // or Retry, and those are the states worth reporting.
     do ..HostStatusRow(host, .row)
@@ -67,7 +73,7 @@ ClassMethod GetQueueDepth(host As %String) As %DynamicObject
         quit out
     }
     set out.queued = +row("Queue")
-    set out.measured = 1
+    do out.%Set("measured", 1, "boolean")
     quit out
 }
 
@@ -84,7 +90,7 @@ ClassMethod GetPoolSize(host As %String) As %DynamicObject
         set out.error = "no such config item in " _ ..#PRODUCTION
         quit out
     }
-    set out.found = 1
+    do out.%Set("found", 1, "boolean")
     // PoolSize is a PROPERTY of Ens.Config.Item, not a row in its Settings collection. Reading it
     // from Settings would return "" on a host that has a pool size, which reads as "not
     // configured" rather than "read from the wrong place".
@@ -121,7 +127,7 @@ ClassMethod GetHostSettings(host As %String) As %DynamicObject
         set out.error = "no such config item in " _ ..#PRODUCTION
         quit out
     }
-    set out.found = 1
+    do out.%Set("found", 1, "boolean")
 
     // The allowlist. Path and target settings, because those are what a misconfiguration diagnosis
     // needs -- where the host reads from, where it writes to, and where it sends.
@@ -253,7 +259,10 @@ ClassMethod GetRecentErrors(host As %String, sinceMinutes As %Integer = 15) As %
     kill newest
     while rs.%Next() {
         set total = total + 1
-        set code = ..ClassifyError(rs.%Get("Text"))
+        // `Tools.ErrorCatalogue`, not a private helper here. The allowlist moved out when
+        // `Tools.EventLog` needed the same one -- see that class's comment for why a second copy was
+        // the wrong answer. Text goes in; only a fixed token comes back, which is unchanged.
+        set code = ##class(ProductionGuardian.LabDemo.Tools.ErrorCatalogue).Classify(rs.%Get("Text"))
         set codes(code) = $get(codes(code), 0) + 1
         // Newest per code, as an ODBC timestamp string. String comparison is correct for this
         // format -- "2026-08-23 10:47:54" sorts identically as text and as time, because the fields
@@ -281,8 +290,21 @@ ClassMethod GetRecentErrors(host As %String, sinceMinutes As %Integer = 15) As %
         // `secondsAgo` is the newest occurrence of THIS code, so a reply can carry one code that is
         // seconds old and another that is an hour old -- which is exactly the case a single
         // `count` collapses and a diagnosis needs.
-        do out.byCode.%Push({ "errorCode": (code), "count": (n), "summary": (..ErrorSummary(code)),
-            "secondsAgo": (ago) })
+        set entry = { "errorCode": (code), "count": (n), "secondsAgo": (ago) }
+        // `summary` TYPED AS NULL WHEN ABSENT. `ErrorCatalogue.Summary` returns "" for a code not in
+        // the catalogue, and an ObjectScript "" inside a literal serialises as the STRING `""` -- so
+        // an unclassified code emitted `"summary":""` where §3.4a says `null`. Measured, not reasoned
+        // about: `{"a":("")}` -> `{"a":""}`, `%Set(k,"","null")` -> `{"k":null}`. An empty string is
+        // not the same claim as a null: `""` reads as "there is a summary and it is blank".
+        // `Tools.EventLog` has emitted null here from the start, so the two tools reading the same
+        // catalogue disagreed on the same field.
+        set text = ##class(ProductionGuardian.LabDemo.Tools.ErrorCatalogue).Summary(code)
+        if text = "" {
+            do entry.%Set("summary", "", "null")
+        } else {
+            set entry.summary = text
+        }
+        do out.byCode.%Push(entry)
     }
 
     // ONE SUMMARY FIELD FOR THE WHOLE REPLY, because a model reasoning about "is this still
@@ -297,7 +319,14 @@ ClassMethod GetRecentErrors(host As %String, sinceMinutes As %Integer = 15) As %
             set overall = newest(code)
         }
     }
-    set out.newestSecondsAgo = $select(overall = "": "", 1: ..SecondsSince(overall, nowH))
+    // Typed null for the same reason as `summary` above: the comment two lines up has said "Null when
+    // there are no errors at all" since #106 while the code emitted `"newestSecondsAgo":""`, which is
+    // the shape §2.1 spends a section refusing. §3.4's table says `integer | null`.
+    if overall = "" {
+        do out.%Set("newestSecondsAgo", "", "null")
+    } else {
+        set out.newestSecondsAgo = ..SecondsSince(overall, nowH)
+    }
     quit out
 }
 
@@ -358,7 +387,7 @@ ClassMethod GetProcessingTime(host As %String) As %DynamicObject
     // measured is false when NEITHER could be read. Both stay null rather than 0: IRIS omits these
     // families entirely for a host that has not processed anything, and a zero would read as
     // "instant" rather than "never measured" -- the #49 shape.
-    set out.measured = ((out.avgProcessingTime '= "") || (out.avgQueueingTime '= ""))
+    do out.%Set("measured", ((out.avgProcessingTime '= "") || (out.avgQueueingTime '= "")), "boolean")
     quit out
 }
 
@@ -456,66 +485,11 @@ ClassMethod HostStatusRow(host As %String, ByRef row) As %Status [ Private ]
     quit $$$OK
 }
 
-/// Map error text to an allowlisted code, or "unclassified". Private.
-///
-/// ALLOWLIST, never a denylist. Anything unrecognised yields "unclassified" and NO text, so a
-/// novel error message cannot leak through a gap in a pattern list. A denylist would need to
-/// anticipate every shape PHI can take in a log line, which is not a bet worth taking on a
-/// healthcare system.
-/// The `summary` catalogue — `contracts/mcp-tools.md` §3.4a.
-///
-/// A FIXED STRING LOOKED UP BY `errorCode`, never derived from the log row. That is the whole reason
-/// it is safe to send: `Ens_Util.Log` on this instance holds 61,772 rows carrying `PatientID` in
-/// plain text, and a summary built from the row would carry whatever the row carries. A catalogue
-/// cannot, by construction.
-///
-/// THE ALLOWLIST MUST NOT GAIN AN EXCEPTION FOR `#5021`. The tempting shortcut for MVP 3's scenario
-/// is to return that error's message text, because it contains the missing path and the path is
-/// *usually* harmless. That is the wrong shape twice: an allowlist with one exception is one an
-/// implementer widens, and "usually harmless" is the rare-rather-than-absent pattern that survives
-/// review and then leaks. The agent learns the KIND of fault here and the offending path from
-/// `GetHostSettings` -- configuration, which the boundary permits.
-///
-/// Adding a row is a contract change (§3.4a), deliberately: a code that reaches an agent with a
-/// human-readable meaning is a decision about what the model is told.
-ClassMethod ErrorSummary(code As %String) As %String [ Private ]
-{
-    // Returns "" for anything not listed, which GetRecentErrors emits as JSON null -- §3.4a's
-    // "null when unclassified". An unknown code gets a count and no interpretation, which is honest:
-    // the agent can see something is failing and cannot be told what it means.
-    quit $case(code,
-        "#5021": "a configured directory or file path does not exist",
-        "#6059": "the configured downstream host or port could not be reached",
-        "#5001": "a general IRIS error was raised while handling a message",
-        "<Ens>ErrFailureTimeout": "the host retried and gave up within its failure timeout",
-        "<Ens>ErrConnectionLost": "the connection to the downstream target was lost",
-        "<Ens>ErrHTTPStatus": "the downstream returned an HTTP status the adapter treats as an error",
-        "<Ens>ErrProductionSettingInvalid": "a production setting on this host is not a valid value",
-        "<Ens>ErrTCPTerminatedReadTimeoutExpired": "a TCP read timed out before the downstream replied",
-        "<Ens>ErrGeneral": "the interoperability framework raised a general error",
-        : "")
-}
-
-ClassMethod ClassifyError(text As %String) As %String [ Private ]
-{
-    set known = $listbuild(
-        "<Ens>ErrFailureTimeout",
-        "<Ens>ErrConnectionLost",
-        "<Ens>ErrHTTPStatus",
-        "<Ens>ErrGeneral",
-        "<Ens>ErrProductionSettingInvalid",
-        "<Ens>ErrTCPTerminatedReadTimeoutExpired",
-        "#6059",
-        "#5001",
-        "#5021")
-    set ptr = 0
-    while $listnext(known, ptr, token) {
-        if text [ token {
-            quit
-        }
-        set token = ""
-    }
-    quit $select(token '= "": token, 1: "unclassified")
-}
+// `ClassifyError` and `ErrorSummary` USED TO LIVE HERE, as two `[ Private ]` helpers. They are now
+// `Tools.ErrorCatalogue.Classify` and `.Summary`, unchanged line for line, moved when
+// `Tools.EventLog` needed the same allowlist over the same table. Copying a PHI boundary into a
+// second class would have made §3.4a's "adding a row is a contract change" uncheckable, since there
+// would have been two row sets to add to. That class is not a `%AI.Tool` subclass, which is what lets
+// the methods be public without becoming tools -- so the tool count here is unchanged at six.
 
 }

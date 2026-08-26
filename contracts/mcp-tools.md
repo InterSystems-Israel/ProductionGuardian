@@ -3,18 +3,20 @@
 **Owner:** Dev B (inherited `iris/**` from Dev A) · **Consumer:** Dev B (agent orchestration), Dev C
 (approval UI, indirectly) · **Runs in:** the `pg-iris` container · **Status:** published
 
-**Ten tools since the activity chat assistant. Nine read, one write.** They exist so the
-**AI Detective** agent can gather evidence about one condition on one host, so **Smart Resolve** can
-apply one bounded action to it, and so the **activity chat assistant** can answer an operator's
-question about interoperability activity over time. Root `CLAUDE.md` §2.1 is the scope boundary; this
-file is the interface.
+**Twelve tools since the chat assistant gained the event log. Eleven read, one write.** They exist so
+the **AI Detective** agent can gather evidence about one condition on one host, so **Smart Resolve**
+can apply one bounded action to it, and so the **chat assistant** can answer an operator's question
+about interoperability activity and about what the production logged. Root `CLAUDE.md` §2.1 is the
+scope boundary; this file is the interface.
 
-**The nine reads are two families answering two different questions**, and the split matters because
-they sound alike. §3.1–§3.5 report **what is true now** — a status, a depth, a pool size, read from
-the live production. §3.7–§3.9 report **what happened over a period**, read from the persisted
-`Ens_Activity_Data` tables. Given both, a model asked "which host has the highest average queueing
-time" answered from the instantaneous reading and was wrong by three orders of magnitude, so
-`Tools.Governance.GovernAgent` can register one family without the other — see §3.9's closing note.
+**The eleven reads are three families answering three different questions**, and the split matters
+because the first two sound alike. §3.1–§3.5 report **what is true now** — a status, a depth, a pool
+size, read from the live production. §3.7–§3.9 report **how much moved and how fast over a period**,
+read from the persisted `Ens_Activity_Data` tables. §3.10–§3.11 report **what the production said
+while it moved**, read from `Ens_Util.Log`. Given the first two together, a model asked "which host
+has the highest average queueing time" answered from the instantaneous reading and was wrong by three
+orders of magnitude, so `Tools.Governance.GovernAgent` can register any subset of the families — see
+§3.9's closing note.
 
 The organising principle is **least privilege**: the read tools are granted broadly, the write tool
 is not, and the two are gated separately. The demo the spec asks for is a direct consequence —
@@ -55,13 +57,37 @@ silently disagrees with its neighbour is worse than one that is wrong out loud:
 | `get_activity_coverage` | `PG.Tools.Activity` | read | `PG_Read` | `PG_Read` | `Ens_Activity_Data.Hours` + all three tables' extents — §3.7 |
 | `get_activity_trend` | `PG.Tools.Activity` | read | `PG_Read` | `PG_Read` | `Ens_Activity_Data.{Seconds,Hours,Days}`, one host — §3.8 |
 | `compare_host_activity` | `PG.Tools.Activity` | read | `PG_Read` | `PG_Read` | `Ens_Activity_Data.{Seconds,Hours,Days}`, all hosts — §3.9 |
+| `get_event_log_summary` | `PG.Tools.EventLog` | read | `PG_Read` | `PG_Read` | `Ens_Util.Log`, aggregated, **no text** — §3.10 |
+| `get_event_log_trend` | `PG.Tools.EventLog` | read | `PG_Read` | `PG_Read` | `Ens_Util.Log`, bucketed, **no text** — §3.11 |
 | `set_pool_size` | `PG.Tools.Resolve` | **write** | `PG_Read` | **`PG_Resolve`** | `Ens.Config.Production` + `Ens.Director.UpdateProduction()` |
+
+### The names in this column are section titles, not callable names
+
+**Measured and corrected 2026-08-26.** `%AI.Tool` derives a tool's callable name from the
+**ClassMethod name**, so `%Discover()` on a governed manager reports `GetHostStatus`,
+`CompareHostActivity`, `GetEventLogSummary` — PascalCase, one per method. The snake_case forms above
+are this document's own headings and have never been accepted by the runtime.
+
+That went unnoticed because it fails silently in the only direction that looks like something else:
+`ChatDispatcher.SystemPrompt()` named all three activity tools in snake_case for two weeks and the
+model called them anyway, mapping the prose onto the PascalCase name in its tool schema by
+resemblance. A model that failed to make that leap would have answered without calling a tool, which
+reads as the model declining rather than as a broken name. The prompt now uses the callable names.
+
+Two consequences worth stating rather than leaving to be rediscovered:
+
+- **`investigation-api.md`'s `evidence[].tool` values are the *callable* names**, not §1's. Observed
+  live: `"tool": "GetEventLogSummary"`, and on one run `"tool": "functions.GetEventLogSummary"` —
+  the provider's own prefix, which comes from the model and is not something this project sets.
+  Treat that field as free-form provenance, not as an enum to validate against this table.
+- **Renaming a ClassMethod renames a tool.** There is no name attribute in between, so a method
+  rename is a contract change even when the signature is untouched.
 
 `PG_Read` and `PG_Resolve` are **IRIS resources**, held by roles `Guardian_Read` and
 `Guardian_Resolve`. §5 explains the resource-not-role choice and why the write tool is
 **listable to `PG_Read` but executable only by `PG_Resolve`**.
 
-Three classes, not ten, because discovery is per class: `%AI.Tool` exposes every public method of a
+Four classes, not twelve, because discovery is per class: `%AI.Tool` exposes every public method of a
 subclass as a tool (§7). Splitting read from write across classes means the write tool can carry
 class-level parameters — `REQUIRESAUTH`, its own `Policy` — that must not apply to the read tools.
 `PG.Tools.Activity` is a **third** class rather than five more methods on `PG.Tools.Read` for two
@@ -69,10 +95,24 @@ reasons: its nullability story is different (an empty result means "no traffic i
 "unmeasurable"), and a new tool family in a new class moves `Setup.AIHub.ReportTools()`'s expected
 count by an amount attributable to one file.
 
+`PG.Tools.EventLog` is a **fourth** on the same two reasons, and its nullability story does not merely
+differ — it **inverts**. §2.1's rule is that an unmeasurable value is `null` and never `0`. For a log
+count the opposite holds: a window with no rows is a *measured* zero, the query ran and found nothing,
+and it is usually the answer the operator most wants. Folding these two methods into `Tools.Activity`
+would have put both rules in one class where a reader cannot tell which applies to which field.
+
+**A fifth class carries no tools at all, deliberately.** `PG.Tools.ErrorCatalogue` holds the error-code
+allowlist and its summary catalogue — §3.4a — which `PG.Tools.Read` and `PG.Tools.EventLog` both need.
+It does **not** extend `%AI.Tool`, so `FindTools`' `$$issubclassof` filter skips it and its two public
+methods are not tools. That is the only arrangement that neither copies the PHI boundary into two
+files nor publishes it as two callable tools, and §3.4a's "adding a row is a contract change" is only
+checkable while there is a single row set to review.
+
 **`Setup.AIHub.ReportTools()` prints the discovered count on every boot and flags an unexpected one.**
-It expects **10**. That guard is the reason an accidentally-public helper is caught at boot rather
-than in review, so the number moves only with the tool list read back — the three `Activity` tools
-were confirmed by discovery before the expectation was raised.
+It expects **12**. That guard is the reason an accidentally-public helper is caught at boot rather
+than in review, so the number moves only with the tool list read back — the two `EventLog` tools were
+confirmed by discovery before the expectation was raised, which mattered here: that class has eight
+`[ Private ]` helpers and would have discovered ten tools had any of them been left public.
 
 ---
 
@@ -130,6 +170,21 @@ omitted-argument call rather than only the explicit one.
 
 **Units are seconds**, everywhere a duration appears, matching `healthscan-api.md` Q6. Confirmed
 empirically rather than assumed: `Cloud API` configured at 0.05s latency reports `0.05`.
+
+**A boolean field is a JSON boolean, and in ObjectScript that takes `%Set(key, val, "boolean")`.**
+`set out.found = 1` on a `%DynamicObject` emits the **number** `1`, so a field initialised to `false`
+in a literal and later assigned `1` changed JSON *type* depending on which branch ran. Eight fields
+across §3.1, §3.2, §3.5, §3.7 and §3.9 shipped that way — `found`, `enabled`, `measured`, `readable`,
+`application` — against samples in this contract that have always shown `true`.
+
+**Worth a convention rather than a code comment, because the consumer is a language model and the
+mismatch was silent.** Asked "how many hosts are in this production", the chat answered *"7 hosts …
+both application hosts and framework-related hosts"* against 3 application hosts, while the prompt
+paragraph telling it to read the flag names `true` and `false` and the payload said `"application":1`.
+A rule stated in one vocabulary and a payload emitted in another. Correcting the **types alone**, with
+no prompt change, produced *"3 application hosts … EMR Source, Lab Router and Cloud API"* on three runs
+of three. Nothing that reads these fields for truthiness was affected, which is exactly why it survived:
+`1` and `true` are the same value to every consumer except the one that reads the field name.
 
 ### 2.1 Nullability: an unmeasurable value is not a small one
 
@@ -1109,11 +1164,21 @@ model, and `"Ens_Activity_Data." _ resolution` would let one JSON field name any
 namespace. Verified: `{"resolution":"Ens_Util.Log"}` returns
 `{"error":"resolution must be one of seconds, hours, days"}`.
 
-#### A CALLER MAY BE GIVEN ONE READ FAMILY WITHOUT THE OTHER
+#### A CALLER MAY BE GIVEN SOME READ FAMILIES WITHOUT THE OTHERS
 
-`Tools.Governance.GovernAgent(agent, includeWrite, toolSets)` takes `"all"` (default),
-`"activity"` or `"current"`. **This is a correctness guard, not an additional safety one** — both
-families are `PG_Read` and neither mutates anything.
+`Tools.Governance.GovernAgent(agent, includeWrite, toolSets)` takes `"all"` (default), `"chat"`,
+`"activity"` or `"current"`. **This is a correctness guard, not an additional safety one** — all three
+families are `PG_Read` and none mutates anything.
+
+| `toolSets` | Read families registered | Used by |
+|---|---|---|
+| `"all"` | §3.1–§3.5, §3.7–§3.9, §3.10–§3.11 | AI Detective |
+| `"chat"` | §3.7–§3.9, §3.10–§3.11 | the chat assistant |
+| `"activity"` | §3.7–§3.9 | — |
+| `"current"` | §3.1–§3.5 | — |
+
+`"chat"` was added rather than widening `"activity"` to mean both, so no existing caller's meaning
+changed when the event-log family landed. `"activity"` still means §3.7–§3.9 exactly.
 
 The reason is that §3.5 and §3.9 answer questions that *sound* identical. Measured through the
 dashboard's own path, on the question "which host has the highest average queueing time":
@@ -1129,7 +1194,7 @@ wrong *and* self-contradicting. A second run on the same question produced "all 
 average queueing time of null". **Prompt wording was tried first and did not fix it**: the chat
 prompt already named each tool and what it was for.
 
-So the chat assistant is registered with `"activity"` and cannot reach the current-state tools at all.
+So the chat assistant is registered with `"chat"` and cannot reach the current-state tools at all.
 Verified by execution rather than by reading the registration, because
 `ToolManager.FindTools()` is namespace-wide discovery and lists tools that are not registered:
 
@@ -1143,6 +1208,218 @@ ExecuteTool("SetPoolSize", …)          ->  ERROR <%AICore>ToolNotFound
 question about a time range, and a root-cause diagnosis genuinely needs the live status, queue depth
 and pool size beside the history. An unrecognised `toolSets` value is an **error**, not a default:
 falling back to `"all"` on a typo would silently widen what an agent can reach.
+
+### 3.10 `get_event_log_summary` — read, added in MVP 3
+
+**Runtime name `GetEventLogSummary`.** What the production has *said about itself* over a recent
+window, grouped by host and severity — the counterpart to §3.7–§3.9, which say how much moved and how
+fast. Reads `Ens_Util.Log`.
+
+**Input**: `sinceMinutes` (optional, default `60`, `1..1440`). **There is no host argument** — the tool
+returns every host every time, which is the point: the caller usually does not yet know which host is
+logging. A window outside the range is refused, not clamped:
+`{"error":"sinceMinutes must be an integer between 1 and 1440","sanitised":true}`.
+
+**Output**: `sinceMinutes`, `since`, `now`, `rows`, `bySeverity[]`, `byHost[]`,
+`classifiedThroughSeverity`, `sanitised`, `retention`.
+
+`bySeverity[]`: `severity`, `typeCode`, `count`. `byHost[]`: `host`, `rows`, `bySeverity[]`,
+`distinctJobsAtLeast`, `distinctSessionsAtLeast`, `oldest`, `newest`, `faults[]`, `sources[]`,
+`productionScope`, `application` — plus `lifecycleFaults[]` on the `(production)` entry only.
+
+**The severity vocabulary is the full `Ens.DataType.LogType` enum**, read from its own
+VALUELIST/DISPLAYLIST rather than assumed: `1 assert, 2 error, 3 warning, 4 info, 5 trace, 6 alert`.
+Note that **`error` is `2`, not `1`** — so §3.4's `Type <= 2` filter means "assert or error" and
+**excludes warnings**, which this tool can see and `get_recent_errors` structurally cannot.
+
+**`(production)` is a sentinel host name, not a config item.** `ConfigName` is **NULL, not empty**, on
+the rows `Ens.Director` writes about the production itself. Measured: `WHERE ConfigName = ''` returns
+0 rows and `WHERE ConfigName IS NULL` returns 91. So no host-filtered query can ever reach them, and
+they are reported under the parenthesised name — parenthesised because `Ens.Config.Item.Name` cannot
+contain one, so a real host can never collide with it. `productionScope: true` marks the entry.
+
+**Framework hosts are LABELLED, not filtered — a deliberate divergence from `healthscan-api.md` §2**,
+which drops them. Nine host names come back on this instance and five are interop framework services
+(`Ens.MonitorService`, `Ens.ScheduleHandler`, `Ens.Actor`, `Ens.Alarm`,
+`Ens.Activity.Operation.Local`). §3.7's precedent is followed instead: `application` is `true` for a
+config item of this production, `false` for framework plumbing, and **`null` for the `(production)`
+entry**, which is neither. The inversion matters — `false` there would file the production's own start
+failures under framework noise. Filtering would be wrong for a different reason: a framework service
+*is* where some real faults are logged, and a tool that silently omits rows cannot be checked against
+the row count it just published.
+
+**`faults[]` classifies, it never quotes.** `errorCode`, `count`, `newest`, `summary` — the same
+allowlist and the same `unclassified`/`null` pair as §3.4a, shared through `Tools.ErrorCatalogue`
+rather than copied. `classifiedThroughSeverity: "warning"` states the boundary: **only `Type <= 3`
+rows have their `Text` read at all.** That is structural, not a filter — the aggregate query selects
+no text column, and the only query that does is bounded. The info population is where the PHI is
+(measured: 61,772 `Type = 4` rows carry a `PatientID` in plain text against 66 `Type = 2` rows
+carrying none), so it is counted by SQL and never enters a variable.
+
+**`sources[]` is evidence, not a footnote.** `class`, `method`, `count` — published **only** when
+`%Dictionary.CompiledClass` and `%Dictionary.CompiledMethod` confirm both names exist. When every code
+in `faults[]` is `unclassified`, this array is the only thing that says what *kind* of event it was.
+
+**`lifecycleFaults[]` exists because prose could not carry that inference.** Present on the
+`(production)` entry only; each entry is `event` (`start` / `stop` / `update` / `other`), `severity`
+and `count`. It is a fixed catalogue over the `Ens.Director` method names that
+`%Dictionary.CompiledMethod` already confirmed — `ErrorCatalogue.Summary`'s shape exactly, so nothing
+is derived from a log row and §6 is untouched.
+
+Measured twice, on the question *"did the production have any trouble starting or stopping today"*:
+the model called both tools, **counted the 10 error rows correctly**, and closed with "there were no
+issues starting or stopping the production" at `confidence: 0.9`, then "the production started and
+operated without additional issues indicated in the logs" at `confidence: 1`. Nine of those rows were
+`Ens.Director.StartProduction` failures, sitting in the `sources[]` array. The missing piece was not
+evidence but the **join** from a verified method name to "the production failed to start"; every code
+was `unclassified` and an unrecognised code read as an absent fault. Prompt sentences were tried first
+and held on one run of three. With `lifecycleFaults[]` in the payload the answer was correct on three
+runs of three.
+
+**The array is ALWAYS present on that entry**, so empty means *measured clean* rather than *not
+checked* — the same reasoning §2.1 gives for never omitting a key.
+
+**`distinctJobsAtLeast` and `distinctSessionsAtLeast` are lower bounds, and the names say so.** They
+are a MAX across severity groups rather than a sum, because a job that logged both an error and an
+info would otherwise be counted twice. `Job`, `SessionId` and `MessageId` themselves are **counted,
+never returned** (§6) — a session id is dereferenceable against message content, so it points at PHI
+without containing any.
+
+**`retention` is published for the same reason §3.7 exists**: `Ens.Util.Log.Purge` is not scheduled
+here, so the table holds everything back to first boot and a short window is never all the data there
+is. It carries `rows`, `oldest`, `newest` and a `note` saying so.
+
+```jsonc
+// <- sinceMinutes 1440, abridged to three of the nine hosts
+{
+  "sinceMinutes": 1440, "since": "2026-08-25T15:10:11Z", "now": "2026-08-26T15:10:11Z",
+  "rows": 5888,
+  "bySeverity": [ { "severity": "error", "typeCode": 2, "count": 57 },
+                  { "severity": "warning", "typeCode": 3, "count": 3 },
+                  { "severity": "info", "typeCode": 4, "count": 5828 } ],
+  "byHost": [
+    { "host": "(production)", "rows": 91,
+      "bySeverity": [ { "severity": "error", "typeCode": 2, "count": 10 },
+                      { "severity": "warning", "typeCode": 3, "count": 3 },
+                      { "severity": "info", "typeCode": 4, "count": 78 } ],
+      "distinctJobsAtLeast": 12, "distinctSessionsAtLeast": 0,
+      "oldest": "2026-08-26T12:27:45Z", "newest": "2026-08-26T14:00:53Z",
+      "faults": [ { "errorCode": "unclassified", "count": 13,
+                    "newest": "2026-08-26T13:39:22Z", "summary": null } ],
+      "sources": [ { "class": "Ens.Director", "method": "StartProduction", "count": 9 },
+                   { "class": "Ens.Director", "method": "moveEnsRuntimeToEnsSuspended", "count": 4 } ],
+      "productionScope": true, "application": null,
+      "lifecycleFaults": [ { "event": "start", "severity": "error", "count": 9 },
+                           { "event": "stop", "severity": "error", "count": 1 },
+                           { "event": "stop", "severity": "warning", "count": 3 } ] },
+    { "host": "Cloud API", "rows": 5749,
+      "bySeverity": [ { "severity": "error", "typeCode": 2, "count": 46 },
+                      { "severity": "info", "typeCode": 4, "count": 5703 } ],
+      "distinctJobsAtLeast": 11, "distinctSessionsAtLeast": 5691,
+      "oldest": "2026-08-26T12:27:45Z", "newest": "2026-08-26T15:10:11Z",
+      "faults": [ { "errorCode": "#6059", "count": 23, "newest": "2026-08-26T12:42:10Z",
+                    "summary": "the configured downstream host or port could not be reached" },
+                  { "errorCode": "<Ens>ErrFailureTimeout", "count": 23, "newest": "2026-08-26T12:42:21Z",
+                    "summary": "the host retried and gave up within its failure timeout" } ],
+      "sources": [ { "class": "ProductionGuardian.LabDemo.Operation.PatientDemographicsOperation",
+                     "method": "MessageHeaderHandler", "count": 46 } ],
+      "productionScope": false, "application": true },
+    { "host": "Ens.ScheduleHandler", "rows": 17,
+      "bySeverity": [ { "severity": "info", "typeCode": 4, "count": 17 } ],
+      "distinctJobsAtLeast": 4, "distinctSessionsAtLeast": 6,
+      "oldest": "2026-08-26T12:27:45Z", "newest": "2026-08-26T13:39:22Z",
+      "faults": [], "sources": [], "productionScope": false, "application": false }
+  ],
+  "classifiedThroughSeverity": "warning", "sanitised": true,
+  "retention": { "rows": 10246, "oldest": "2026-08-24T11:52:27Z", "newest": "2026-08-26T15:10:11Z",
+                 "note": "retention is purge-driven, not automatic -- Ens.Util.Log.Purge is not scheduled here" }
+}
+```
+
+### 3.11 `get_event_log_trend` — read, added in MVP 3
+
+**Runtime name `GetEventLogTrend`.** Log volume by severity, bucket by bucket, so "when did the errors
+start" and "has it stopped" are answerable.
+
+**Input**: `host` (optional — omit to trend every host together; `"(production)"` is a valid value),
+`resolution` (optional, default `hours`), `buckets` (optional, default `24`, `1..720`).
+
+**The resolution vocabulary is `minutes` / `hours` / `days` — NOT §3.8's `seconds` / `hours` /
+`days`**, and the difference is structural rather than careless. The activity tables are pre-bucketed
+at 10 s / 1 h / 1 d, so §3.8's vocabulary names tables. `Ens_Util.Log` is event-driven with no buckets
+at all; buckets here are formed by taking a **prefix of the `TimeLogged` string**, and the finest
+prefix boundary falling on a clean unit is the minute. Looked up in a fixed `$case`, never concatenated
+— verified: `{"resolution":"Ens_Util.Log"}` returns
+`{"error":"resolution must be 'minutes', 'hours' or 'days'","sanitised":true}`.
+
+**`buckets` is a COUNT, where §3.10's `sinceMinutes` is a DURATION.** Two caps stated without that
+distinction is how a model asks for 1440 buckets of days. Out of range is refused:
+`{"error":"buckets must be an integer between 1 and 720","sanitised":true}`.
+
+**Output**: `host`, `resolution`, `buckets[]`, `sanitised`, `from`, `to`, `total`.
+
+`buckets[]`: `start`, `total`, and one count per severity — `assert`, `error`, `warning`, `info`,
+`trace`, `alert`. **All six keys are always present**, so a severity that did not occur reads as `0`
+rather than as absent.
+
+**`from` and `to` are bucket STARTS, not window edges.** `to` is the start of the newest bucket, so the
+window actually covered runs one bucket width past it. Stating that is necessary because `to` looks
+like an end.
+
+**Empty buckets are INCLUDED, and this is the tool's main reason for existing.** A run of zeros between
+two populated buckets is the answer to "has it stopped"; omitting them would make a gap
+indistinguishable from a shorter history.
+
+**Zero is a MEASUREMENT here, and this family inverts §2.1's sign.** For a latency average, `0` is
+impossible and `null` means unmeasurable. For a log count, `0` means the query ran and the window was
+covered and nothing was logged — usually the answer the operator most wants. `null` stays reserved for
+what could not be read.
+
+**An unknown host is an error, not an empty trend**, because a run of zero buckets and a misspelled
+name look identical otherwise:
+
+```jsonc
+{ "host": "No Such Host", "resolution": "hours", "buckets": [], "sanitised": true,
+  "error": "no event log rows exist for that host under any window -- call GetEventLogSummary to see which hosts have logged" }
+```
+
+```jsonc
+// <- host "(production)", hours, 6. The two empty leading buckets are the point.
+{
+  "host": "(production)", "resolution": "hours",
+  "buckets": [
+    { "start": "2026-08-26T10:00:00Z", "total": 0,  "assert": 0, "error": 0, "warning": 0, "info": 0,  "trace": 0, "alert": 0 },
+    { "start": "2026-08-26T11:00:00Z", "total": 0,  "assert": 0, "error": 0, "warning": 0, "info": 0,  "trace": 0, "alert": 0 },
+    { "start": "2026-08-26T12:00:00Z", "total": 30, "assert": 0, "error": 7, "warning": 2, "info": 21, "trace": 0, "alert": 0 },
+    { "start": "2026-08-26T13:00:00Z", "total": 53, "assert": 0, "error": 3, "warning": 1, "info": 49, "trace": 0, "alert": 0 },
+    { "start": "2026-08-26T14:00:00Z", "total": 8,  "assert": 0, "error": 0, "warning": 0, "info": 8,  "trace": 0, "alert": 0 },
+    { "start": "2026-08-26T15:00:00Z", "total": 0,  "assert": 0, "error": 0, "warning": 0, "info": 0,  "trace": 0, "alert": 0 }
+  ],
+  "sanitised": true, "from": "2026-08-26T10:00:00Z", "to": "2026-08-26T15:00:00Z", "total": 91
+}
+```
+
+#### What both event-log tools assume about the table, measured rather than documented
+
+**Fifteen columns, and nine of them are refused outright** — the column-by-column boundary table lives
+in `Tools.EventLog`'s class comment and §6 governs it. `StatusValue` is the one worth naming here: it
+measures 376–384 characters on the error rows because a serialised `%Status` embeds the **formatted**
+error message with every parameter substituted in. It is `Text` one hop away wearing a name that sounds
+like a code, and it is never read — not even to classify.
+
+**Every predicate is on an indexed column.** `%Dictionary.CompiledIndex` confirms indexes on
+`ConfigName`, `SessionId` and `TimeLogged`, and `Type` is indexed too. Nothing here table-scans.
+
+**`%EXACT()` on every text column read**, for §3.9's reason: the columns collate `SQLUPPER`, so a bare
+`SELECT ConfigName` returns `CLOUD API` and §2's verbatim-name rule is broken by the query itself.
+
+**Four host-roster copies became one.** `application` here and in §3.7–§3.9 is the same rule, shared
+through `Tools.HostRoster` rather than duplicated — and that class asks the running
+`Ens.Config.Production` rather than carrying a framework-name list, per root `CLAUDE.md` §6. Neither
+`Tools.HostRoster` nor `Tools.ErrorCatalogue` extends `%AI.Tool`, which is what makes their methods
+safe to make public: `%AI.ToolMgr.FindTools` filters on `$issubclassof(className, "%AI.Tool")`, so
+nothing in either can become a callable tool. Verified by count — `ReportTools()` still reads
+`12 (expected 12)` with both classes present.
 
 ## 4. Errors, and the three things that are not the same
 

@@ -5,6 +5,89 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-26 — the event log becomes readable: two tools, a shared host roster, and one inference moved into the payload
+
+**`mcp-tools.md` §1, §3.9's closing note, and two new sections §3.10–§3.11.** Additive: ten tools
+become twelve, eleven read and one write. No existing tool's input, output or name changes, so a
+consumer that never calls the new pair sees nothing different.
+
+**Asked for directly**: *"for the chat I would like to add this table Ens_Util.Log."* Before this the
+chat had no tool that could answer "any errors?" at all — it would answer from throughput, which is
+inference dressed as a reading.
+
+`get_event_log_summary` groups a window by host and severity, classifies error and warning text through
+the §3.4a allowlist, and never returns text. `get_event_log_trend` gives volume by severity bucket by
+bucket, empty buckets included. Both are `PG_Read` and both are registered on the chat agent's
+`"chat"` tool set, which was **added rather than widening `"activity"`**, so no existing caller's
+meaning changed.
+
+**Three things a consumer cannot infer, so they are written down:**
+
+- **`(production)` is a sentinel, not a config item.** `ConfigName` is **NULL, not empty**, on the rows
+  `Ens.Director` writes about the production itself — measured: `= ''` returns 0 rows, `IS NULL`
+  returns 91. So no host-filtered query can ever reach them, and `get_recent_errors` has therefore
+  never once reported a production that failed to start.
+- **Framework hosts are labelled, not filtered** — a deliberate divergence from `healthscan-api.md`
+  §2, which drops them. `application` is `true` / `false` / **`null`**, and the third value is the
+  interesting one: it marks `(production)`, which is neither an application host nor framework
+  plumbing. `false` there would file the production's own start failures under framework noise.
+- **Zero inverts §2.1's sign in this family.** A log count of `0` is a real measurement — the query ran
+  and nothing was logged. `null` stays reserved for what could not be read. Every other tool family
+  says the opposite, which is exactly why this needs stating.
+
+**`lifecycleFaults[]` is the entry worth reading twice, because it is a contract field that exists to
+compensate for a model, not for a table.** Asked *"did the production have any trouble starting or
+stopping today"*, the agent called both tools, **counted the 10 error rows correctly**, and closed with
+"there were no issues starting or stopping the production" at `confidence: 0.9` — then, after two
+prompt sentences were added telling it to read `sources[]`, closed with "the production started and
+operated without additional issues indicated in the logs" at `confidence: 1`. Nine of those rows were
+`Ens.Director.StartProduction` failures sitting in the array it had just been told to read.
+
+The missing piece was never evidence. It was the **join** from a dictionary-verified method name to
+"the production failed to start" — and because every code was `unclassified`, an unrecognised code read
+as an absent fault. Prose held on one run of three, so the join moved into the payload as a fixed
+catalogue keyed on `SourceMethod`: `ErrorCatalogue.Summary`'s shape exactly, deriving nothing from a log
+row, so §6 is untouched. Correct on three runs of three afterwards. **The array is always present on
+the `(production)` entry**, so empty means *measured clean* rather than *not checked*.
+
+**A pre-existing contract/runtime mismatch is documented rather than fixed**, in a new subsection under
+§1: the snake_case names in the catalogue column have **never** been callable. `%AI.Tool` derives the
+runtime name from the ClassMethod name, so the real names are `GetEventLogSummary`,
+`CompareHostActivity` and so on — measured, and `investigation-api.md`'s `evidence[].tool` has been
+carrying `"functions.GetEventLogSummary"` all along. The model was bridging by resemblance. The column
+is now labelled as section titles, with the consequence stated: **renaming a ClassMethod renames a
+tool, and is a contract change.**
+
+**A new §2 convention: a boolean field is a JSON boolean.** No sample changes — the samples in
+`mcp-tools.md` have always shown `true`; the **implementation** was emitting `1`. `set out.found = 1`
+on a `%DynamicObject` emits a number, so eight fields across §3.1, §3.2, §3.5, §3.7 and §3.9 (`found`,
+`enabled`, `measured`, `readable`, `application`) changed JSON type depending on which branch ran.
+
+Found by smoke-testing the chat after the event-log work landed, not by reading code: asked "how many
+hosts are in this production", it answered *"7 … both application hosts and framework-related hosts"*
+against 3 application hosts, while the prompt paragraph telling it to read the flag names `true` and
+`false`. **Fixing the types alone, with no prompt change, gave "3 application hosts … EMR Source, Lab
+Router and Cloud API" on three runs of three.** It survived this long because `1` and `true` are the
+same value to every consumer except the one that reads the field name.
+
+**Two `null`s that were empty strings, found the same way and in the same class.** §3.4's table says
+`newestSecondsAgo` is `integer | null` and §3.4a says an unclassified code's `summary` is `null`;
+`get_recent_errors` emitted `""` for both. An ObjectScript `""` inside a `%DynamicObject` literal
+serialises as the string `""` — measured: `{"a":("")}` gives `{"a":""}`, `%Set(k,"","null")` gives
+`{"k":null}`. `""` is not the same claim as `null`: it reads as *there is a summary and it is blank*,
+which is §2.1's defect wearing a different type. `get_event_log_summary` has emitted `null` there from
+the start, so **two tools reading the same catalogue disagreed on the same field** — the cost of the
+copy §3.4a warns about, showing up as soon as there were two callers. `newestSecondsAgo: null` is
+verified in emitted output; the `summary` branch is verified in its two halves (the catalogue returns
+`""`, and `%Set(…,"null")` emits `null`) because no host-scoped unclassified error exists on this
+instance to drive it end to end.
+
+Also recorded: four host-roster copies became one (`Tools.HostRoster`), neither it nor
+`Tools.ErrorCatalogue` extends `%AI.Tool` so their public methods cannot become tools, and
+`Setup.AIHub.ReportTools()`'s guard moved `10 -> 12` in the same commit — verified reading
+`12 (expected 12)`.
+
+
 ## 2026-08-26 — `not_rising` is two fits, not one; documenting behaviour that shipped in #145
 
 **`earlywarning-api.md` §2.1 (the `not_rising` row) and a new §2.2.1.** No schema change, no new
