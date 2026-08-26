@@ -130,7 +130,13 @@ ClassMethod GetHostSettings(host As %String) As %DynamicObject
         "ArchivePath",
         "WorkPath",
         "FileSpec",
-        "PollInterval",
+        // CallInterval, not PollInterval. This allowlist named a setting that does not
+        // exist on any adapter in this production, so the entry could never match and
+        // the polling interval was unreachable to the agent -- a dead allowlist row,
+        // which is worse than an absent one because it reads as coverage. Same root
+        // cause as the invalid setting in Production.cls: `Ens.InboundAdapter` calls it
+        // CallInterval and nothing calls it PollInterval.
+        "CallInterval",
         "HTTPServer",
         "HTTPPort",
         "URL",

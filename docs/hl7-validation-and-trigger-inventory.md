@@ -176,7 +176,7 @@ through the Reply Code Actions setting instead. It was not changed during this i
 ### 2.3 `Tools.Read.GetHostSettings` does not expose `Validation`
 
 Confirmed — the allowlist in `GetHostSettings` is nine names (`FilePath`, `ArchivePath`,
-`WorkPath`, `FileSpec`, `PollInterval`, `HTTPServer`, `HTTPPort`, `URL`, `TargetConfigNames`)
+`WorkPath`, `FileSpec`, `CallInterval`, `HTTPServer`, `HTTPPort`, `URL`, `TargetConfigNames`)
 plus `PoolSize`, and `Validation` is not among them:
 
 ```json
@@ -318,7 +318,7 @@ and fails the only test that matters.
 |---|---|
 | Reversible from inside IRIS? | **Yes.** `SetSetting`/`RemoveSetting` on `Validation` round-trips cleanly; absent is the shipped state |
 | Survives `docker compose restart`? | **Yes** — and in the safe direction: `Production.cls` declares no `Validation` row, so a recompile reverts to *disarmed* |
-| Needs a >60s wait? | **No.** Applies within one `PollInterval` (2s) after `UpdateProduction()` |
+| Needs a >60s wait? | **No.** Applies within one `CallInterval` (2s) after `UpdateProduction()` |
 | Produces a finding type we do not demo? | **No — it produces NO finding at all** |
 
 The last row is disqualifying. Per §1.2 the signal never reaches the engine, so the trigger

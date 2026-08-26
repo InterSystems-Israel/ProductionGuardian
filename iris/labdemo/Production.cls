@@ -43,7 +43,27 @@ XData ProductionDefinition
     <Setting Target="Adapter" Name="FilePath">/tmp/labdemo/hl7-in/</Setting>
     <Setting Target="Adapter" Name="FileSpec">*.hl7</Setting>
     <Setting Target="Adapter" Name="ArchivePath">/tmp/labdemo/hl7-archive/</Setting>
-    <Setting Target="Adapter" Name="PollInterval">2</Setting>
+    <!-- CallInterval, NOT PollInterval. EnsLib.File.InboundAdapter (the adapter that
+         EnsLib.HL7.Service.FileService declares) has no property named PollInterval at
+         all, so the setting was rejected on every production start and IRIS logged
+
+           ERROR (Ens)ErrProductionSettingInvalid: Production setting 'PollInterval'
+           for item 'EMR Source' is invalid
+
+         into Ens.Util.Log as a Type=2 error row. Verified live: the row's timestamp
+         matches the boot that wrote it, one per `compose up`. Two consequences, and the
+         first is the one that matters. The demo instance accused ITSELF of a
+         configuration error in the same event log the AI Detective reads for evidence.
+         And the interval never applied at all: the adapter fell back to
+         Ens.InboundAdapter's CallInterval default of 5s, which is why the pipeline kept
+         working and nobody noticed.
+
+         2 is the value this line always intended. The name is what was wrong.
+
+         NOTE FOR ANYONE EDITING THIS COMMENT: a double hyphen is illegal inside an XML
+         comment, and XData is parsed by a real XML parser. Writing one here fails the
+         compile with #6301 and leaves the production unloadable. -->
+    <Setting Target="Adapter" Name="CallInterval">2</Setting>
     <Setting Target="Host"    Name="TargetConfigNames">Lab Router</Setting>
     <Setting Target="Host"    Name="MessageSchemaCategory">2.5</Setting>
   </Item>
