@@ -125,6 +125,29 @@ Sorted `detectedAt` descending, severity as tiebreak (critical → warning → i
 finding is emitted. A single-sample spike produces nothing. This is why findings are stateful
 and why `id` can be stable (Q4).
 
+**The same bar applies to clearing (2026-08-26).** A confirmed finding disappears once the
+rule has stopped breaching for **the same 2+ consecutive samples**, not on the first
+non-breaching poll. MVP §6 governs appearance, and reading it as governing only appearance
+made a finding cost two samples to arrive and one to leave — so a condition oscillating
+around a threshold produced a finding, dropped it, and produced **the same condition again
+under a new `id`**. That is the asymmetry, and it contradicted Q4: an `id` that survives a
+poll but not a blip is stable for the lifetime of an uninterrupted breach, not for the
+lifetime of the condition.
+
+Two consequences for a consumer, both intended:
+
+- a finding may persist for **one extra poll** after the condition ends, still showing the
+  last breaching numbers — there is no newer verdict to refresh from
+- a finding **holds indefinitely while its inputs are unmeasurable** (Q13's `null`). A rule
+  that declines to evaluate has said "cannot tell", not "not breaching", and an instance
+  that stops publishing a metric must not thereby retract a finding that is still true.
+  `dead_host` is unaffected: it judges `status`, which is always present.
+
+The same bar governs a host **disappearing from the proxy payload**: one absent poll no longer
+forgets it. Forgetting discarded the rolling baseline with the findings, so a host that dropped
+out of a single payload came back `warming` and every comparative rule went silent for
+`minBaselineSamples` more polls — a finding that goes away and cannot return.
+
 ---
 
 ## 3. Errors and empty states
@@ -155,7 +178,7 @@ Dev C raised nine (issue #1); three more surfaced from live IRIS metrics while b
 | **Q1** | Exact `status` enum | **Not** the assumed set. IRIS emits `OK`, `Error`, `Inactive`, `Retry`, `Stopped`, `Unconfigured`; `EnumerateHostStatus` adds `Disabled`. **There is no `Warning`.** Keep rendering unknowns neutrally. |
 | **Q2** | Exact `type` strings | Confirmed — the eight snake_case names as listed, unchanged. |
 | **Q3** | Baseline warm-up | `baselineValue: number \| null`. Your assumption was right. Also surfaced via `X-Healthscan-State: warming`. |
-| **Q4** | Finding lifecycle | **ids are stable** while the condition persists; findings **disappear** when cleared. Both your assumptions hold — keep the highlight animation and the poll-surviving drawer. Sustained-breach state (§2.1) is what makes this cheap for us. |
+| **Q4** | Finding lifecycle | **ids are stable** while the condition persists; findings **disappear** when cleared. Both your assumptions hold — keep the highlight animation and the poll-surviving drawer. Sustained-breach state (§2.1) is what makes this cheap for us. **Amended 2026-08-26:** clearing takes the same 2+ consecutive samples as appearing, and a finding whose inputs are unmeasurable holds rather than clearing — the original one-poll clear broke the id-stability half of this answer. See §2.1. |
 | **Q5** | Ordering | Sorted **server-side**, `detectedAt` desc, severity tiebreak. Your client sort is harmless — keep it. |
 | **Q6** | Units | **Seconds** — confirmed empirically, not assumed. Cloud API configured at 0.05s latency reports `avgProcessingTime: 0.05`; Lab Router reports `0.08`. Your `0.08 → "80 ms"` is correct. |
 | **Q7** | Zero findings / startup | `200` + `[]`, never `404`. See §3 for the full table. |
