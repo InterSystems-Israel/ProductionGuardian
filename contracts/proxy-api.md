@@ -118,7 +118,7 @@ production that drains immediately. Before §1.3's endpoint existed they were `n
 | Field | Type | Notes |
 |---|---|---|
 | `host` | string | Config item name, exactly as the IRIS `host` label carries it. **The join key** — see Q1. |
-| `type` | string | `service` \| `process` \| `operation` \| `unknown`. Normalized — see Q6. |
+| `type` | string | `service` \| `process` \| `operation` \| `unknown`. Normalized, from **two** sources in precedence order — see Q6. |
 | `status` | string | The IRIS `status` label, passed through. `Unknown` when IRIS sent no `iris_interop_hosts` line. Enum in Q7. |
 | `isFramework` | boolean | `true` for IRIS's own plumbing. Flag, not a filter — see Q5. |
 | `queued` | number \| null | Per-host queue depth. **A measured number when the host-status endpoint answered**, `null` when it did not — see Q2 and §6.1. |
@@ -130,6 +130,7 @@ production that drains immediately. Before §1.3's endpoint existed they were `n
 | `lastActivity` | string \| null | ISO 8601 UTC, `Z`-suffixed. Derived — see Q4. |
 | `lastActivityElapsedSeconds` | number \| null | Seconds since last activity, as IRIS gives it — see Q4. |
 | `statusFromMetrics` | string | **Optional, present only when the two status sources disagree** — see §1.3. |
+| `typeFromConfig` | string | **Optional, present only when the two type sources disagree** — see Q6 and §1.3. Diagnostic; `type` stays the value to read. |
 
 Hosts are in stable alphabetical order by `host` (`localeCompare`), matching the findings API so
 the dashboard never reorders rows between polls.
@@ -163,7 +164,7 @@ substitute a value.** A rule fed a fabricated zero reports on data that does not
 **`_meta` is diagnostics, not payload.** `absentFamilies` exists so a consumer can distinguish
 "unmeasurable on this instance" from "measured zero"; it is not something to build a finding on.
 
-### 1.3 Where `queued` and `errored` come from — a third source
+### 1.3 Where `queued`, `errored` and most of `type` come from — a third source
 
 **Neither value is in `/api/monitor/metrics`.** `iris_interop_queued` and
 `iris_interop_messages_errored` are each emitted **once per production**, labelled `id` and
@@ -176,6 +177,11 @@ They now come from a small **read-only** REST endpoint in the LABDEMO namespace,
 `Ens.Util.Statistics:EnumerateHostStatus` and adds per-host error counts from `Ens.MessageHeader`.
 The proxy polls it **on the metrics interval, concurrently**, and merges by host name before
 caching the snapshot.
+
+The same endpoint also supplies **`hostType`**, which fills `type` for hosts the `avg_*` families
+never mention — see §5.1.1. That column was in the query's result set from the start and thrown away
+until #127; the payload example above predates the field, so it shows neither `hostType` nor the
+three `typesFilled`/`typeDisagreements`/`untypedHosts` keys.
 
 **The join key is exact and deliberately unnormalized.** `EnumerateHostStatus`'s `Name` column and
 the metrics `host` label are the same string, spaces intact (`Cloud API`, `Lab Router`) — verified
@@ -198,6 +204,9 @@ onto `Cloud API` would attribute one host's queue depth to another. Divergence i
 | `production`, `productionState` | `productionState` is `Running` \| `Stopped` \| `Suspended` \| `Troubled` \| `Unknown`. |
 | `erroredAvailable` | `false` when IRIS could not count errors — `errored` then stays `null`. |
 | `available` | Present and `false` only when the source was not polled or the request failed. |
+| `typesFilled` | How many hosts got their `type` from this source because the `hosttype` label did not supply one. Fill-only, so this is also the exact size of the change this source can make to `type` — see Q6. |
+| `typeDisagreements` | `{host, fromMetrics, fromConfig}` for hosts BOTH sources typed differently. Empty on every live sample so far; non-empty means one source is reading a stale or misattributed host. |
+| `untypedHosts` | Hosts still `type: "unknown"` after the fill — neither source typed them. **Framework hosts are included here**, unlike `undescribedHosts`, because the one such host live (`Ens.Alarm`) is framework and this list is about type coverage rather than about lost numbers. |
 
 **`merged === hostCount` is NOT a sufficient health check.** It looks correct in a failure that
 matters: if one host drops out of the endpoint — a rename, or a query that missed it — both counts
@@ -382,9 +391,61 @@ this contract from the merged code.
 
 | # | Question | Answer |
 |---|---|---|
-| **Q6** | `type` vocabulary | IRIS says **`actor`** where the MVP doc says `process`; the proxy normalizes `actor → process`, so the IRIS word never reaches you. `hosttype` rides on the `avg_*` families only — `iris_interop_hosts` carries no type label at all. A host with no `avg_*` series therefore reports **`type: "unknown"`**: 8 of 15 hosts in the sample, all framework. Treat `unknown` as a real value, not a bug. |
+| **Q6** | `type` vocabulary | IRIS says **`actor`** (metrics label) and **`Actor`** (config); the proxy normalizes both to `process`, so no IRIS word reaches you. **`type` now comes from two sources** — see §5.1.1, which supersedes the original answer. `unknown` remains a real value, but a rare one rather than the majority case. |
 | **Q7** | Exact `status` enum | `OK`, `Error`, `Inactive`, `Retry`, `Stopped`, `Unconfigured`, `Disabled`, plus **`Unknown`** when IRIS sent no `iris_interop_hosts` line for a host. **There is no `Active` and no `Warning`.** Same enum as `healthscan-api.md` Q1 with `Unknown` added, so your `dead_host` mapping needs no change. |
 | **Q8** | Is `errored` per host? | **Not from the metrics text — but it is published per host now.** `iris_interop_messages_errored` carries **no `host` label** in `samples/metrics-dump.txt`: `iris_interop_messages_errored{id="LABDEMO",production="LABDEMO.Production"} 0`. It is per-production, exactly like `queued`, so that line is skipped. The value instead comes from the same host-status endpoint as `queued` (§1.3), as `COUNT(*)` over `Ens.MessageHeader` where `Status = 8` — `8` being `Error`, read from the compiled property rather than assumed. `null` when `_meta.hostStatus.erroredAvailable` is `false`. **`elevated_error_rate` can now fire per host.** See §6.3. |
+
+#### 5.1.1 Q6 amended — `type` has a second source, and `unknown` is now rare (#127)
+
+**What Q6 said until 2026-08-26, and what was wrong with it:** *"A host with no `avg_*` series
+therefore reports `type: "unknown"`: 8 of 15 hosts in the sample, all framework. Treat `unknown` as
+a real value, not a bug."*
+
+The diagnosis was right and the conclusion did not follow. `hosttype` really does ride only on the
+`avg_*` families, so a host nothing has flowed through carries no type in the Prometheus text —
+**but the production knows its own item types regardless of activity**, and the proxy was already
+reading the place that holds them. `Ens.Util.Statistics:EnumerateHostStatus` returns a `Type` column
+for every host it enumerates; the host-status endpoint of §1.3 has run that query since #12 and
+**discarded that column**. So `unknown` was a real value about the *metrics text*, and Q6 promoted it
+to a fact about the *host*. Those are different claims, and only the first was measured.
+
+`iris/labdemo/REST/HostStatusDispatcher.cls` now publishes it as **`hostType`**, carrying the raw
+IRIS word unchanged — `BusinessService` | `BusinessOperation` | `BusinessProcess` | `Actor`.
+Deliberately not normalized in IRIS: the instance publishes fact, the proxy owns the published
+vocabulary, and one mapping in one place cannot drift out of step with itself.
+
+**Precedence, and why it is the direction it is:**
+
+| | Source | Wins when |
+|---|---|---|
+| 1 | `hosttype` label on `avg_*` | always, wherever it exists |
+| 2 | `hostType` from `EnumerateHostStatus` | **only where 1 left the type `unknown`** |
+
+The second source **fills, never overwrites.** That is what makes the change structurally incapable
+of regressing a type that was already correct: the only hosts it can touch are the ones that read
+`unknown`, so the worst case is that it does nothing. Where both sources have a type and they
+disagree, the metrics value stays in `type` and the config value is recorded as `typeFromConfig` on
+the host and in `_meta.hostStatus.typeDisagreements` — the same treatment `status` gives
+`statusFromMetrics`, so a disagreement stays visible instead of being silently resolved. Empty on
+every live sample taken so far.
+
+**Measured on the running stack, 2026-08-26**, `ProductionGuardian.LabDemo.Production`, 12 hosts:
+
+| | `type: "unknown"` |
+|---|---|
+| before | **8 of 12** (`Ens.Activity.Operation.Local`, `Ens.Actor`, `Ens.Alarm`, `Ens.ScheduleHandler`, `Ens.ScheduleService`, `EnsLib.Background.Process.ExportMessageSearch`, `EnsLib.Background.Service`, `EnsLib.Background.Workflow.Operation`) |
+| after | **1 of 12** (`Ens.Alarm`) |
+
+**`Ens.Alarm` stays `unknown`, and that is the honest answer rather than a gap to paper over.**
+`EnumerateHostStatus` does not enumerate it — it is in the metrics text and not in the status
+payload — so neither source has a type for it and nothing available would supply one without
+guessing. Hosts in that position are named in **`_meta.hostStatus.untypedHosts`**, which is the
+list to read rather than re-deriving it by scanning for `unknown`.
+
+**Nothing changes for a consumer that already handled `unknown`,** and the enum is unchanged.
+`unknown` is still a value the contract permits and still means what Q6 said it meant — the proxy
+could not determine the type. It is now much rarer, and it no longer implies "framework host":
+every framework host except `Ens.Alarm` is typed.
 
 ### 5.2 What changes for Dev B
 
