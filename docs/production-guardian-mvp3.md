@@ -116,7 +116,7 @@ the directory the service *polls*, so "it cannot see its inbound folder" needs n
 
 This is the substantive design problem, and it is a consequence of a rule we should not relax.
 
-`get_recent_errors` **never returns log text, by design**. `Tools.Read.ClassifyError` extracts an
+`get_recent_errors` **never returns log text, by design**. `Tools.ErrorCatalogue.Classify` extracts an
 allowlisted token and nothing else, because `Ens_Util.Log` on this instance holds 61,772 rows
 carrying `PatientID` in plain text (`docs/mvp2-aihub-verified-api.md`). `#5021` *is* in that
 allowlist, so the agent can learn that a `#5021` occurred.
