@@ -17,12 +17,64 @@ automatic — see below. Measured at **64 seconds** to all four services healthy
 volume (Windows host, Docker Desktop, IRIS 2026.3.0AI Build 126U).
 
 `./docker/up.sh` does the same thing and additionally runs the preflight image check, which
-`compose up` cannot do for itself.
+`compose up` cannot do for itself. It is a POSIX shell script with no `.ps1` counterpart — on
+Windows, see below.
 
 Then open **http://localhost:5173/?mode=live**
 
 `?mode=live` matters. Without it the dashboard serves demo fixtures rather than live IRIS
 data — which is the intended fallback, not a failure.
+
+### On Windows
+
+Everything here works on Windows, and `docker compose …` is byte-identical — those commands are
+not repeated, because a paired block whose two halves are the same bytes is noise that later
+rots. What does *not* survive a copy-paste is the list below, stated once here rather than at
+every command site. The shell documented is **PowerShell**, because it ships with Windows and is
+therefore the one a reader actually has. Only the blocks where the translation is more than a
+substitution — the log pipelines and the JSON POSTs — are paired at the point of use.
+
+| this README says | PowerShell |
+|---|---|
+| `export PG_AGENT_MODE=live` | `$env:PG_AGENT_MODE = 'live'` |
+| `… \| grep pg-firstboot` | `… \| Select-String pg-firstboot` |
+| `curl -s <url>` | `curl.exe -s <url>` |
+| `curl -XPOST … -d '{…}'` | `curl.exe --% -XPOST … -d "{…}"` — one line, no variables |
+
+**`$env:` is enough for compose to see it.** Verified rather than assumed, because the reverse
+already bit us once from the shell side: an exported variable does not reach a container unless
+compose passes it (`docker-compose.yml` says so where `PG_LLM_API_KEY` is declared). A
+`$env:PG_LLM_API_KEY = 'sk-…'` set in the same window does show up in `docker compose config`.
+
+**`curl.exe`, never `curl`.** In PowerShell 5.1 — the version that ships — `curl` is an alias
+for `Invoke-WebRequest`, so `curl -s <url>` fails with `Cannot process command because of one or
+more missing mandatory parameters: Uri`. That reads like a bad URL rather than a wrong `curl`,
+which is why it is worth naming. `curl.exe` is the real thing and is present on Windows 11
+(`C:\Windows\System32\curl.exe`).
+
+**A JSON body needs `--%`, and that is not a style preference.** Measured against a local echo
+server, every obvious spelling loses the body: `-d '{"a":"b"}'` arrives as `{a:b}` (PowerShell
+hands the string to a native exe unquoted and the CRT eats the quotes), `-d "{\"a\":\"b\"}"`
+arrives as `{\`, and `-d "{""a"":""b""}"` arrives as `{a:b}`. `-d '{\"a\":\"b\"}'` does survive
+— **until a value contains a space**, and `"Cloud API"` does, so the resolve body truncates at
+`{"mode":"dry_run","action":{"type":"set_pool_size","host":"Cloud`. `--%` is the fix:
+PowerShell stops parsing there and passes the rest of the line to the exe verbatim. It costs
+two things — the command must be **one line** (a backtick continuation is passed through
+literally, so the request goes out with an empty body and the next line is parsed as a
+PowerShell command), and **`$variables` are not expanded** (`$id` arrives as the three literal
+characters `$id`). Where you want a variable, use `Invoke-RestMethod` instead; both spellings are
+shown where the POSTs are.
+
+**Git Bash works too, with two exceptions.** `./docker/up.sh` needs a POSIX shell, so run it
+from Git Bash — or from PowerShell as `sh docker/up.sh` if Git for Windows put `sh.exe` on
+PATH. Without it, `up.sh` is only two steps you can run directly:
+`docker image inspect productionguardian/irishealth:local` (the preflight) and
+`docker compose up -d`. The second exception is the sharper one: a container path in a
+`docker compose exec` argument gets rewritten by MSYS, so
+`docker compose exec iris sh /pg-firstboot.sh` fails from Git Bash with
+`cannot access 'C:/Program Files/Git/pg-firstboot.sh'` — a message that blames the host for a
+path that only ever existed in the container. Prefix `MSYS_NO_PATHCONV=1`, or run it from
+PowerShell, where it is unchanged.
 
 ### Prerequisites — one time, and `up.sh` will tell you if you skip it
 
@@ -100,16 +152,34 @@ IRIS reports healthy only once the **LABDEMO production is serving interop metri
 in this order:
 
 ```bash
-docker compose logs iris | grep pg-firstboot   # did first boot run, and did it finish?
-docker compose logs iris | grep -E '^[0-9]'    # the numbered steps, and which one stopped
-docker compose ps -a                           # iris-init should be Exited (0), not Exited (1)
+# Linux & macOS (and Git Bash)
+docker compose logs iris | grep pg-firstboot                           # did first boot run, and did it finish?
+docker compose logs --no-log-prefix iris | grep -E '^[0-9]+[a-z]?\.'   # the numbered steps, and which one stopped
+docker compose ps -a                                                   # iris-init should be Exited (0), not Exited (1)
 ```
+
+```powershell
+# Windows (PowerShell)
+docker compose logs iris | Select-String pg-firstboot
+docker compose logs --no-log-prefix iris | Select-String '^[0-9]+[a-z]?\.'
+docker compose ps -a
+```
+
+`--no-log-prefix` is load-bearing and was missing until this was actually run on both shells:
+`compose logs` prefixes every line with `pg-iris  | `, so the `^[0-9]` this used to say anchored
+against the prefix and matched **nothing** — on Unix too. Dropping the prefix makes the anchor
+mean what it reads as, and `[a-z]?` is there because the steps are `1.` … `9.` *and* `4b.`,
+`6b.`. `Select-String` takes the same regex, so the two lines differ only in the tool's name.
 
 To run it by hand (it is safe at any time):
 
 ```bash
 docker compose exec iris sh /pg-firstboot.sh
 ```
+
+Unchanged in PowerShell — `/pg-firstboot.sh` is a path inside the container, so there is nothing
+to translate. From **Git Bash** it needs `MSYS_NO_PATHCONV=1` in front, for the reason in
+*On Windows* above.
 
 ## The four services
 
@@ -182,6 +252,9 @@ export PG_AGENT_MODE=live             # engine calls IRIS instead of its own moc
 docker compose up -d
 ```
 
+On Windows the two `export` lines become `$env:PG_LLM_API_KEY = 'sk-...'` and
+`$env:PG_AGENT_MODE = 'live'`, in the same window as the `compose up` — see *On Windows*.
+
 `PG_LLM_API_KEY` is read at first boot by `Setup.AIHub`, which creates the wallet entry and the
 `AI.LLM.pgdetective` config that references it as `secret://PGSecrets.openai#apikey`. The key is
 never written to the configuration, the repo, or a log line — the boot prints its length and that it
@@ -213,6 +286,8 @@ do ##class(ProductionGuardian.LabDemo.Triggers).Reset()    // undo, including th
 Then, against the dashboard's own API path so it is the same route the UI uses:
 
 ```bash
+# Linux & macOS (and Git Bash)
+
 # WHAT -- the finding
 curl -s localhost:5173/api/healthscan/findings
 
@@ -228,6 +303,32 @@ curl -s -XPOST localhost:5173/api/resolve -H 'Content-Type: application/json' \
   -d '{"mode":"apply","requestedBy":"you@laptop",
        "action":{"type":"set_pool_size","host":"Cloud API","size":4},
        "origin":{"findingId":"<id>"}}'
+```
+
+```powershell
+# Windows (PowerShell). Each POST is ONE line -- `--%` passes the rest of the line to curl.exe
+# verbatim, and a backtick continuation would be passed through literally too.
+
+# WHAT
+curl.exe -s localhost:5173/api/healthscan/findings
+
+# WHY
+curl.exe --% -s -XPOST localhost:5173/api/investigate -H "Content-Type: application/json" -d "{\"findingId\":\"<id from above>\"}"
+
+# FIX -- preview first, then apply
+curl.exe --% -s -XPOST localhost:5173/api/resolve -H "Content-Type: application/json" -d "{\"mode\":\"dry_run\",\"action\":{\"type\":\"set_pool_size\",\"host\":\"Cloud API\",\"size\":4}}"
+
+curl.exe --% -s -XPOST localhost:5173/api/resolve -H "Content-Type: application/json" -d "{\"mode\":\"apply\",\"requestedBy\":\"you@laptop\",\"action\":{\"type\":\"set_pool_size\",\"host\":\"Cloud API\",\"size\":4},\"origin\":{\"findingId\":\"<id>\"}}"
+```
+
+Pasting a finding id by hand into a `--%` line is fine; building one from a variable is not,
+because `--%` stops expansion. For that, `Invoke-RestMethod` — which also pretty-prints, so it
+is the nicer one to read output from:
+
+```powershell
+$id = (Invoke-RestMethod http://localhost:5173/api/healthscan/findings)[0].id
+Invoke-RestMethod -Method Post -Uri http://localhost:5173/api/investigate `
+  -ContentType 'application/json' -Body "{`"findingId`":`"$id`"}" | ConvertTo-Json -Depth 10
 ```
 
 A live run looks like this — the queue drains because four workers clear ~4/sec against ~2/sec
@@ -262,6 +363,9 @@ curl -s localhost:5173/api/healthscan/findings          # dead_host on EMR Sourc
 curl -s -XPOST localhost:5173/api/investigate \
   -H 'Content-Type: application/json' -d '{"findingId":"<the dead_host id>"}'
 ```
+
+Same two calls as the MVP 2 section, so the PowerShell spellings are the same two lines shown
+there — not repeated, because two copies of one command is one copy that goes stale.
 
 A live run:
 
@@ -304,6 +408,8 @@ stage than a second window. **Off by default** — the flag is what enables it:
 export PG_DEMO_TRIGGERS=1
 docker compose up -d
 ```
+
+PowerShell: `$env:PG_DEMO_TRIGGERS = '1'`, then the same `compose up`.
 
 Without it every trigger route answers **404** and the rail looks exactly as it does now. That is
 deliberate rather than tidy: the buttons deliberately break the production, which is the opposite of

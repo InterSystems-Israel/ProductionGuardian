@@ -79,6 +79,44 @@ const METRIC: MetricName = 'queued';
  * reset or an approved fix produces, is 100%.
  */
 const DISCONTINUITY_FRACTION = 0.8;
+
+/**
+ * How much of the fit window counts as NOW, as a fraction of it.
+ *
+ * A single slope over the whole window describes the WINDOW, not the present, and publishing it as
+ * "rising ~N/min" is a claim about the present. So the projection asks the question twice — once of
+ * the window, once of its tail — and declines unless both say rising. Reported from a live demo run:
+ * "the early warning sometimes comes up when the queue pool is being drained, because it takes a
+ * point in time measurement and does not notice the acceleration/deceleration of pool growth."
+ *
+ * A FRACTION RATHER THAN A SECOND WINDOW LENGTH, and deliberately not in `thresholds.json`. ADR 0003
+ * governs the numbers that decide what FIRES, and the earlyWarning numbers there
+ * (`fitWindowSeconds`, `horizonSeconds`, `minFitSamples`) each set a level or a span an operator
+ * might defensibly move. This one sets neither: it says how much of the series the word "now" covers,
+ * which is the definition of "rising" rather than a threshold for it — the same argument
+ * DISCONTINUITY_FRACTION carries above for "the series restarted".
+ *
+ * Two consequences make the fraction the safer shape than a configurable duration:
+ *
+ *   - it cannot contradict `fitWindowSeconds`. Two independent numbers can be set so the tail is
+ *     LONGER than the window it is a tail of, which is a nonsense state with no sensible behaviour;
+ *     a fraction moves with the window and can never invert.
+ *   - it inherits the reachability invariant instead of needing its own. `thresholds.json` already
+ *     requires `fitWindowSeconds / poll > minFitSamples` so a projection is structurally possible
+ *     (#64's failure mode); at the shipped 300s/5s that is 60 samples, of which the tail is 24. A
+ *     separate configurable duration would need that check duplicated, and an unreachable value
+ *     would silence the module with no error — which is exactly what the existing check exists to
+ *     prevent.
+ *
+ * 0.4 rather than something shorter: at the shipped poll the tail is 24 samples, enough that one
+ * bursty poll cannot flip its sign, where the last 30s (6 samples) of a queue that drains and refills
+ * would flap between projecting and not. Rather than something longer: at 0.8 the tail is nearly the
+ * window and would just re-answer the same question. Note the drain only reaches this code once the
+ * queue is UNDER the threshold — above it, `already_crossed` answers first — so the tail does not
+ * need to react within a poll or two of the fix landing.
+ */
+const RECENT_FIT_FRACTION = 0.4;
+
 const FINDING_TYPE = 'queue_buildup';
 const SLOPE_UNIT = 'items/minute';
 
@@ -159,6 +197,34 @@ function fitSlopePerMs(samples: readonly Sample[]): number | null {
   }
   if (sxx === 0) return null;
   return sxy / sxx;
+}
+
+/**
+ * The tail of the series: samples within `spanMs` of the LAST SAMPLE, oldest first.
+ *
+ * Anchored on the last sample rather than on `now` because the question is about the shape of the
+ * series, not about the wall clock. Anchoring on `now` would let a slow poll silently shorten the
+ * tail — and at the extreme, a stale series would report a tail of one sample for a reason that has
+ * nothing to do with whether the queue is rising. `measuredAt` and `projectedCrossingAt` are already
+ * on the sample clock for the same reason (contract EW-Q3).
+ *
+ * Takes the ALREADY TRUNCATED series, so a rise after a discontinuity is fitted against itself on
+ * both passes rather than the tail reaching back across a cliff the window pass excluded.
+ */
+function recentPortion(samples: readonly Sample[], spanMs: number): readonly Sample[] {
+  const last = samples.at(-1);
+  if (last === undefined) return samples;
+  const cutoff = last.at - spanMs;
+  // Backwards from the end and stop at the first sample outside the span: samples are time-ordered,
+  // so this touches only the tail rather than the whole window.
+  let firstKept = samples.length - 1;
+  while (firstKept > 0 && (samples[firstKept - 1]?.at ?? 0) >= cutoff) firstKept -= 1;
+  return firstKept === 0 ? samples : samples.slice(firstKept);
+}
+
+/** A slope in units per ms, rounded to the 1dp we publish. Null stays null. */
+function perMinute(slopePerMs: number | null): number | null {
+  return slopePerMs === null ? null : Math.round(slopePerMs * 60_000 * 10) / 10;
 }
 
 /**
@@ -266,13 +332,36 @@ export function projectHost(
   // "nothing to see" about a queue that is over its limit.
   if (currentValue >= threshold.value) return decline('already_crossed', threshold);
 
-  const slopePerMs = fitSlopePerMs(samples);
-  if (slopePerMs === null) return decline('not_rising', threshold);
-
   // Round to 1dp in the units we publish, and test the ROUNDED value: publishing slope 0.0
   // alongside a finite ETA would be a projection the numbers do not support.
-  const slopePerMinute = Math.round(slopePerMs * 60_000 * 10) / 10;
-  if (slopePerMinute <= 0) return decline('not_rising', threshold);
+  const slopePerMinute = perMinute(fitSlopePerMs(samples));
+  if (slopePerMinute === null || slopePerMinute <= 0) return decline('not_rising', threshold);
+
+  // RISING NOW, not merely on average across the window. The window slope above describes the
+  // window; this asks the same question of its tail, and both must say rising. That one gate covers
+  // three shapes a single fit reports as a rise: a queue draining after the approved fix, a rise that
+  // has levelled off, and a rise that has turned over. See RECENT_FIT_FRACTION.
+  //
+  // `not_rising` rather than an eighth reason, and it is the accurate answer rather than the
+  // available one: a draining queue is not rising. `contracts/earlywarning-api.md` fixes the seven
+  // reasons and their precedence, and this stays inside both — it sits at step 6, after
+  // `already_crossed`, so a queue that is draining but still ABOVE its threshold keeps reporting
+  // `already_crossed`. Draining-but-over-limit is still a problem.
+  //
+  // An unfittable tail declines too — both cases arrive as `fitSlopePerMs` returning null: fewer than
+  // two samples has no slope, and a tail sharing one timestamp is division by zero rather than a flat
+  // line. Two is all the tail needs, not `minFitSamples`, because its slope is never published: it is
+  // a sign test confirming an answer the window already grounded in 12+ samples. At the shipped
+  // cadence the tail holds ~24, so reaching two at all means a polling gap, where declining is the
+  // posture the rest of this module takes. `insufficient_samples` would be the wrong reason for
+  // either — the contract defines it against the published `fitSampleCount`, which is the FULL
+  // window's count and has already cleared `minFitSamples` by this point.
+  const recentSlopePerMinute = perMinute(
+    fitSlopePerMs(recentPortion(samples, ew.fitWindowSeconds * 1000 * RECENT_FIT_FRACTION)),
+  );
+  if (recentSlopePerMinute === null || recentSlopePerMinute <= 0) {
+    return decline('not_rising', threshold);
+  }
 
   const secondsToThreshold = Math.ceil(
     ((threshold.value - currentValue) / slopePerMinute) * 60,

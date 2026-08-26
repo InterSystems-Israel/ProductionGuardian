@@ -367,3 +367,166 @@ describe('a drain inside the fit window does not poison the slope', () => {
     );
   });
 });
+
+/**
+ * A DRAINING queue is not a rising one, even when the window average says otherwise.
+ *
+ * Reported from a live demo run: "the early warning sometimes comes up when the queue pool is being
+ * drained, because it takes a point in time measurement and does not notice the
+ * acceleration/deceleration of pool growth." Worst possible timing — it lands seconds after the
+ * audience is told the approved `set_pool_size 1 -> 4` worked.
+ *
+ * One least-squares slope over the whole 300s window describes the WINDOW, not the present. On the
+ * recovery path the window straddles a long rise and a partial drain, the average stays positive,
+ * and Early Warning announces a crossing while the queue is emptying.
+ *
+ * #142's `sinceLastDiscontinuity()` does not cover it and was never meant to: a drain at 4/sec sheds
+ * ~20 of a 350-deep queue per 5s poll, ~6%, nowhere near the 80% cliff test. These cases assert the
+ * window stays intact AND the projection is declined, so neither mechanism can be mistaken for the
+ * other.
+ */
+describe('a queue must be rising NOW, not merely on average', () => {
+  /**
+   * Rise, then drain — the shape the approved fix leaves in the window.
+   *
+   * Defaults mirror the MVP 2 scenario at the shipped 5s poll: net +1/sec while `Cloud API` is at
+   * `PoolSize 1`, then net -3/sec once the pool is 4 and it clears ~4/sec against the same inflow.
+   * Returns the values too, so a test can fit them itself rather than trusting the module.
+   */
+  function riseThenDrain(riseSamples: number, drainSamples: number, cfg = config()) {
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    const values: number[] = [];
+    let at = T0;
+    let q = 0;
+    for (let i = 0; i < riseSamples; i += 1) {
+      values.push(q);
+      store.record(HOST, 'queued', q, at);
+      at += POLL;
+      q += 5;
+    }
+    q -= 5;
+    for (let i = 0; i < drainSamples; i += 1) {
+      q -= 15;
+      values.push(q);
+      store.record(HOST, 'queued', q, at);
+      at += POLL;
+    }
+    const lastValue = values[values.length - 1] as number;
+    return { p: projectHost(HOST, raw(lastValue), store, cfg, at - POLL), values, lastValue };
+  }
+
+  /** Least-squares slope per minute over evenly spaced values — the OLD rule's answer, in the test. */
+  function slopePerMinute(values: readonly number[], spacingMs = POLL): number {
+    const n = values.length;
+    const meanX = ((n - 1) / 2) * spacingMs;
+    const meanY = values.reduce((a, b) => a + b, 0) / n;
+    let sxy = 0;
+    let sxx = 0;
+    for (const [i, v] of values.entries()) {
+      const dx = i * spacingMs - meanX;
+      sxy += dx * (v - meanY);
+      sxx += dx * dx;
+    }
+    return (sxy / sxx) * 60_000;
+  }
+
+  it('declines while the queue drains, though the window average is still positive', () => {
+    // 40 samples up to 195, then 12 down to 15. 15 is UNDER the floor of 50 on purpose: above it
+    // `already_crossed` answers first and the slope is never consulted, so a fixture that ends high
+    // tests nothing here. That is the same trap #142's fixtures fell into twice.
+    const { p, values, lastValue } = riseThenDrain(40, 12);
+
+    assert.equal(lastValue, 15);
+    assert.equal(p.threshold?.value, 50);
+    assert.ok(
+      lastValue < 50,
+      'sanity: the assertion sample must be below the floor, or already_crossed answers instead',
+    );
+    // The old rule's own number, fitted here rather than assumed. If this ever comes out negative
+    // the fixture has stopped reproducing the defect and the test below proves nothing.
+    assert.ok(
+      slopePerMinute(values) > 0,
+      `the window average must still be positive for this to be the defect, got ${slopePerMinute(values)}`,
+    );
+    // The window is INTACT: no 80% collapse anywhere in a 15-per-poll drain, so #142's helper
+    // cannot be what declines here.
+    assert.equal(p.fitSampleCount, 52, 'an ordinary drain must not truncate the window');
+
+    assert.equal(
+      p.projectionUnavailable,
+      'not_rising',
+      'a draining queue is not rising — the accurate answer, and it renders as "watching"',
+    );
+    assert.equal(p.projection, null);
+  });
+
+  it('still projects for a queue that is rising more slowly than it was', () => {
+    // DECELERATION IS NOT A TURNOVER. The gate asks for a positive recent slope, not an
+    // undiminished one: this queue is still heading for the threshold, and the published slope is
+    // the window's, which overstates it. Declining here would be the opposite defect.
+    const cfg = config();
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    let at = T0;
+    let q = 0;
+    for (let i = 0; i < 30; i += 1) {
+      store.record(HOST, 'queued', q, at);
+      at += POLL;
+      q += 1;
+    }
+    // +1 every other poll, so the values stay whole the way a queue depth does.
+    for (let i = 0; i < 20; i += 1) {
+      store.record(HOST, 'queued', q, at);
+      at += POLL;
+      if (i % 2 === 1) q += 1;
+    }
+    const p = projectHost(HOST, raw(q), store, cfg, at - POLL);
+    assert.equal(p.projectionUnavailable, null, 'a slowing rise is still a rise');
+    assert.ok(p.projection !== null && p.projection.slope > 0);
+  });
+
+  it('declines for a queue that has levelled off', () => {
+    // The turnover case with no drain at all: a rise, then flat. The window average is positive and
+    // nothing is approaching anything.
+    const cfg = config();
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    let at = T0;
+    for (let i = 0; i < 30; i += 1) {
+      store.record(HOST, 'queued', i, at);
+      at += POLL;
+    }
+    for (let i = 0; i < 30; i += 1) {
+      store.record(HOST, 'queued', 29, at);
+      at += POLL;
+    }
+    const p = projectHost(HOST, raw(29), store, cfg, at - POLL);
+    assert.equal(p.projectionUnavailable, 'not_rising');
+  });
+
+  it('declines rather than crashing when the recent portion holds one sample', () => {
+    // A polling gap: 13 samples, 12 of them bunched at the start of the window and one at the end.
+    // The recent portion cannot be fitted at all, which must decline rather than throw or fall back
+    // to the window average. `insufficient_samples` would contradict the published fitSampleCount of
+    // 13, which the contract defines that reason against.
+    const cfg = config();
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    for (let i = 0; i < 12; i += 1) store.record(HOST, 'queued', i * 2, T0 + i * POLL);
+    const lastAt = T0 + 250_000;
+    store.record(HOST, 'queued', 40, lastAt);
+    const p = projectHost(HOST, raw(40), store, cfg, lastAt);
+    assert.equal(p.fitSampleCount, 13, 'sanity: the full window is still fittable');
+    assert.equal(p.projectionUnavailable, 'not_rising');
+  });
+
+  it('declines rather than crashing when the recent portion shares one timestamp', () => {
+    // Zero variance in x is division by zero, not a flat line — the distinction `fitSlopePerMs`
+    // already keeps for the full window, applied to the recent portion too.
+    const cfg = config();
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    for (let i = 0; i < 12; i += 1) store.record(HOST, 'queued', i * 2, T0 + i * POLL);
+    const lastAt = T0 + 250_000;
+    for (const v of [40, 41, 42]) store.record(HOST, 'queued', v, lastAt);
+    const p = projectHost(HOST, raw(42), store, cfg, lastAt);
+    assert.equal(p.fitSampleCount, 15);
+    assert.equal(p.projectionUnavailable, 'not_rising');
+  });
+});
