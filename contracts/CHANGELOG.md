@@ -5,6 +5,43 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-26 — `not_rising` is two fits, not one; documenting behaviour that shipped in #145
+
+**`earlywarning-api.md` §2.1 (the `not_rising` row) and a new §2.2.1.** No schema change, no new
+reason, no change to the precedence order — the seven reasons and their order are unchanged, and a
+consumer sees exactly the same values it did before.
+
+**This documents code already on `main`, which is the problem being fixed.** Step 6 has fitted the
+series **twice** since `d48939e` — once over the 300 s window, once over its most recent 40% — and
+declines unless both are positive. The contract still said *"Fitted slope is `<= 0` after rounding to
+1 decimal"*, singular, which no longer described the implementation: a queue whose window slope is
+positive but whose tail slope is not now reports `not_rising`, and nothing in the contract said so.
+
+The behaviour is right and is what was asked for:
+
+> the early warning sometimes comes up when the queue pool is being drained, because it takes a
+> point in time measurement and does not notice the acceleration/deceleration of pool growth.
+
+One gate covers three shapes a single fit reads as a rise — draining after the approved fix, levelled
+off, turned over — while a queue rising *more slowly* than it was still projects. Five tests cover
+it (`earlywarning.test.ts`).
+
+**Why the contract fell behind.** `d48939e` was squash-merged as PR #145 under a title naming only
+the `PollInterval` fix, because two agents' commits collapsed into one merge. So the change landed
+with no contract amendment and no entry here, and was found only by reading the file. Recorded
+because #84 is open about exactly this class of drift: the code was correct, tested, and invisible.
+
+§2.2.1 also states two things a consumer cannot infer from the reason alone — the tail's slope is
+never published (so a positive `slope` alongside `projection: null` cannot occur), and an unfittable
+tail declines as `not_rising` rather than `insufficient_samples`, which is defined against the full
+window's `fitSampleCount`.
+
+**One older undocumented path is written down at the same time**, found while checking the above: a
+non-finite or `<= 0` `secondsToThreshold` also declines as `not_rising`. It predates the tail test and
+should be unreachable — it would mean the arithmetic disagreed with `already_crossed` a step earlier —
+but it was the third way to reach step 6's reason code and the contract described only one.
+
+
 ## 2026-08-26 — clearing a finding takes the same bar as raising one (#149)
 
 **`healthscan-api.md` §2.1 (a new paragraph under *Sustained breach*) and Q4.** No schema

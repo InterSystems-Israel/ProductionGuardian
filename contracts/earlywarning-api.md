@@ -229,7 +229,7 @@ Never invent a number here; there is a reason code for every case instead.
 | `warming` | No rolling baseline yet, so **no threshold exists to project toward**. Fewer than `minBaselineSamples` (12) in the 1800 s baseline window | `null` | `—`, plus the warming affordance |
 | `insufficient_samples` | Baseline is warm, but the 300 s fit window holds fewer than **12** samples — a newly appeared host, or a gap in polling | non-null | `—` |
 | `already_crossed` | `currentValue >= threshold.value`. There is no time remaining to forecast; the `queue_buildup` finding is the thing to render | non-null | defer to the finding |
-| `not_rising` | Fitted slope is `<= 0` after rounding to 1 decimal. Flat or draining — nothing is approaching anything | non-null | nothing, or a neutral "steady" |
+| `not_rising` | **Either** fit is `<= 0` after rounding to 1 decimal — the 300 s window, **or its most recent 40%**. Flat, draining, levelled off, or turned over — nothing is approaching anything. See §2.2.1 | non-null | nothing, or a neutral "steady" |
 | `beyond_horizon` | Rising, but the projected crossing is more than **1800 s** away | non-null | nothing |
 
 **The horizon is 1800 s because that is the baseline window.** Do not project further forward than
@@ -255,6 +255,49 @@ disagree with live in ways that look like bugs. The order is:
 7. `beyond_horizon`
 
 Otherwise: project.
+
+#### 2.2.1 `not_rising` asks the question twice — the window, and its tail
+
+**A single slope over the 300 s window describes the WINDOW, not the present**, and
+`"rising ~N/min"` is a claim about the present. So step 6 fits twice and declines unless **both**
+fits are positive: once over the whole window, once over its **most recent 40%** (120 s, ~24 samples
+at the shipped 5 s poll). Reported from a live run:
+
+> the early warning sometimes comes up when the queue pool is being drained, because it takes a
+> point in time measurement and does not notice the acceleration/deceleration of pool growth.
+
+One gate covers three shapes a single fit reports as a rise: a queue **draining** after the approved
+fix, a rise that has **levelled off**, and a rise that has **turned over**. A queue rising more
+slowly than it was still projects — decelerating is not falling.
+
+**This adds no eighth reason and does not move the precedence.** `not_rising` is the accurate answer
+and not merely the available one: a draining queue is not rising. It stays at step 6, *after*
+`already_crossed`, so a queue draining while still **above** its threshold keeps reporting
+`already_crossed` — draining-but-over-limit is still a problem.
+
+Two consequences worth stating, because a consumer cannot see them from the reason alone:
+
+- **`slope` is never published for the tail.** The tail fit is a sign test confirming an answer the
+  window already grounded in `minFitSamples`; only the window slope is published. So a positive
+  published `slope` with `projection: null` cannot occur — the decline happens before any projection
+  is built.
+- **An unfittable tail declines too**, and still as `not_rising`: fewer than two samples has no
+  slope, and a tail sharing one timestamp is division by zero. `insufficient_samples` would be the
+  wrong reason, since the contract defines that against the published `fitSampleCount` — the full
+  window's count, which has already cleared `minFitSamples` by step 6.
+
+**A third path declines as `not_rising` too, defensively** — and predates the tail test. Once both
+slopes are positive, `secondsToThreshold` is computed; if it comes out non-finite or `<= 0`, step 6
+declines rather than publishing it. That state would mean the arithmetic disagreed with
+`already_crossed` one step earlier, so it should be unreachable — but publishing
+`secondsToThreshold: 0` is exactly the "zero reads as a measurement of now" case §1.4 forbids. A consumer needs no special handling: it is the same reason
+code with the same `null` projection.
+
+**The 40% is not configurable, deliberately.** ADR 0003 governs the numbers that decide what fires;
+this one says how much of the series the word "now" covers, which is the definition of "rising"
+rather than a threshold for it. A fraction rather than a duration for two reasons: it can never be
+set longer than the window it is a tail of, and it inherits the existing
+`fitWindowSeconds / poll > minFitSamples` reachability check instead of needing its own.
 
 ### 2.3 Warm-up, and `X-Healthscan-State`
 
