@@ -5,6 +5,46 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-26 — clearing a finding takes the same bar as raising one (#149)
+
+**`healthscan-api.md` §2.1 (a new paragraph under *Sustained breach*) and Q4.** No schema
+change, no field added or removed, no sample change — this documents *when* a finding leaves,
+which the contract described only for arriving.
+
+**Q4 promised two things that the implementation could not both keep.** "ids are stable while
+the condition persists" and "findings disappear when cleared" are only compatible if *cleared*
+and *not breaching on this poll* are the same event. They are not. MVP §6's 2-consecutive-samples
+rule was read as governing appearance alone, so a finding cost **two** samples to arrive and
+**one** to leave, and a condition oscillating around a threshold produced a finding, dropped it,
+and produced the same condition again under a **new `id`** — `f-1000`, gone, back as `f-1001`.
+Reproduced against the shipped defaults (`sustainedSamples: 2`, `sustainedSeconds: 4`), not
+theorised. To a viewer that is findings appearing and vanishing with no cause, which is how it
+was reported.
+
+Clearing now uses the same two gates, read from the same two knobs — no third tunable, because
+"how many samples before I believe this changed" is one question asked in both directions.
+`sustainedSamples: 1` / `sustainedSeconds: 0` still clears on the first non-breaching poll, so
+the old behaviour remains reachable by configuration.
+
+Two consumer-visible consequences, both stated in §2.1:
+
+- a finding may persist **one extra poll** past the condition, showing its last breaching
+  numbers (there is no newer verdict to refresh from)
+- a finding **holds while its inputs are unmeasurable** — Q13's `null`. A rule that declines to
+  evaluate has said "cannot tell", not "not breaching". Each rule now declares the inputs it
+  cannot work without, so the engine can tell the two silences apart; `dead_host` declares none
+  and clears exactly as before.
+
+The same bar now governs a host vanishing from the proxy payload. That half was worse than a
+flap: forgetting on the first absent poll discarded the **rolling baseline** along with the
+findings, so a host that dropped out of one payload came back `warming` and every comparative
+rule was silent for `minBaselineSamples` further polls. The finding did not flicker — it went
+away and could not return, for a reason invisible from outside the process.
+
+**Nothing changes for a consumer that renders whatever the endpoint returns.** What changes is
+that an `id` is now stable for the lifetime of the condition, as Q4 always said it was.
+
+
 ## 2026-08-26 — `type` gains a second source; Q6's "treat unknown as a real value" amended (#127)
 
 **`proxy-api.md` §1.1, §1.3, §5.1 (Q6) and a new §5.1.1; `proxy.schema.json`

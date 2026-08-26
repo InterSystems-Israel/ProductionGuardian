@@ -287,7 +287,19 @@ describe('negative cases (CLAUDE.md §8)', () => {
     }
     assert.equal(points(seriesFor(engine, 'Lab Router', at), 'queued').length, 4);
 
+    // Departure is held to the sustained bar, so one absent poll is not yet a departure —
+    // and until it is, the history stays rather than being thrown away and re-warmed.
     engine.applyPoll(response([proxyHost({ host: 'Cloud API' })]), at);
+    assert.equal(
+      points(seriesFor(engine, 'Lab Router', at), 'queued').length,
+      4,
+      'one absent poll must not discard the window',
+    );
+
+    for (let i = 1; i < DEFAULT_CONFIG.sustainedSamples; i += 1) {
+      at += POLL_MS;
+      engine.applyPoll(response([proxyHost({ host: 'Cloud API' })]), at);
+    }
     const gone = seriesFor(engine, 'Lab Router', at + POLL_MS);
     assert.equal(gone.known, false);
     assert.deepEqual(gone.series.map((s) => s.points), [[], [], []]);

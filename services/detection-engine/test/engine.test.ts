@@ -208,9 +208,95 @@ describe('finding lifecycle (contract Q4)', () => {
     engine.applyPoll(response([proxyHost({ status: 'Disabled' })]), at);
     assert.equal(engine.snapshot().findings.length, 1, 'precondition: finding exists');
 
+    // Clearing takes the same two gates as confirming, so it takes the same two polls.
+    for (let i = 0; i < DEFAULT_CONFIG.sustainedSamples; i += 1) {
+      at += POLL_MS;
+      engine.applyPoll(response([proxyHost({ status: 'OK' })]), at);
+    }
+    assert.equal(engine.snapshot().findings.length, 0, 'no tombstones, no resolvedAt');
+  });
+
+  it('holds a confirmed finding through ONE non-breaching poll, id intact', () => {
+    // The flap: appearing cost two samples and disappearing cost one, so a condition
+    // oscillating around a threshold produced a finding, dropped it, and produced the
+    // SAME condition again under a new id. Contract Q4 promises the id is stable for the
+    // lifetime of the condition, and the condition outlives the blip.
+    const engine = new DetectionEngine(DEFAULT_CONFIG);
+    let at = warmUp(engine);
+
+    engine.applyPoll(response([proxyHost({ queued: 100 })]), at);
+    at += POLL_MS;
+    engine.applyPoll(response([proxyHost({ queued: 100 })]), at);
+    const first = engine.snapshot().findings[0];
+    assert.ok(first !== undefined, 'precondition: queue_buildup confirmed');
+
+    at += POLL_MS;
+    engine.applyPoll(response([proxyHost({ queued: 0 })]), at);
+    assert.equal(engine.snapshot().findings.length, 1, 'one blip must not retract it');
+
+    at += POLL_MS;
+    engine.applyPoll(response([proxyHost({ queued: 100 })]), at);
+    const back = engine.snapshot().findings[0];
+    assert.ok(back !== undefined);
+    assert.equal(back.id, first.id, 'same condition, same id — not a new finding');
+    assert.equal(back.detectedAt, first.detectedAt, 'and the blip did not re-clock it');
+  });
+
+  it('holds a confirmed finding when its input becomes UNMEASURABLE', () => {
+    // A null queue depth is "cannot tell", not "not breaching". queue_buildup declines to
+    // evaluate on it (#49), and that silence must not read as a clear — an instance that
+    // stops publishing a metric would otherwise retract a finding that is still true.
+    const engine = new DetectionEngine(DEFAULT_CONFIG);
+    let at = warmUp(engine);
+
+    engine.applyPoll(response([proxyHost({ queued: 100 })]), at);
+    at += POLL_MS;
+    engine.applyPoll(response([proxyHost({ queued: 100 })]), at);
+    const first = engine.snapshot().findings[0];
+    assert.ok(first !== undefined, 'precondition: queue_buildup confirmed');
+
+    // Well past the clear bar in both polls and seconds.
+    for (let i = 0; i < DEFAULT_CONFIG.sustainedSamples + 3; i += 1) {
+      at += POLL_MS;
+      engine.applyPoll(response([proxyHost({ queued: null })]), at);
+    }
+    const held = engine.snapshot().findings[0];
+    assert.ok(held !== undefined, 'unmeasurable must never clear a finding');
+    assert.equal(held.id, first.id);
+  });
+
+  it('still clears dead_host on the bar, since its inputs are never unmeasurable', () => {
+    // dead_host declares `requires: []` — it judges `status`, which is always present. So
+    // its silence really does mean "not breaching" and the hold above must not apply to it.
+    const engine = new DetectionEngine(DEFAULT_CONFIG);
+    let at = warmUp(engine);
+
+    engine.applyPoll(response([proxyHost({ status: 'Disabled', queued: null })]), at);
+    at += POLL_MS;
+    engine.applyPoll(response([proxyHost({ status: 'Disabled', queued: null })]), at);
+    assert.equal(engine.snapshot().findings.length, 1, 'precondition: dead_host confirmed');
+
+    for (let i = 0; i < DEFAULT_CONFIG.sustainedSamples; i += 1) {
+      at += POLL_MS;
+      engine.applyPoll(response([proxyHost({ status: 'OK', queued: null })]), at);
+    }
+    assert.equal(engine.snapshot().findings.length, 0);
+  });
+
+  it('sustainedSamples 1 / sustainedSeconds 0 clears on the first poll, as it always did', () => {
+    // The clear bar reuses the two existing knobs rather than adding a third, so the
+    // degenerate config still means "believe every poll" in both directions. Anyone who
+    // wants the old asymmetric behaviour back has it here.
+    const eager = { ...DEFAULT_CONFIG, sustainedSamples: 1, sustainedSeconds: 0 };
+    const engine = new DetectionEngine(eager);
+    let at = warmUp(engine);
+
+    engine.applyPoll(response([proxyHost({ status: 'Disabled' })]), at);
+    assert.equal(engine.snapshot().findings.length, 1, 'confirms on one sample');
+
     at += POLL_MS;
     engine.applyPoll(response([proxyHost({ status: 'OK' })]), at);
-    assert.equal(engine.snapshot().findings.length, 0, 'no tombstones, no resolvedAt');
+    assert.equal(engine.snapshot().findings.length, 0, 'and clears on one');
   });
 
   it('forgets a host that leaves the production', () => {
@@ -222,11 +308,38 @@ describe('finding lifecycle (contract Q4)', () => {
     engine.applyPoll(response([proxyHost({ status: 'Disabled' })]), at);
     assert.equal(engine.snapshot().findings.length, 1);
 
-    at += POLL_MS;
-    engine.applyPoll(response([]), at);
+    // Absence is held to the same bar, so it takes the same two polls to believe.
+    for (let i = 0; i < DEFAULT_CONFIG.sustainedSamples; i += 1) {
+      at += POLL_MS;
+      engine.applyPoll(response([]), at);
+    }
     const snapshot = engine.snapshot();
     assert.equal(snapshot.hosts.length, 0);
     assert.equal(snapshot.findings.length, 0);
+  });
+
+  it('keeps a host and its warm baseline through ONE absent poll', () => {
+    // Forgetting on the first absent poll discarded the BASELINE too, so a host that
+    // dropped out of one payload came back `warming` — every comparative rule silent for
+    // minBaselineSamples more polls. That is a finding that goes away and cannot return.
+    const engine = new DetectionEngine(DEFAULT_CONFIG);
+    let at = warmUp(engine);
+
+    at += POLL_MS;
+    engine.applyPoll(response([]), at);
+    assert.equal(engine.snapshot().hosts.length, 1, 'last-known host, not blanked');
+
+    // Back on the next poll, and still warm: a breach confirms on the usual two samples
+    // rather than waiting out a fresh baseline window.
+    at += POLL_MS;
+    engine.applyPoll(response([proxyHost({ queued: 100 })]), at);
+    at += POLL_MS;
+    engine.applyPoll(response([proxyHost({ queued: 100 })]), at);
+    assert.equal(
+      engine.snapshot().findings.filter((f) => f.type === 'queue_buildup').length,
+      1,
+      'baseline survived the gap, so the comparative rule could still fire',
+    );
   });
 });
 
@@ -375,8 +488,10 @@ describe('system_alert', () => {
     engine.applyPoll({ ...response([proxyHost()]), alerts: [alert] }, T0 + 2 * POLL_MS);
     assert.equal(alertCount(), 1, 'still reported while present, not duplicated');
 
-    // The alert ages out of the proxy payload — the finding clears, per contract Q4.
+    // The alert ages out of the proxy payload — the finding clears, per contract Q4, on
+    // the same two-gate bar it confirmed on.
     engine.applyPoll(response([proxyHost()]), T0 + 3 * POLL_MS);
+    engine.applyPoll(response([proxyHost()]), T0 + 4 * POLL_MS);
     assert.equal(alertCount(), 0, 'no tombstone once the alert is gone');
   });
 

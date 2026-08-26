@@ -73,10 +73,28 @@ export interface RuleVerdict {
   message: string;
 }
 
+/** An input a rule reads: a raw proxy metric, or the rate derived across polls. */
+export type RuleInputKey = keyof RawHostMetrics | 'errorsPerMinute';
+
 export interface Rule {
   readonly type: FindingType;
   /** True when this rule needs no baseline. Only dead_host and system_alert. */
   readonly absolute: boolean;
+  /**
+   * The inputs this rule declines to evaluate without — the ones whose `=== null` guard
+   * returns null from `evaluate`.
+   *
+   * `evaluate` returns ONE undifferentiated null for two different answers: "not
+   * breaching" and "cannot tell". The comment on RuleVerdict below is only true of the
+   * first. The registry reads an absent verdict as a clear, so an unmeasurable poll
+   * silently retracted a finding that was still true — the same conflation #33 and #49
+   * fixed INSIDE the rules, still present in what the rules' silence means.
+   *
+   * Declared rather than inferred because the difference is not visible from the outside.
+   * Keep this in step with the `=== null` guards in evaluate(); a rule that guards on an
+   * input it does not list will still flap.
+   */
+  readonly requires: readonly RuleInputKey[];
   evaluate(input: RuleInput): RuleVerdict | null;
 }
 

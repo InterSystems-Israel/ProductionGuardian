@@ -15,6 +15,12 @@
  * polling faster to meet the 10s acceptance bar would silently shorten the debounce
  * (#44). Keeping the time gate separate lets the two be tuned independently.
  *
+ * **The bar is SYMMETRIC.** A confirmed finding leaves on the same two gates it arrived
+ * on, rather than on the first non-breaching poll. Promise 1 is why: an id that survives a
+ * poll but not a blip is not stable for the lifetime of the condition, it is stable for the
+ * lifetime of an uninterrupted breach — and the condition outlives the interruption. See
+ * the long note in `update()` for the flap this produced.
+ *
  * State is keyed by (host, type) — one ongoing condition per rule per host.
  */
 
@@ -26,8 +32,12 @@ interface TrackedCondition {
   id: string;
   /** Consecutive breaching samples. Emits once this reaches sustainedSamples. */
   consecutiveBreaches: number;
+  /** Consecutive NON-breaching samples. Clears once this reaches the same bar. */
+  consecutiveClears: number;
   /** When the breach was first OBSERVED. Drives the sustainedSeconds gate. */
   firstSeenAt: number;
+  /** The most recent breaching poll. Drives the clear-side sustainedSeconds gate. */
+  lastBreachAt: number;
   /** When the condition was first CONFIRMED (i.e. became a finding), not first seen. */
   confirmedAt: number | undefined;
   /** Latest verdict, refreshed each poll so values stay current. */
@@ -60,13 +70,38 @@ export class FindingRegistry {
   }
 
   /**
+   * The same two gates, applied to going away. See the header note on symmetry.
+   *
+   * Note it reads `lastBreachAt`, not `firstSeenAt` — the clock the clear side runs on is
+   * "how long since this was last true", which is what a viewer is judging.
+   */
+  #isCleared(condition: TrackedCondition, now: number): boolean {
+    return (
+      condition.consecutiveClears >= this.#sustainedSamples &&
+      now - condition.lastBreachAt >= this.#sustainedMs
+    );
+  }
+
+  /**
    * Apply one poll's verdicts for one host.
    *
    * `verdicts` must contain an entry for every rule that breached, and omit those that
-   * did not — omission is what clears a condition. Rules that returned null are
-   * absent, so we reset their counters.
+   * did not — omission is what clears a condition.
+   *
+   * `unmeasurable` names the rules whose inputs were absent this poll (`Rule.requires`),
+   * whose omission therefore means "cannot tell" rather than "not breaching". Those
+   * conditions HOLD: they neither advance toward clearing nor toward confirming.
+   *
+   * Required rather than defaulted to empty. A default would let a caller opt out of the
+   * distinction silently, which is the defect this argument exists to fix, and it would be
+   * a branch no test reaches — pass an empty set explicitly if there is nothing to hold.
    */
-  update(host: string, verdicts: readonly RuleVerdict[], now: number): void {
+  update(
+    host: string,
+    verdicts: readonly RuleVerdict[],
+    now: number,
+    unmeasurable: ReadonlySet<FindingType>,
+  ): void {
     const breaching = new Set(verdicts.map((v) => v.type));
 
     for (const verdict of verdicts) {
@@ -77,7 +112,9 @@ export class FindingRegistry {
         const fresh: TrackedCondition = {
           id: `f-${this.#nextId++}`,
           consecutiveBreaches: 1,
+          consecutiveClears: 0,
           firstSeenAt: now,
+          lastBreachAt: now,
           confirmedAt: undefined,
           verdict,
         };
@@ -88,6 +125,12 @@ export class FindingRegistry {
       }
 
       existing.consecutiveBreaches += 1;
+      existing.lastBreachAt = now;
+      // A breach ends any clear streak, so a blip costs the condition nothing. It does NOT
+      // reset firstSeenAt or confirmedAt: an already-confirmed condition that blipped is the
+      // same condition, and re-serving its confirmation clock would make one absent poll
+      // restart the sustained bar and delay the finding all over again.
+      existing.consecutiveClears = 0;
       // Refresh values so the finding shows current numbers, but never touch the id.
       existing.verdict = verdict;
       if (existing.confirmedAt === undefined && this.#isConfirmed(existing, now)) {
@@ -95,12 +138,43 @@ export class FindingRegistry {
       }
     }
 
-    // Anything tracked for this host that did NOT breach this poll is cleared outright.
-    // Resetting rather than decaying is deliberate: MVP §6 says *consecutive* samples.
+    // ---- What did NOT breach this poll -------------------------------------------------
+    //
+    // This is deliberately NOT the mirror image of appearing, in one respect and one only:
+    // an UNCONFIRMED condition still resets outright, because MVP §6 says *consecutive*
+    // samples and that rule governs appearance. A confirmed FINDING is different. It has
+    // been published, Dev B's UI has animated it in, and the contract (healthscan-api.md
+    // Q4) promises its id is stable for the lifetime of the condition. Retracting it on a
+    // single non-breaching poll made appearing cost two samples and disappearing cost one,
+    // and that asymmetry is the flap: a queue oscillating around the floor produced a
+    // finding, dropped it, and produced it again under a NEW id (`f-1000` -> gone -> the
+    // same condition back as `f-1001`), which reads to a viewer as findings appearing and
+    // vanishing with no cause. Reproduced against these defaults, not theorised.
+    //
+    // So clearing gets the same bar as confirming, from the same two knobs — no third
+    // tunable, because "how many samples before I believe this changed" is one question
+    // asked in both directions. sustainedSamples 1 / sustainedSeconds 0 still clears on the
+    // first non-breaching poll, i.e. the old behaviour exactly.
     for (const [key, condition] of [...this.#conditions]) {
       if (!key.startsWith(`${host}${SEP}`)) continue;
       if (breaching.has(condition.verdict.type)) continue;
-      this.#conditions.delete(key);
+
+      // "Cannot tell" is neither a breach nor a clear. Hold, and do not count the poll
+      // toward either gate — an instance that stops publishing a metric must not thereby
+      // retract a finding about it. See Rule.requires.
+      if (unmeasurable.has(condition.verdict.type)) continue;
+
+      if (condition.confirmedAt === undefined) {
+        this.#conditions.delete(key);
+        continue;
+      }
+
+      condition.consecutiveBreaches = 0;
+      condition.consecutiveClears += 1;
+      // While it holds, the finding keeps serving its last breaching numbers — there is no
+      // newer verdict to refresh from. One poll of slightly stale values is the price of
+      // not retracting a true finding, and it is bounded by the gates above.
+      if (this.#isCleared(condition, now)) this.#conditions.delete(key);
     }
   }
 
