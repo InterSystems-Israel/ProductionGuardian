@@ -286,6 +286,13 @@ Two consequences worth stating, because a consumer cannot see them from the reas
   wrong reason, since the contract defines that against the published `fitSampleCount` — the full
   window's count, which has already cleared `minFitSamples` by step 6.
 
+**A third path declines as `not_rising` too, defensively** — and predates the tail test. Once both
+slopes are positive, `secondsToThreshold` is computed; if it comes out non-finite or `<= 0`, step 6
+declines rather than publishing it. That state would mean the arithmetic disagreed with
+`already_crossed` one step earlier, so it should be unreachable — but publishing
+`secondsToThreshold: 0` is exactly the "zero reads as a measurement of now" case §1.4 forbids. A consumer needs no special handling: it is the same reason
+code with the same `null` projection.
+
 **The 40% is not configurable, deliberately.** ADR 0003 governs the numbers that decide what fires;
 this one says how much of the series the word "now" covers, which is the definition of "rising"
 rather than a threshold for it. A fraction rather than a duration for two reasons: it can never be

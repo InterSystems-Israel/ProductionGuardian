@@ -36,6 +36,11 @@ never published (so a positive `slope` alongside `projection: null` cannot occur
 tail declines as `not_rising` rather than `insufficient_samples`, which is defined against the full
 window's `fitSampleCount`.
 
+**One older undocumented path is written down at the same time**, found while checking the above: a
+non-finite or `<= 0` `secondsToThreshold` also declines as `not_rising`. It predates the tail test and
+should be unreachable — it would mean the arithmetic disagreed with `already_crossed` a step earlier —
+but it was the third way to reach step 6's reason code and the contract described only one.
+
 
 ## 2026-08-26 — clearing a finding takes the same bar as raising one (#149)
 
