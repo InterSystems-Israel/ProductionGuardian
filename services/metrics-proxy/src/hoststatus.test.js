@@ -301,3 +301,176 @@ describe('undescribedHosts — the direction a consumer feels (#36)', () => {
     assert.ok(!meta.undescribedHosts.includes('Ens.MonitorService'));
   });
 });
+
+/**
+ * `type` from the production's own configuration (#127).
+ *
+ * The `hosttype` label rides only on the avg_* families, so a host nothing has flowed
+ * through had no type and read `'unknown'` — 8 of 12 on the live instance. The status
+ * endpoint's `Type` column covers every host it enumerates, so it fills the gap.
+ *
+ * The two properties worth protecting, in order of how quietly each would fail:
+ *
+ *   1. **Fill only, never overwrite.** The metrics label stays authoritative, so this
+ *      cannot regress a type that was already resolved. That is what makes the change
+ *      structurally incapable of the regression `parser.test.js`'s
+ *      'leaves type unknown rather than guessing it from the host name' guards against.
+ *   2. **A host neither source types stays `'unknown'`.** `Ens.Alarm` is one live —
+ *      `EnumerateHostStatus` does not enumerate it. Naming it in `untypedHosts` is the
+ *      alternative to guessing.
+ */
+describe('type filled from EnumerateHostStatus (#127)', () => {
+  // The raw IRIS words, exactly as the live endpoint served them — see
+  // fixtures/hoststatus-live-capture-hosttype.json.
+  const body = (hosts) => JSON.stringify({
+    hosts, _meta: { erroredAvailable: true, productionState: 'Running' },
+  });
+  const entry = (host, hostType) => ({ host, hostType, status: 'OK', queued: 0, errored: 0, messageCount: 1 });
+
+  it('normalizes each raw IRIS word to the published vocabulary', () => {
+    const { byHost } = parseHostStatus(body([
+      entry('a', 'BusinessService'),
+      entry('b', 'BusinessOperation'),
+      entry('c', 'BusinessProcess'),
+      // `Actor` is a business process in IRIS, not a fourth kind of host.
+      entry('d', 'Actor'),
+    ]));
+    assert.equal(byHost.get('a').hostType, 'service');
+    assert.equal(byHost.get('b').hostType, 'operation');
+    assert.equal(byHost.get('c').hostType, 'process');
+    assert.equal(byHost.get('d').hostType, 'process');
+  });
+
+  it('reads an absent, empty or unrecognized hostType as null, never as "unknown"', () => {
+    // null is "this source has no opinion"; 'unknown' is a claim about the host. An older
+    // dispatcher predating this field must leave the metrics value standing.
+    const { byHost } = parseHostStatus(body([
+      { host: 'legacy', status: 'OK', queued: 0, errored: 0, messageCount: 1 },
+      entry('empty', ''),
+      entry('nonsense', 'BusinessSomethingElse'),
+      entry('notastring', 7),
+    ]));
+    for (const name of ['legacy', 'empty', 'nonsense', 'notastring']) {
+      assert.equal(byHost.get(name).hostType, null, `${name} must be null`);
+    }
+  });
+
+  it('fills a type the metrics text could not supply', () => {
+    // The bug: no avg_* line for these hosts, so no `hosttype` label at all.
+    const before = snapshotWithHosts('Ens.Actor', 'Ens.ScheduleService');
+    assert.equal(before.hosts[0].type, 'unknown');
+    assert.equal(before.hosts[1].type, 'unknown');
+
+    const after = mergeHostStatus(before, parseHostStatus(body([
+      entry('Ens.Actor', 'Actor'),
+      entry('Ens.ScheduleService', 'BusinessService'),
+    ])));
+    assert.equal(after.hosts.find(h => h.host === 'Ens.Actor').type, 'process');
+    assert.equal(after.hosts.find(h => h.host === 'Ens.ScheduleService').type, 'service');
+    assert.equal(after._meta.hostStatus.typesFilled, 2);
+    assert.deepEqual(after._meta.hostStatus.untypedHosts, []);
+  });
+
+  it('NEVER overwrites a type the metrics text already resolved', () => {
+    // The zero-regression guarantee. Even when the two sources disagree outright, the
+    // metrics label wins — so no host that was typed correctly can become typed wrongly.
+    const text = 'iris_interop_hosts{id="LABDEMO",status="OK",host="Cloud API",'
+      + 'production="P"} 1\n'
+      + 'iris_interop_avg_processing_time{id="LABDEMO",host="Cloud API",'
+      + 'hosttype="bo",production="P"} 0.9';
+    const before = buildSnapshot(parsePrometheusText(text), '2026-08-26T13:00:00.000Z');
+    assert.equal(before.hosts[0].type, 'operation');
+
+    const after = mergeHostStatus(before,
+      parseHostStatus(body([entry('Cloud API', 'BusinessService')])));
+    assert.equal(after.hosts[0].type, 'operation');
+    assert.equal(after._meta.hostStatus.typesFilled, 0);
+  });
+
+  it('keeps a disagreement visible instead of resolving it silently', () => {
+    // Same shape as `statusFromMetrics`: the loser of the disagreement is recorded on the
+    // host rather than dropped, and named in _meta so it is countable.
+    const text = 'iris_interop_hosts{id="LABDEMO",status="OK",host="Cloud API",'
+      + 'production="P"} 1\n'
+      + 'iris_interop_avg_processing_time{id="LABDEMO",host="Cloud API",'
+      + 'hosttype="bo",production="P"} 0.9';
+    const after = mergeHostStatus(
+      buildSnapshot(parsePrometheusText(text), '2026-08-26T13:00:00.000Z'),
+      parseHostStatus(body([entry('Cloud API', 'BusinessService')])));
+    assert.equal(after.hosts[0].typeFromConfig, 'service');
+    assert.deepEqual(after._meta.hostStatus.typeDisagreements, [
+      { host: 'Cloud API', fromMetrics: 'operation', fromConfig: 'service' },
+    ]);
+  });
+
+  it('adds no typeFromConfig when the two sources agree', () => {
+    const text = 'iris_interop_hosts{id="LABDEMO",status="OK",host="Cloud API",'
+      + 'production="P"} 1\n'
+      + 'iris_interop_avg_processing_time{id="LABDEMO",host="Cloud API",'
+      + 'hosttype="bo",production="P"} 0.9';
+    const after = mergeHostStatus(
+      buildSnapshot(parsePrometheusText(text), '2026-08-26T13:00:00.000Z'),
+      parseHostStatus(body([entry('Cloud API', 'BusinessOperation')])));
+    assert.ok(!('typeFromConfig' in after.hosts[0]));
+    assert.deepEqual(after._meta.hostStatus.typeDisagreements, []);
+  });
+
+  it('names a host neither source can type rather than guessing one', () => {
+    // Ens.Alarm live: in the metrics text with no avg_* line, and not enumerated by
+    // EnumerateHostStatus. It stays unknown, and says so.
+    const after = mergeHostStatus(
+      snapshotWithHosts('Ens.Actor', 'Ens.Alarm'),
+      parseHostStatus(body([entry('Ens.Actor', 'Actor')])));
+    assert.equal(after.hosts.find(h => h.host === 'Ens.Alarm').type, 'unknown');
+    assert.deepEqual(after._meta.hostStatus.untypedHosts, ['Ens.Alarm']);
+  });
+
+  it('publishes no type at all rather than undefined for a hand-built byHost', () => {
+    // The internal contract between parseHostStatus and mergeHostStatus: byHost entries
+    // built by anything else (a caller, a fixture) must not be able to set type undefined.
+    const after = mergeHostStatus(snapshotWithHosts('Cloud API'), {
+      byHost: new Map([['Cloud API', { status: 'OK', queued: 0, errored: 0, messageCount: 1 }]]),
+      _meta: { erroredAvailable: true },
+    });
+    assert.equal(after.hosts[0].type, 'unknown');
+    assert.equal(after._meta.hostStatus.typesFilled, 0);
+  });
+});
+
+/**
+ * The same thing against the real capture, so the coverage above is not only synthetic.
+ * `hoststatus-live-capture-hosttype.json` is the body the endpoint served over HTTP after
+ * #127 added the field — see fixtures/README.md.
+ */
+describe('type from the real post-#127 capture', () => {
+  const capture = fs.readFileSync(
+    path.join(FIXTURES, 'hoststatus-live-capture-hosttype.json'), 'utf8');
+
+  it('types every host the endpoint described', () => {
+    const { byHost } = parseHostStatus(capture);
+    assert.equal(byHost.size, 10);
+    for (const [name, state] of byHost) {
+      assert.ok(['service', 'operation', 'process'].includes(state.hostType),
+        `${name} resolved to ${state.hostType}`);
+    }
+  });
+
+  it('drops the unknown count on the hosts the metrics capture leaves untyped', () => {
+    const metricsText = fs.readFileSync(
+      path.join(FIXTURES, 'metrics-live-capture-3host.txt'), 'utf8');
+    const before = buildSnapshot(parsePrometheusText(metricsText), '2026-08-26T13:00:00.000Z');
+    const unknownBefore = before.hosts.filter(h => h.type === 'unknown').map(h => h.host);
+    // Precondition: the capture really does leave most of the roster untyped.
+    assert.ok(unknownBefore.length > 1, `expected several untyped, got ${unknownBefore.length}`);
+
+    const after = mergeHostStatus(before, parseHostStatus(capture));
+    const unknownAfter = after.hosts.filter(h => h.type === 'unknown').map(h => h.host);
+    assert.ok(unknownAfter.length < unknownBefore.length,
+      `${unknownBefore.length} -> ${unknownAfter.length}`);
+    assert.deepEqual(unknownAfter, after._meta.hostStatus.untypedHosts);
+    // Nothing that was typed lost or changed its type.
+    for (const host of before.hosts.filter(h => h.type !== 'unknown')) {
+      assert.equal(after.hosts.find(h => h.host === host.host).type, host.type);
+    }
+  });
+});

@@ -11,6 +11,7 @@ them. Committed so every developer mocks against the same bytes (ADR 0004).
 | `hoststatus-live-capture.json` | **Real, and the mock default for per-host queued/errored.** Body served over HTTP by `/labdemo/monitor/hoststatus` from live LABDEMO, IRIS for Health 2026.1, captured 2026-08-12. 13 hosts, 4 application, production `Running`. See below. |
 | `metrics-live-capture-3host.txt` | **Real, and the only capture taken from the production this repo defines.** 1383 lines, IRIS for Health 2026.1, captured 2026-08-12 with the generator running, immediately after `ProductionGuardian.LabDemo.Production` was first deployed (#34). 12 hosts, 3 application. Carries all four signals the earlier 3-host capture lacked — see below. |
 | `hoststatus-live-capture-3host.json` | **Real.** `/labdemo/monitor/hoststatus` from the same production, same moment. 10 hosts, 3 application, production `Running`. |
+| `hoststatus-live-capture-hosttype.json` | **Real, and the only capture carrying `hostType`.** `/labdemo/monitor/hoststatus` from `ProductionGuardian.LabDemo.Production`, IRIS for Health 2026.1, captured 2026-08-26 immediately after #127 added the field. 10 hosts, production `Running`. See below. |
 | `metrics.txt` | Hand-trimmed 3-host excerpt in the real label shape. Small enough to reason about; `MOCK_FIXTURE=metrics.txt npm run mock` serves it. |
 | `alerts.json` | **Hand-written, and its field names are wrong** — see below. |
 
@@ -121,6 +122,37 @@ unverified milestone — note `absoluteFloor: 50` in the engine's thresholds.
 
 `MOCK_HOSTSTATUS=` (empty) serves the mock without it, reproducing the old
 `queued: null` behaviour for an instance where the endpoint is not deployed.
+
+## `hoststatus-live-capture-hosttype.json` — where most of `type` comes from (#127)
+
+The earlier host-status captures **predate `hostType` and are kept unchanged**, since they are
+bodies an endpoint actually served and back-filling a field into one would make it a hand-written
+approximation wearing a real capture's provenance. This is the re-capture, taken after
+`HostStatusDispatcher` started publishing the column.
+
+`hostType` is the **raw IRIS word** from `EnumerateHostStatus`'s `Type` column, uninterpreted:
+`BusinessService`, `BusinessOperation`, `BusinessProcess`, `Actor`. The proxy folds it into the
+published `service`/`operation`/`process` vocabulary; IRIS does not, so that mapping lives in exactly
+one place (`_hostType()` in `src/parser.js`).
+
+Why the field exists: the `hosttype` **label** rides only on the `avg_*` metric families, so a host
+nothing has flowed through carried no type and `type` read `'unknown'` — 8 of 12 hosts on this
+production. This column covers every host the query enumerates, activity or not. The fill is
+strictly additive (only where the metrics-derived type is `unknown`), so it cannot regress a type
+that was already right.
+
+**Two things in this capture are worth knowing are real, and one is a genuine gap.** `Ens.Actor`
+reports `Actor` — the one host that exercises the `Actor → process` mapping. `Cloud API` reports
+`errored: 813`, a real backlog from a pool-bottleneck experiment running at capture time, not a
+healthy production. And **`Ens.Alarm` is absent from this payload entirely**: the query does not
+enumerate it, so it is the one host in the metrics text that neither source can type and it stays
+`unknown`. That is not a defect to fix here — it is what `_meta.hostStatus.untypedHosts` reports.
+
+This capture is **not** the mock default. `hoststatus-live-capture.json` still is, paired with
+`metrics-live-capture.txt`, so the mock keeps reproducing the pre-#127 endpoint — which is also a
+real deployment state, since an instance whose dispatcher predates the field sends no `hostType` and
+must degrade to the old `unknown` behaviour. Serve this one instead with
+`MOCK_HOSTSTATUS=hoststatus-live-capture-hosttype.json npm run mock`.
 
 ## `/api/monitor/alerts` is consume-on-read
 

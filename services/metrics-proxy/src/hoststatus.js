@@ -1,5 +1,13 @@
 'use strict';
 
+// The one host-type vocabulary mapping, shared rather than copied — the raw IRIS words
+// this endpoint reports (`BusinessOperation`, `Actor`, …) are folded there alongside the
+// `hosttype` label values, so the two sources cannot drift into two vocabularies.
+const { _hostType } = require('./parser');
+
+/** The published `type` vocabulary. `unknown` is deliberately not in it — see typeOrNull. */
+const PUBLISHED_TYPES = new Set(['service', 'operation', 'process']);
+
 /**
  * hoststatus.js — the /labdemo/monitor/hoststatus payload → per-host state to merge.
  *
@@ -32,6 +40,21 @@
  * The same invariant the parser holds applies here. A host this endpoint did not
  * describe keeps `queued: null` / `errored: null` rather than becoming 0 — an
  * unmeasured host must never read as a drained one. See parser.js's header note.
+ *
+ * IT ALSO SUPPLIES `type`, FOR THE SAME REASON
+ *
+ * The `hosttype` label rides only on the avg_* metric families, so a host that nothing
+ * has flowed through carries no type at all and `type` stayed `'unknown'` — 8 of 12 hosts
+ * on the live instance (#127). `EnumerateHostStatus` has a `Type` column for every host it
+ * enumerates, activity or not, so the endpoint publishes it as `hostType` and it is folded
+ * in here.
+ *
+ * Reading the production's own configuration is not the same as guessing from the host
+ * name (`parser.test.js`'s 'leaves type unknown rather than guessing it'), so the fill is
+ * strictly additive: it lands ONLY where the metrics-derived type is still `'unknown'`,
+ * and never overwrites a known one. That makes the change incapable of regressing a type
+ * that was already right, and it keeps the metrics text authoritative for `type` in the
+ * same way `EnumerateHostStatus` is authoritative for `status`.
  */
 
 /**
@@ -76,6 +99,12 @@ function parseHostStatus(body, polledAt) {
     if (typeof entry.host !== 'string' || entry.host === '') { skipped += 1; continue; }
     byHost.set(entry.host, {
       status: typeof entry.status === 'string' ? entry.status : null,
+      // Normalized to the published vocabulary here, at the boundary, so the raw IRIS
+      // word never reaches a consumer. `null` — not `'unknown'` — when the endpoint sent
+      // no type (an older dispatcher predating #127, or an empty `Type` column): the
+      // merge must be able to tell "this source has no opinion" from "this source says
+      // it is untyped", and only the first should leave the metrics value standing.
+      hostType: typeOrNull(entry.hostType),
       queued: numberOrNull(entry.queued),
       errored: numberOrNull(entry.errored),
       messageCount: numberOrNull(entry.messageCount),
@@ -109,6 +138,19 @@ function numberOrNull(value) {
 }
 
 /**
+ * A raw IRIS host-type word → the published vocabulary, or null.
+ *
+ * Null covers both "the field was absent" and "the word was one this build does not
+ * recognize". Both mean the same thing to the merge — no opinion — and neither may become
+ * `'unknown'`, because `'unknown'` is a value a consumer reads as a fact about the host.
+ */
+function typeOrNull(value) {
+  if (typeof value !== 'string' || value === '') return null;
+  const mapped = _hostType({ hosttype: value });
+  return mapped === 'unknown' ? null : mapped;
+}
+
+/**
  * Merge host-status values into a metrics snapshot, by exact host name.
  *
  * Mutates nothing: returns a new snapshot with the merged hosts and merge diagnostics
@@ -137,13 +179,42 @@ function mergeHostStatus(snapshot, hostStatus) {
 
   const { byHost, _meta: statusMeta } = hostStatus;
   let merged = 0;
+  let typesFilled = 0;
+  const typeDisagreements = [];
 
   const hosts = snapshot.hosts.map((host) => {
     const state = byHost.get(host.host);
     if (!state) return host;   // leave queued/errored null — absent is not zero
     merged += 1;
+
+    // FILL ONLY, NEVER OVERWRITE (#127).
+    //
+    // The metrics `hosttype` label stays authoritative wherever it exists, so this cannot
+    // regress a type that was already resolved — the only hosts it can change are the ones
+    // reading `'unknown'`. Where the two sources have a type and disagree, the metrics one
+    // is kept and the config one is recorded, exactly as `statusFromMetrics` below records
+    // the loser of the `status` disagreement instead of dropping it. A disagreement means
+    // one of the two is reading a stale or misattributed host, which is worth seeing.
+    // Re-checked against the published vocabulary rather than trusted: `parseHostStatus`
+    // already normalized it, but a caller can hand-build `byHost` (the tests do), and an
+    // `undefined` slipping through a `!== null` test would publish `type: undefined`.
+    const configType = PUBLISHED_TYPES.has(state.hostType) ? state.hostType : null;
+
+    const fillType = configType !== null && host.type === 'unknown';
+    if (fillType) typesFilled += 1;
+    const typeDisagrees = configType !== null
+      && host.type !== 'unknown'
+      && configType !== host.type;
+    if (typeDisagrees) {
+      typeDisagreements.push({
+        host: host.host, fromMetrics: host.type, fromConfig: configType,
+      });
+    }
+
     return {
       ...host,
+      type: fillType ? configType : host.type,
+      ...(typeDisagrees ? { typeFromConfig: configType } : {}),
       queued: state.queued,
       // Only overwrite when the endpoint actually had counts. Otherwise the metrics
       // side's null stands, rather than being replaced by a fabricated 0.
@@ -182,12 +253,28 @@ function mergeHostStatus(snapshot, hostStatus) {
     .filter((host) => !host.isFramework && !byHost.has(host.host))
     .map((host) => host.host);
 
+  // Hosts still typed `unknown` after the fill — i.e. in the metrics text with no
+  // `hosttype` label AND not described by the status endpoint (or described without a
+  // `Type`). Named rather than guessed at: `Ens.Alarm` is one on the live instance, since
+  // `EnumerateHostStatus` does not enumerate it. Framework hosts are included here, unlike
+  // `undescribedHosts` above, because this list is about type coverage rather than about a
+  // host losing its numbers.
+  const untypedHosts = hosts.filter((host) => host.type === 'unknown').map((h) => h.host);
+
   return {
     ...snapshot,
     hosts,
     _meta: {
       ...snapshot._meta,
-      hostStatus: { ...statusMeta, merged, unmatchedHosts, undescribedHosts },
+      hostStatus: {
+        ...statusMeta,
+        merged,
+        unmatchedHosts,
+        undescribedHosts,
+        typesFilled,
+        typeDisagreements,
+        untypedHosts,
+      },
     },
   };
 }
