@@ -327,17 +327,26 @@ ClassMethod EnableMetrics() As %Status
 
 /// Apply the three settings that depend on the deployment, from overridable globals.
 ///
-/// `Production.cls` ships `webgateway-webinar:80`, which is the verified instance's web
-/// gateway CONTAINER NAME -- correct there and meaningless anywhere else. #72 asks for that
-/// literal to become a compose service name; this is the mechanism that makes it settable
-/// without editing the production, and it is what a container's first boot would call.
+/// `Production.cls` NOW SHIPS `127.0.0.1:52773`, the compose stack's own embedded web server,
+/// so on this stack this method has nothing to correct -- the globals iris-firstboot.sh sets
+/// already match the shipped values. That is deliberate: it used to ship
+/// `webgateway-webinar:80` (the separate demo instance's gateway CONTAINER NAME, which shares
+/// no docker network with this stack and so never resolved here), and this method was the only
+/// thing making the production work. A deployment whose correctness depends on an override
+/// being re-applied is one revert away from broken, which is what #96 and the "findings come
+/// and go" report both were. See the HTTPServer comment in `Production.cls` for the
+/// measurements.
+///
+/// SO THIS IS NOW AN OVERRIDE, NOT A REPAIR, and it still earns its place: an instance that
+/// really is gateway-fronted (the demo instance, #72) sets the globals and gets its own target
+/// without editing the production.
 ///
 ///   set ^ProductionGuardian.Setup("HTTPServer") = "webgateway"
 ///   set ^ProductionGuardian.Setup("HTTPPort")   = 80
 ///
-/// Absent globals leave the shipped values alone, so this is a no-op on the verified
-/// instance -- deliberately, because silently rewriting a working deployment is the defect
-/// Reset() had in #66.
+/// Absent globals leave the shipped values alone -- deliberately, because silently rewriting a
+/// working deployment is the defect Reset() had in #66. That default is now a working target
+/// rather than an unreachable one.
 ClassMethod ApplyDeploymentSettings() As %Status
 {
     set server = $get(^ProductionGuardian.Setup("HTTPServer"), "")
@@ -395,10 +404,16 @@ ClassMethod ApplyDeploymentSettings() As %Status
 /// because nothing is being delivered at all. #96 lost real time to it in that order.
 ///
 /// BOTH SETTINGS REVERT, and #96 says only the port does. Corrected here because the wrong version
-/// sends the next reader looking for adapter fallback behaviour that does not exist:
-/// `Production.cls` ships `HTTPServer` as `webgateway-webinar` (line 99), not `127.0.0.1`. So the
-/// hostname in that error is not a red herring and not a fallback -- it is exactly what a recompile
-/// restored. The error message was accurate; the configuration was wrong.
+/// sends the next reader looking for adapter fallback behaviour that does not exist: the hostname in
+/// that error was not a red herring and not a fallback -- it was exactly what a recompile restored,
+/// because `Production.cls` shipped `webgateway-webinar` at the time. The error message was
+/// accurate; the configuration was wrong.
+///
+/// THE SHIPPED VALUE HAS SINCE BEEN FIXED to `127.0.0.1:52773`, so on this stack a revert now lands
+/// on a working target and the error above should no longer be reachable. This check is kept rather
+/// than deleted for two reasons: it still guards a gateway-fronted deployment, where shipped and
+/// intended genuinely differ and a revert is still silent breakage; and it is the only thing that
+/// would report the drift if the shipped default drifts again.
 ///
 /// REPORTS, DOES NOT REPAIR. Re-applying silently would hide how often this happens, and a boot that
 /// quietly corrects a drift teaches nobody. `Run()` calls this last so a boot ends by confirming the

@@ -65,9 +65,11 @@ class.
 | Allowed authentication | Password (or Unauthenticated for local demo) |
 
 **The port is whichever web server fronts your instance — do not assume 52773.** That is the
-private web server, and it is not always published. On the instance this was verified against
-(`irishealth` behind a `webgateway` container) the only HTTP port is **80**, and 52773 refuses the
-connection outright. Use the same host and port that serve `/api/monitor/metrics` in your browser —
+private web server, and it is not always published. **On this repo's compose stack it *is* 52773**:
+the AI Hub image serves HTTP itself and there is no gateway service, which is why `Production.cls`
+targets `127.0.0.1:52773`. On the older instance this section was verified against (`irishealth`
+behind a `webgateway` container) the only HTTP port is **80**, and 52773 refuses the connection
+outright. Both are real; the point is that it depends on the deployment, so check rather than copy. Use the same host and port that serve `/api/monitor/metrics` in your browser —
 it is the same web server, and the proxy reaches both through one `IRIS_HOST`/`IRIS_PORT` pair.
 
 Verified on that instance, port 80:
@@ -133,13 +135,19 @@ chown -R irisowner:irisowner /tmp/labdemo
 ```
 
 **`Cloud API` must target the web server that fronts the instance, as reached from inside
-it.** `Production.cls` ships `webgateway-webinar:80`, which is specific to the verified
-setup. The old default of `127.0.0.1:52773` assumed a private web server in the same
-container; where there is none, every message fails and the operation sits in `Retry`:
+it.** `Production.cls` ships `127.0.0.1:52773` — the compose stack's IRIS container serves
+HTTP itself, so the target is in the same container and there is no gateway service. It
+briefly shipped `webgateway-webinar:80` instead, which was the *separate* demo instance's
+gateway container: it shares no docker network with this stack, so it never resolved here and
+`Cloud API` only worked while a first-boot override happened to still be in place. Either way
+the failure looks the same — every message fails and the operation sits in `Retry`:
 
 ```
 ERROR #6059: Unable to open TCP/IP socket to server 127.0.0.1:52773
 ```
+
+so **read the hostname in that error**: it names the target actually configured, which is the
+fastest way to tell a wrong setting from a dead web server.
 
 Confirm what actually listens before trusting a port — on the verified instance the IRIS
 container publishes only the superserver on `1972`, and the web gateway is a *separate*

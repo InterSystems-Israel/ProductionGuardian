@@ -76,16 +76,24 @@ OBJECTSCRIPT
 # Then the nine steps, in one call. Compile from the read-only source mount so a class
 # change is a restart rather than an image rebuild.
 #
-# SET THE DEPLOYMENT GLOBALS FIRST. Production.cls ships HTTPServer=webgateway-webinar --
-# the verified demo instance's web gateway container name, which does not resolve on the
-# compose network. ApplyDeploymentSettings() exists precisely to override it, but it is a
-# no-op unless these globals are set BEFORE Run() reaches step 6b, and nothing set them:
-# the first clean compose run printed "6b. deployment settings: none set" and Cloud API then
-# sat in Retry with 151 messages queued while every other host read OK.
+# SET THE DEPLOYMENT GLOBALS FIRST. These are now an OVERRIDE rather than a repair:
+# Production.cls ships HTTPServer=127.0.0.1 and HTTPPort=52773, the same values defaulted
+# below, so on this stack step 6b confirms the target instead of rescuing it.
+#
+# IT USED TO BE A REPAIR, AND THAT IS WHY THE GLOBALS ARE STILL SET HERE. Production.cls
+# shipped HTTPServer=webgateway-webinar, the separate demo instance's web gateway container
+# name, which shares no docker network with this stack and so never resolved here.
+# ApplyDeploymentSettings() was the only thing making Cloud API work, and it is a no-op
+# unless these globals are set BEFORE Run() reaches step 6b -- nothing set them, so the
+# first clean compose run printed "6b. deployment settings: none set" and Cloud API sat in
+# Retry with 151 messages queued while every other host read OK.
 #
 # That failure is quiet in the way that matters -- the production runs, metrics flow, the
 # dashboard renders three hosts, and the only clue is one host retrying against a hostname
-# that never existed here.
+# that never existed here. Worse, this script is marker-gated, so the rescue happened once
+# per volume and any later revert to the shipped value was permanent and invisible: that is
+# the "findings appear and disappear with no clear cause" report. Fixing the shipped default
+# is what closed it; keeping these globals keeps a gateway-fronted deployment configurable.
 #
 # THE TARGET IS THIS CONTAINER'S OWN EMBEDDED APACHE. Cloud API runs inside IRIS and the
 # private web server is in the same container, so 127.0.0.1:52773 is both correct and one
