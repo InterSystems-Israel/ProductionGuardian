@@ -100,24 +100,69 @@ XData ProductionDefinition
         LogTraceEvents="false"
         Schedule="">
     <!-- HTTPServer/HTTPPort must name the WEB SERVER that fronts this instance, reached
-         from INSIDE the IRIS container. 127.0.0.1:52773 assumed a private web server in
-         the same container; on the verified instance nothing listens there at all (only
-         the superserver on 1972), so every message failed with
+         from INSIDE the IRIS container. This is the SHIPPED value, and what a recompile
+         restores, which is the whole reason it now has to be the working one.
 
-           ERROR #6059: Unable to open TCP/IP socket to server 127.0.0.1:52773
+         THIS SHIPPED `webgateway-webinar:80`, WHICH CAN NEVER RESOLVE FROM THIS STACK.
+         That container belongs to a separate compose project. Measured, with it present
+         on the host:
 
-         and Cloud API sat in Retry having processed zero messages. Same wrong-port
-         assumption as the one corrected in README.md (#48), this time in code (#34).
+           pg-iris networks            ->  production-guardian_default only
+           webgateway-webinar networks ->  iris_default
+           getent hosts webgateway-webinar        ->  no result
+           %Net.HttpRequest to webgateway-webinar ->  #6059 Unable to open TCP/IP socket
 
-         Credentials are REQUIRED: through an external web gateway the REST app answers
-         403 to an unauthenticated request even when /labdemo allows unauthenticated
-         access locally. Verified both ways from inside the container — 403 without,
-         200 {"count":0} with.
+         They share no network, so whether that container is running changes NOTHING here.
+         Do not record this as a dependency on another stack; it is not one.
 
-         Override all three per environment in the Management Portal rather than editing
-         this file; they are the only settings here that depend on the deployment. -->
-    <Setting Target="Adapter" Name="HTTPServer">webgateway-webinar</Setting>
-    <Setting Target="Adapter" Name="HTTPPort">80</Setting>
+         WHY THE VALUE FLAPPED, AND WITH IT THE FINDINGS. Nothing in the repo made this value
+         work; a separate override did. FirstBoot.ApplyDeploymentSettings() rewrites it at
+         first boot from ^ProductionGuardian.Setup, which docker/iris-firstboot.sh sets to
+         127.0.0.1:52773 — so a clean volume delivered and any instance that lost the override
+         did not. That override is marker-gated and never re-applied, and #96 measured it being
+         discarded by a recompile (52773 before, 80 after `ck-d`), leaving Cloud API in Retry
+         with the #6059 above. The result is a target that is correct or broken depending on
+         history no one can see from the file, which is the "findings come and go" report.
+
+         WHAT WAS NOT REPRODUCED, so the next reader does not trust one trigger too far: on a
+         RUNNING production, neither `$system.OBJ.Compile(...,"ck-d")` nor a subsequent
+         UpdateProduction() moved the stored value back to the XData below — the override
+         survived both. So a recompile is a demonstrated way to lose it, not the only way and
+         not a reliable way to demonstrate it. The fix does not depend on knowing the trigger.
+
+         CheckDeploymentTarget() already detects this drift and deliberately only REPORTS it.
+         Making the SHIPPED value the working one removes the drift at the source: whatever
+         reverts to XData now reverts to something that works, and shipped and override agree
+         so there is nothing to report in the default deployment. The override mechanism stays
+         for a deployment that really is gateway-fronted (the demo instance) — it is now an
+         override rather than a repair.
+
+         WHY THE LOOPBACK IS RIGHT AGAIN. #34 moved off 127.0.0.1:52773 because nothing was
+         listening there and every message failed with #6059 on that port. True of the image
+         then, not of the AI Hub image this project ships now. Measured in the running
+         container:
+
+           netstat: tcp 0.0.0.0:52773 LISTEN
+           %Net.HttpRequest localhost:52773 /labdemo/patients -> HTTP 403
+           %Net.HttpRequest pg-iris:52773   /labdemo/patients -> HTTP 403
+
+         403 is the CORRECT answer to an unauthenticated request and is what the Credentials
+         setting below satisfies. So the premise of #34's fix expired when the image changed
+         while the workaround it introduced survived, which is why the measurement is
+         recorded here rather than summarised.
+
+         `127.0.0.1` rather than `localhost` or `pg-iris`, for two reasons: it is the literal
+         PG_IRIS_HTTP_SERVER default in docker/iris-firstboot.sh, so shipped and override now
+         agree and a recompile is a no-op; and the listener above is IPv4-only, so a name that
+         resolves to ::1 first would fail where the address cannot.
+
+         Credentials are REQUIRED: the REST app answers 403 unauthenticated. Verified both ways
+         from inside the container.
+
+         Override per environment via ^ProductionGuardian.Setup or the Management Portal rather
+         than editing this file; these are the only settings here that depend on the deployment. -->
+    <Setting Target="Adapter" Name="HTTPServer">127.0.0.1</Setting>
+    <Setting Target="Adapter" Name="HTTPPort">52773</Setting>
     <Setting Target="Adapter" Name="Credentials">LabDemoREST</Setting>
     <Setting Target="Adapter" Name="URL">/labdemo/patients</Setting>
   </Item>
