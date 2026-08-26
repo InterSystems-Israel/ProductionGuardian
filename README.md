@@ -37,7 +37,9 @@ substitution — the log pipelines and the JSON POSTs — are paired at the poin
 | this README says | PowerShell |
 |---|---|
 | `export PG_AGENT_MODE=live` | `$env:PG_AGENT_MODE = 'live'` |
+| `VAR=value <cmd>` (one command only) | `$env:VAR = 'value'` on its own line, then `<cmd>` — **and it stays set**, see below |
 | `… \| grep pg-firstboot` | `… \| Select-String pg-firstboot` |
+| `grep -rn "pattern" src/` | `Get-ChildItem -Recurse src \| Select-String "pattern"` — **not** `Select-String -r`, which has no such switch |
 | `curl -s <url>` | `curl.exe -s <url>` |
 | `curl -XPOST … -d '{…}'` | `curl.exe --% -XPOST … -d "{…}"` — one line, no variables |
 
@@ -45,6 +47,25 @@ substitution — the log pipelines and the JSON POSTs — are paired at the poin
 already bit us once from the shell side: an exported variable does not reach a container unless
 compose passes it (`docker-compose.yml` says so where `PG_LLM_API_KEY` is declared). A
 `$env:PG_LLM_API_KEY = 'sk-…'` set in the same window does show up in `docker compose config`.
+
+**There is no one-shot `VAR=value <cmd>` in PowerShell, and the replacement is not one-shot.**
+This is the translation the area READMEs need most — `PROXY_MODE=live npm start`,
+`POLL_INTERVAL_MS=2000 npm start`, `MOCK_FIXTURE=metrics.txt npm run mock` are all written in the
+POSIX form. PowerShell parses the prefix as the *command name*, so it fails with
+`The term 'POLL_INTERVAL_MS=2000' is not recognized as the name of a cmdlet` — which reads as a
+missing program rather than a shell difference. Set it on its own line instead:
+
+```powershell
+$env:PROXY_MODE = 'live'
+npm start
+```
+
+**The variable then persists for the rest of that window**, which the POSIX prefix does not, and
+that difference bites in one specific way: a `$env:POLL_INTERVAL_MS = '2000'` set to watch one
+appear-and-clear cycle is still set the next time you run `npm start` in the same terminal, so the
+engine quietly stays at a compressed poll rate with the invariants that rate breaks. Clear it with
+`Remove-Item Env:\POLL_INTERVAL_MS`, or open a new window. Verified both ways, since "it persists"
+is only useful advice if the undo is stated with it.
 
 **`curl.exe`, never `curl`.** In PowerShell 5.1 — the version that ships — `curl` is an alias
 for `Invoke-WebRequest`, so `curl -s <url>` fails with `Cannot process command because of one or

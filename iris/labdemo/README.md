@@ -15,6 +15,16 @@ proxy JSON, and in the dashboard, so use them verbatim when reasoning about find
 Class names (`PatientDemographicsOperation`) differ from config item names (`Cloud API`);
 the `<Item Name="...">` set in `Production.cls` is authoritative.
 
+**On Windows:** the ObjectScript in this file is shell-independent — it runs in an IRIS Terminal
+either way, and `Triggers` calls need no translation. The `curl` lines do: in the PowerShell that
+ships with Windows, `curl` is an alias for `Invoke-WebRequest`, so **`curl.exe`** is needed for
+every one of them. `-u user:pass` is the flag that makes this obvious rather than silent: the alias
+answers *"Parameter cannot be processed because the parameter name 'u' is ambiguous"* and lists four
+of its own parameters, which names PowerShell as the culprit. `-s` does not — it binds to
+`-SessionVariable` and the call goes on to prompt for a `Uri`, which reads as a hang. Git Bash has
+the real `curl` and needs nothing. Root `README.md` → *On Windows* is the one place the full
+translation table lives; it is not repeated here.
+
 ---
 
 ## File inventory

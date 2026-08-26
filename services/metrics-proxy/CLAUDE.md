@@ -142,6 +142,17 @@ To confirm the failure detection actually works, misconfigure it on purpose:
 IRIS_BASE_PATH=wrongprefix npm start   # note: no leading slash — Git Bash rewrites /wrongprefix
 ```
 
+```powershell
+# PowerShell has no one-shot prefix, and no path rewriting either -- the leading slash is fine here
+$env:IRIS_BASE_PATH = '/wrongprefix'
+npm start
+Remove-Item Env:\IRIS_BASE_PATH   # it persists for the window; the POSIX prefix does not
+```
+
+**Clearing it is the point of that last line.** This is a deliberate misconfiguration, so leaving it
+set means the *next* `npm start` in that terminal also 404s every poll — and the symptom, health
+stuck at `starting`, is identical to a real broken instance.
+
 A wrong prefix 404s, so no poll ever completes: smoke fails 7 of 15 and exits 1, starting
 with `a poll has completed — status: starting`. Drop `IRIS_BASE_PATH` entirely instead and
 you get the 200-with-no-interop case, where health reports

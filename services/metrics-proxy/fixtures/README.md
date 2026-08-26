@@ -3,6 +3,14 @@
 Captures from a live IRIS instance, plus the smaller hand-written excerpts that predate
 them. Committed so every developer mocks against the same bytes (ADR 0004).
 
+**Selecting a fixture on Windows.** The `MOCK_FIXTURE=… npm run mock` and
+`MOCK_HOSTSTATUS=… npm run mock` forms below are POSIX; PowerShell reads the prefix as the command
+name and fails with `The term 'MOCK_FIXTURE=metrics.txt' is not recognized`. Two lines instead —
+`$env:MOCK_FIXTURE = 'metrics.txt'`, then `npm run mock` — and **clear it afterwards**
+(`Remove-Item Env:\MOCK_FIXTURE`), because unlike the POSIX prefix it stays set for the window and
+the next `npm run mock` in that terminal keeps serving the trimmed excerpt while looking like the
+default. Root `README.md` → *On Windows* has the whole table.
+
 | File | Provenance |
 |---|---|
 | `metrics-live-capture.txt` | **Real, and the mock default.** Full 310-line `/api/monitor/metrics` body, IRIS for Health 2024.1 on Windows, captured 2026-08-11 **after** the production items were renamed to the spaced contract names. 12 hosts, 3 application. |
