@@ -21,6 +21,13 @@ export PG_DEMO_TRIGGERS=1          # else the rail's trigger buttons do not exis
 docker compose up -d
 ```
 
+```powershell
+# Windows. Set these in the SAME window as the compose up -- compose reads them from the shell.
+$env:PG_AGENT_MODE = 'live'
+$env:PG_DEMO_TRIGGERS = '1'
+docker compose up -d
+```
+
 | # | Check | Command | Expected |
 |---|---|---|---|
 | 1 | All four services healthy | `docker compose ps` | four `(healthy)` |
@@ -28,6 +35,10 @@ docker compose up -d
 | 3 | Trigger buttons exist | `curl -s localhost:5173/api/demo/triggers` | `"enabled": true`, 3 scenarios |
 | 4 | Nothing armed, no findings | `curl -s localhost:5173/api/healthscan/findings` | `[]` |
 | 5 | **Error window is clean** | see below | `purged N` |
+
+On Windows, checks 2–4 are `Select-String listening` rather than `grep listening`, and `curl.exe`
+rather than `curl` — the alias `curl` resolves to in PowerShell binds `-s` to `-SessionVariable` and
+then prompts for a `Uri`, which on stage reads as a hang. Full table: root `README.md` → *On Windows*.
 
 ```bash
 # 5. Reset triggers AND purge the event log. Reset alone is not enough — see the trap below.
@@ -40,6 +51,29 @@ write "purged ",$get(d,0),!
 halt
 EOF
 ```
+
+```powershell
+# Windows. One line for the POST -- `--%` stops PowerShell parsing, so a backtick continuation
+# would be sent as a literal character and the body would go out empty.
+curl.exe --% -s -XPOST -H "Content-Type: application/json" -H "Origin: http://localhost:5173" -d "{}" localhost:5173/api/demo/reset
+
+# PowerShell has no `<<'EOF'`. The equivalent is a SINGLE-quoted here-string, piped in:
+@'
+zn "LABDEMO"
+do ##class(Ens.Util.Log).Purge(.d, 0)
+write "purged ",$get(d,0),!
+halt
+'@ | docker exec -i pg-iris iris session IRIS
+```
+
+**`@'` and not `@"`, for the same reason the bash form quotes its `EOF`.** A double-quoted
+here-string interpolates, and ObjectScript is made of `$`: measured on the running stack, `@"…"@`
+sent `write "PGV|",$zversion,!` as `WRITE "PGV|",,!` — PowerShell had already replaced `$zversion`
+with an empty string, and IRIS echoed a syntactically valid line that printed nothing. That is the
+worst kind of failure to hit on stage, because the here-string above would purge nothing and still
+look like it ran. The `@'` form passed `$zversion` through untouched and IRIS answered with the
+build. Two layout rules the parser enforces: `@'` must end its line, and `'@` must start its own
+line at **column 0** — indent it and PowerShell does not see the terminator.
 
 ### The five traps, in the order they will bite you
 
@@ -294,6 +328,18 @@ do ##class(ProductionGuardian.LabDemo.Audit.Entry).Purge()
 halt
 EOF
 ```
+
+```powershell
+curl.exe --% -s -XPOST -H "Content-Type: application/json" -H "Origin: http://localhost:5173" -d "{}" localhost:5173/api/demo/reset
+@'
+zn "LABDEMO"
+do ##class(Ens.Util.Log).Purge(.d, 0)
+do ##class(ProductionGuardian.LabDemo.Audit.Entry).Purge()
+halt
+'@ | docker exec -i pg-iris iris session IRIS
+```
+
+Single quotes on the here-string, and `'@` at column 0 — §0 says why.
 
 Purging the audit log is optional but makes "six rows for six tool calls" legible on the next run.
 

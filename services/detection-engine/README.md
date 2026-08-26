@@ -13,7 +13,7 @@ Requires **Node ≥ 22.18** (native TypeScript type stripping — no build step,
 npm install          # devDependencies only; zero runtime dependencies
 npm start            # mock proxy, serves on :3002
 npm run dev          # same, with --watch
-npm test             # 95 tests
+npm test             # 375 tests
 npm run typecheck    # tsc --noEmit, strict
 ```
 
@@ -26,18 +26,32 @@ curl localhost:3002/api/healthscan/findings
 curl localhost:3002/api/healthscan/health   # operational, not in the contract
 ```
 
-Against Dev A's real proxy:
+Against the real proxy:
 
 ```bash
 PROXY_MODE=live PROXY_BASE_URL=http://localhost:3001 npm start
 ```
+
+```powershell
+# Windows. PowerShell has no one-shot VAR=value prefix -- the line above fails with
+# "The term 'PROXY_MODE=live' is not recognized". Set them, then start:
+$env:PROXY_MODE = 'live'
+$env:PROXY_BASE_URL = 'http://localhost:3001'
+npm start
+```
+
+Both stay set for the rest of that window, unlike the POSIX prefix — so a later `npm start` in the
+same terminal is still in live mode and will sit there failing to reach a proxy that is not up.
+`Remove-Item Env:\PROXY_MODE` undoes it. `curl` is an alias for `Invoke-WebRequest` in the
+PowerShell that ships, so the three lines above need `curl.exe`. Root `README.md` → *On Windows*
+has the full table and is the only place it is written down.
 
 | Env var | Default | Notes |
 |---|---|---|
 | `PORT` | `3002` | |
 | `PROXY_MODE` | `mock` | `mock` \| `live` |
 | `PROXY_BASE_URL` | `http://localhost:3001` | live mode only |
-| `POLL_INTERVAL_MS` | `10000` | matches the proxy's own IRIS poll |
+| `POLL_INTERVAL_MS` | `5000` | matches the proxy's own IRIS poll. **A floor, not a preference** — `src/index.ts` documents the sweep, and `4500` already breaks an invariant |
 
 ## Shape of it
 

@@ -22,6 +22,13 @@ do $system.OBJ.Load("/path/to/iris/setup/EnableMetrics.cls", "ck")
 do ##class(ProductionGuardian.Setup.EnableMetrics).Run()
 ```
 
+**The path is on the IRIS instance's filesystem, not your shell's.** So it depends on where IRIS
+runs, not on which OS you are typing from — under this repo's compose it is a container path
+(`/opt/…`), and on a Windows-native instance it is a Windows path,
+`"C:\repos\ProductionGuardian\iris\setup\EnableMetrics.cls"`. Write the backslashes as they are:
+ObjectScript string literals do not treat `\` as an escape, so doubling them is what breaks it.
+Nothing else in this file is shell-dependent — every command here is ObjectScript in a Terminal.
+
 ### Option B: Management Portal
 
 1. Management Portal → System Explorer → Classes → Import

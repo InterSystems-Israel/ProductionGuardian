@@ -81,6 +81,20 @@ first finding is confirmed. To watch a whole cycle without waiting, compress it 
 POLL_INTERVAL_MS=2000 npm start    # full appear-and-clear cycle, still emits
 ```
 
+```powershell
+# Windows. There is no one-shot VAR=value prefix -- PowerShell reads it as the command name and
+# fails with "The term 'POLL_INTERVAL_MS=2000' is not recognized".
+$env:POLL_INTERVAL_MS = '2000'
+npm start
+Remove-Item Env:\POLL_INTERVAL_MS   # <- do not skip this, see below
+```
+
+**On Windows the compression outlives the demo, and that is the trap.** The POSIX prefix applies to
+one command; `$env:` stays set for the rest of the window, so the next `npm start` in that terminal
+is still at 2000 ms — and per the floors below, that is an engine running outside its designed
+envelope while looking entirely normal. `Remove-Item Env:\POLL_INTERVAL_MS`, or use a fresh window
+for the compressed run.
+
 `POLL_INTERVAL_MS` has floors, and they do not fail loudly. The engine's
 `sustainedSeconds` gate needs `(sustainedSamples - 1) x interval > sustainedSeconds`,
 so **4500 ms already breaks an invariant** and finding types stop emitting entirely
@@ -149,7 +163,9 @@ fixtures and favicon all inlined. Verify by opening it directly from the
 filesystem:
 
 ```bash
-start dist/index.html        # Windows
+start dist/index.html        # Windows -- PowerShell, cmd, and Git Bash all have `start`
+open dist/index.html         # macOS
+xdg-open dist/index.html     # Linux
 ```
 
 If it needs a server, the fallback has failed. Fixtures are imported statically
@@ -210,6 +226,13 @@ client exists, so they land in Phase 2.
 ```bash
 grep -rn "CONTRACT-Q" src/
 ```
+
+```powershell
+Get-ChildItem -Recurse src | Select-String "CONTRACT-Q"
+```
+
+`Select-String` has no `-r`, so the obvious transliteration fails with *"A parameter cannot be found
+that matches parameter name 'r'"* — the recursion is the pipeline's job, not the cmdlet's.
 
 The load-bearing one is **Q4** in `hooks/useHealthScan.ts`: the new-finding
 highlight assumes `finding.id` is stable while a condition persists. If ids churn
