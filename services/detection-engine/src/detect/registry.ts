@@ -90,14 +90,17 @@ export class FindingRegistry {
    *
    * `unmeasurable` names the rules whose inputs were absent this poll (`Rule.requires`),
    * whose omission therefore means "cannot tell" rather than "not breaching". Those
-   * conditions HOLD: they neither advance toward clearing nor toward confirming. Default
-   * empty, so a caller that does not distinguish gets the old reading.
+   * conditions HOLD: they neither advance toward clearing nor toward confirming.
+   *
+   * Required rather than defaulted to empty. A default would let a caller opt out of the
+   * distinction silently, which is the defect this argument exists to fix, and it would be
+   * a branch no test reaches — pass an empty set explicitly if there is nothing to hold.
    */
   update(
     host: string,
     verdicts: readonly RuleVerdict[],
     now: number,
-    unmeasurable: ReadonlySet<FindingType> = EMPTY_TYPES,
+    unmeasurable: ReadonlySet<FindingType>,
   ): void {
     const breaching = new Set(verdicts.map((v) => v.type));
 
@@ -216,9 +219,6 @@ export class FindingRegistry {
 }
 
 const SEP = '\u0000';
-
-/** Shared empty default for `update`'s `unmeasurable`, so it allocates nothing per poll. */
-const EMPTY_TYPES: ReadonlySet<FindingType> = new Set();
 
 function conditionKey(host: string, type: FindingType): string {
   return `${host}${SEP}${type}`;
