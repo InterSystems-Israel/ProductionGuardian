@@ -5,6 +5,71 @@ Every contract change, dated, with the reason. Newest first.
 ---
 
 
+## 2026-08-26 — `type` gains a second source; Q6's "treat unknown as a real value" amended (#127)
+
+**`proxy-api.md` §1.1, §1.3, §5.1 (Q6) and a new §5.1.1; `proxy.schema.json`
+`ProxyHost.type` description, new optional `ProxyHost.typeFromConfig`, three new
+`HostStatusMeta` fields.** No sample change — `validate.mjs` stays green, and the three hosts in
+`samples/hosts-response.json` are all typed already, so nothing there was affected. **No field
+removed, no enum narrowed, no required field added.**
+
+**Q6 said the wrong thing, and it is worth being precise about which part.** Its diagnosis was
+correct: `hosttype` rides only on the `avg_*` metric families, so a host nothing has flowed through
+carries no type in the Prometheus text. Its conclusion — *"Treat `unknown` as a real value, not a
+bug"* — did not follow. `unknown` was a true statement about the **metrics text**, and Q6 promoted
+it to a fact about the **host**. The production knows its own item types whether or not anything has
+flowed through them, and the proxy was already reading the place that holds them:
+`Ens.Util.Statistics:EnumerateHostStatus` returns a `Type` column, the host-status endpoint of §1.3
+has run that query since #12, and it **discarded that column**.
+
+So this is not new plumbing. It is one column that was already in the result set.
+
+| Change | Where |
+|---|---|
+| `hostType` published, **raw IRIS word unchanged** (`BusinessService`/`BusinessOperation`/`BusinessProcess`/`Actor`) | `iris/labdemo/REST/HostStatusDispatcher.cls` |
+| normalized to `service`/`operation`/`process` and folded into `type` | `services/metrics-proxy/src/hoststatus.js` |
+| the raw words added to the **one existing** mapping, not a second one | `services/metrics-proxy/src/parser.js` `_hostType()` |
+
+**Fill only, never overwrite.** The metrics `hosttype` label stays authoritative wherever it exists;
+the config type lands only where `type` is still `unknown`. That is a structural guarantee rather
+than a tested behaviour: the only hosts the second source can touch are the ones that already read
+`unknown`, so the worst case is that it does nothing. Zero regression is therefore not a claim about
+coverage.
+
+Where both sources type a host and disagree, the metrics value stays in `type` and the config value
+is recorded — `typeFromConfig` on the host, `typeDisagreements` in `_meta.hostStatus`. That is
+deliberately the same shape as `statusFromMetrics` (2026-08-12) rather than a new convention: the
+loser of a source disagreement is kept visible instead of being silently resolved. It is empty on
+every live sample so far, which is the expected state; non-empty means one of the two sources is
+reading a stale or misattributed host.
+
+Measured live on the running stack, `ProductionGuardian.LabDemo.Production`, 12 hosts:
+
+```
+before:  8 of 12 unknown
+after:   1 of 12 unknown   (Ens.Alarm)
+typesFilled: 7   typeDisagreements: []   untypedHosts: ["Ens.Alarm"]
+```
+
+**`Ens.Alarm` is left `unknown` on purpose.** `EnumerateHostStatus` does not enumerate it, so
+neither source has a type for it and nothing available would supply one without guessing from the
+host name — which `parser.test.js`'s *'leaves type unknown rather than guessing it from the host
+name'* forbids, and which still passes unchanged. Reading the production's own configuration is not
+guessing; inferring "`Lab Router` is a process" from the string `Router` is. Hosts in that position
+are now **named** in `_meta.hostStatus.untypedHosts` rather than left for a consumer to find by
+scanning.
+
+Note `untypedHosts` **includes framework hosts**, unlike `undescribedHosts` (2026-08-12), which
+excludes them. Not an inconsistency: `undescribedHosts` is about a host losing its numbers, and the
+endpoint legitimately omits some framework hosts, so counting them there would make a healthy state
+look broken. `untypedHosts` is about type coverage, and the one host in it live *is* framework — so
+excluding them would make the list always empty and useless.
+
+**Nothing changes for a consumer that already handled `unknown`,** and the `type` enum is unchanged.
+What changes is that `unknown` no longer implies "framework host": every framework host except
+`Ens.Alarm` is now typed.
+
+
 ## 2026-08-23 — three activity-history read tools, for the chat assistant (Dev B)
 
 **`mcp-tools.md` §1, §3.7–§3.9, §6, §8.** Additive: three new read tools in a new class,

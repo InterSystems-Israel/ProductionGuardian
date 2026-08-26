@@ -59,7 +59,8 @@ Parameter MSGSTATUSERROR = 8;
 /// Response shape — an array of hosts plus a small _meta:
 /// {
 ///   "hosts": [
-///     { "host": "Cloud API", "status": "OK", "queued": 0, "errored": 0, "messageCount": 17488 }
+///     { "host": "Cloud API", "hostType": "BusinessOperation", "status": "OK",
+///       "queued": 0, "errored": 0, "messageCount": 17488 }
 ///   ],
 ///   "_meta": {
 ///     "sampledAt":       "2026-08-12T10:57:44.123Z",
@@ -74,6 +75,18 @@ Parameter MSGSTATUSERROR = 8;
 /// ("Cloud API", not "CloudAPI"). That is what makes the proxy-side merge work with no
 /// normalization on either side: `EnumerateHostStatus`'s `Name` column and the metrics
 /// `host` label are the same string.
+///
+/// `hostType` is the RAW IRIS word from the query's `Type` column, unchanged:
+/// `BusinessService` / `BusinessOperation` / `BusinessProcess` / `Actor`. It is
+/// deliberately NOT folded into the proxy's `service`/`operation`/`process` vocabulary
+/// here — IRIS publishes what the production configuration says, the proxy owns the
+/// published vocabulary (see `_hostType()` in `services/metrics-proxy/src/parser.js`).
+/// Normalizing in two places is two mappings to keep in step.
+///
+/// Why it is published at all: the `hosttype` label in `/api/monitor/metrics` rides
+/// only on the `avg_*` metric families, so a host with no activity data carries no type
+/// and the proxy reported `type: "unknown"` for it (#127). This query knows the type for
+/// every host it enumerates, whether or not anything has flowed through it.
 ClassMethod GetHostStatus() As %Status
 {
     set sc = $$$OK
@@ -117,6 +130,10 @@ ClassMethod GetHostStatus() As %Status
 
             do hosts.%Push({
                 "host":   (name),
+                // Raw, uninterpreted. Empty string when the query gave no type, which
+                // the proxy reads as null — same "absent is not a measurement" rule as
+                // `errored` above; a defaulted type would be a guess with a label on it.
+                "hostType": (rs.Get("Type")),
                 "status": (rs.Get("Status")),
                 "queued": (queued),
                 "errored": (errCount),

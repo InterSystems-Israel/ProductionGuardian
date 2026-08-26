@@ -50,7 +50,7 @@
         },
         "type": {
           "type": "string",
-          "description": "Normalized host type. IRIS reports processes as 'actor'; the proxy maps actor -> process. 'unknown' when IRIS emitted no avg_* series for the host, which is the only place the hosttype label rides — a real value, not a defect.",
+          "description": "Normalized host type. IRIS reports processes as 'actor' and 'Actor'; the proxy maps both to 'process'. TWO SOURCES, in precedence order: the `hosttype` label on the avg_* families, and — where that leaves the type 'unknown' — the `Type` column of Ens.Util.Statistics:EnumerateHostStatus, carried by the host-status endpoint as `hostType` (BusinessService | BusinessOperation | BusinessProcess | Actor) and normalized by the proxy. The metrics label always wins where it exists; the second source only FILLS, never overwrites. So 'unknown' now means neither source typed the host — the metrics text emitted no avg_* series AND the status endpoint did not enumerate it (Ens.Alarm on the live instance). Still a real value, not a defect, but a much rarer one: 8 of 12 hosts before, 1 of 12 after. Hosts still untyped are named in _meta.hostStatus.untypedHosts.",
           "enum": [
             "service",
             "process",
@@ -114,6 +114,15 @@
         "lastActivityElapsedSeconds": {
           "$ref": "#/definitions/NullableNumber",
           "description": "Seconds since last activity as iris_interop_last_activity holds it — ELAPSED SECONDS, not an epoch timestamp. This is the measurement; prefer it over lastActivity for stalled_host."
+        },
+        "typeFromConfig": {
+          "type": "string",
+          "enum": [
+            "service",
+            "process",
+            "operation"
+          ],
+          "description": "OPTIONAL, and present only when the two TYPE sources DISAGREE — the same shape as statusFromMetrics below, but the other way round about which source wins. `type` keeps the metrics `hosttype` label, which is authoritative because it is the label the whole published vocabulary was derived from, and this field carries what the production configuration (EnumerateHostStatus's Type column) said. Absent on every host where the two agree and on every host only one source typed, which together are the normal case. Diagnostic: read `type`, and treat this as evidence that one of the two sources is reading a stale or misattributed host, not as a fact about the host."
         },
         "statusFromMetrics": {
           "type": "string",
@@ -288,6 +297,44 @@
             "type": "string"
           },
           "description": "Application hosts the metrics text listed that the host-status endpoint did NOT describe. Those keep queued/errored null while others get real numbers. This is the direction a consumer feels, and `merged === hostCount` cannot detect it -- both counts shrink together. Framework hosts are excluded: the endpoint legitimately omits some (Ens.Alarm, Ens.MonitorService on the live instance), so counting them would make a healthy state look broken."
+        },
+        "typesFilled": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many hosts got their `type` from this source because the metrics `hosttype` label did not supply one. Fill-only: this count can never include a host whose type was already known, so it is also the exact size of the change this source can make to `type`. 0 with a non-zero `merged` means the metrics text typed everything on its own, or the endpoint predates the hostType field."
+        },
+        "typeDisagreements": {
+          "type": "array",
+          "description": "Hosts where BOTH sources supplied a type and the two differ. Empty is normal and has been empty on every live sample so far. Non-empty is worth investigating: one of the two is reading a stale or misattributed host. The metrics value is kept in `type`; the config value is also repeated on the host itself as `typeFromConfig`.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "host",
+              "fromMetrics",
+              "fromConfig"
+            ],
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "fromMetrics": {
+                "type": "string",
+                "description": "The hosttype label's value, normalized. This is what `type` carries."
+              },
+              "fromConfig": {
+                "type": "string",
+                "description": "EnumerateHostStatus's Type column, normalized. Recorded, not applied."
+              }
+            }
+          }
+        },
+        "untypedHosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Hosts still reporting type 'unknown' after the fill — neither source typed them. Framework hosts ARE included here, unlike undescribedHosts: this list is about type coverage, not about a host losing its numbers, and the one such host on the live instance (Ens.Alarm) is framework. Named rather than guessed at, for the same reason the parser refuses to infer a type from a host name."
         }
       }
     },

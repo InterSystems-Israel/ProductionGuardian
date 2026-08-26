@@ -362,12 +362,20 @@ function buildSnapshot(rawMetrics, polledAt) {
  *
  * `type` and the BS/BP/BO forms are kept only so the hand-written fixture shape and
  * any older capture still resolve rather than silently degrading to 'unknown'.
+ *
+ * The `business*` forms are the words `Ens.Util.Statistics:EnumerateHostStatus` puts in
+ * its `Type` column — `BusinessService`, `BusinessOperation`, `BusinessProcess`, `Actor`
+ * — which `hoststatus.js` uses to fill the type for a host the avg_* families never
+ * mention (#127). They live HERE, in the one mapping, rather than in a second copy over
+ * there: two vocabularies folded in two places is two things to keep in step. This
+ * function is exported for that caller and takes a labels-shaped object either way.
  */
 function _hostType(labels) {
   const raw = (labels['hosttype'] || labels['type'] || '').toLowerCase();
-  if (raw === 'bs' || raw === 'service') return 'service';
-  if (raw === 'bp' || raw === 'process' || raw === 'actor') return 'process';
-  if (raw === 'bo' || raw === 'operation') return 'operation';
+  if (raw === 'bs' || raw === 'service' || raw === 'businessservice') return 'service';
+  // `Actor` is a business process in IRIS — a pooled BP host, not a fourth kind of host.
+  if (raw === 'bp' || raw === 'process' || raw === 'actor' || raw === 'businessprocess') return 'process';
+  if (raw === 'bo' || raw === 'operation' || raw === 'businessoperation') return 'operation';
   return 'unknown';
 }
 
@@ -377,4 +385,5 @@ module.exports = {
   parseLabels,
   parseValue,
   isFrameworkHost,
+  _hostType,
 };
