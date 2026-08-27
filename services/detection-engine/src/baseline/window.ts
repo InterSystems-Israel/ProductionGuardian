@@ -116,6 +116,18 @@ class MetricWindow {
     this.#regimeStart = at;
   }
 
+  /**
+   * How many samples are held, RAW — deliberately ignoring `#regimeStart`, unlike `mean()` and
+   * `median()`, which both go through `#inRegime()`.
+   *
+   * That inconsistency is the intended answer to the question this actually gets asked: both
+   * callers use it to assert a sample WAS RECORDED, which is a fact about storage and stays true
+   * across a regime boundary. Filtering it would make "did this arrive" unanswerable.
+   *
+   * So do NOT reach for it to mean "how warm is this baseline" — for ~30 minutes after a
+   * `beginRegime()` it over-reports, counting samples no estimator will use. `baseline() !== null`
+   * is the warmth question, and `isWarm()` is the per-host form of it.
+   */
   get sampleCount(): number {
     return this.#samples.length;
   }
@@ -259,6 +271,7 @@ export class BaselineStore {
     return this.#windows.get(key(host, metric))?.recent(now, spanMs) ?? [];
   }
 
+  /** Raw sample count — see `MetricWindow.sampleCount` for why this one ignores the regime. */
   sampleCount(host: string, metric: MetricName): number {
     return this.#windows.get(key(host, metric))?.sampleCount ?? 0;
   }
