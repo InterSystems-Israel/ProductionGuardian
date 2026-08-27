@@ -220,6 +220,17 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
     { metric: 'messagesPerSec', unit: 'per_second', of: (h) => h.messagesPerSec },
   ];
 
+  /* ONE KEY BUILDER, because the writer and the reader had drifted apart and nothing caught it:
+     `recordSeries` composed the key with a `\u0000` separator while `getHostSeries` used a space, so
+     every lookup missed and demo mode served an empty series for every host and metric. Same argument
+     the engine's shared helpers make -- a rule held in two places goes stale in one of them.
+
+     THE SEPARATOR IS AN ESCAPE, NOT A LITERAL CONTROL CHARACTER. A raw NUL byte here made git classify
+     this file as binary, which suppressed its diff in #140 and #144 -- which is why the mismatch above
+     shipped unreviewed. It stays U+0000 rather than a space because no host name or metric can contain
+     one, so two different pairs can never compose the same key. */
+  const seriesKey = (host: string, metric: string): string => `${host}\u0000${metric}`;
+
   /**
    * Append this poll's values to the demo history.
    *
@@ -233,7 +244,7 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
       for (const { metric, of } of MOCK_SERIES_METRICS) {
         const value = of(host);
         if (value === null || !Number.isFinite(value)) continue;
-        const key = `${host.host}\u0000${metric}`;
+        const key = seriesKey(host.host, metric);
         const points = mockSeries.get(key) ?? [];
         // Same second as the previous point means two reads inside one tick; replace rather than
         // append, so the graph does not gain a vertical pair at one x position.
@@ -342,7 +353,7 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
         unit,
         /* A COPY, so a later poll appending to the stored array cannot mutate a series React is
            already rendering. The engine's `recent()` copies for the same reason. */
-        points: [...(mockSeries.get(`${host} ${metric}`) ?? [])],
+        points: [...(mockSeries.get(seriesKey(host, metric)) ?? [])],
       }));
       const recorded = series.some((s) => s.points.length > 0);
       return {
