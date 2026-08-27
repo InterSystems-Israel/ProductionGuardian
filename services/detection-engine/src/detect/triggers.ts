@@ -198,6 +198,17 @@ function parseResult(raw: unknown, scenario: string | null): TriggerResult {
  * ARM'S TIMEOUT IS LARGE ON PURPOSE. `PoolBottleneck()` warms a baseline at zero for 75 seconds
  * before it returns, so a conventional 30s timeout would abort a call that was working and leave
  * the production half-armed with nothing reporting why. Measured: the trigger blocks for ~80s.
+ *
+ * RESET'S IS LARGE FOR A DIFFERENT REASON — it is the only one whose duration depends on how long
+ * the stack has been up. `Triggers.Reset()` purges the message store when an error scenario left
+ * errored headers behind, because the per-host error count is a `COUNT(*)` over those rows and
+ * nothing else clears it. Measured: 31.5s to delete 153,144 headers, i.e. ~4,900/s, and the store
+ * grows for as long as the generator runs. At 60s a long rehearsal day would abort a purge that was
+ * working, and the retry a presenter then makes starts it again from the beginning.
+ *
+ * 120s, staying under nginx's 180s `proxy_read_timeout` on `/api/demo/` so the engine is still the
+ * component that reports a genuine hang rather than nginx serving its own HTML error page — the
+ * failure shape that produced `Unexpected token '<'` when arming outran the shared 35s limit.
  */
 export function liveTriggers(
   baseUrl: string,
@@ -246,7 +257,7 @@ export function liveTriggers(
   return {
     status: async () => parseStatus(await call('/status', undefined, 10_000)),
     arm: async (scenario) => parseResult(await call('/arm', { scenario }, 150_000), scenario),
-    reset: async () => parseResult(await call('/reset', {}, 60_000), null),
+    reset: async () => parseResult(await call('/reset', {}, 120_000), null),
   };
 }
 

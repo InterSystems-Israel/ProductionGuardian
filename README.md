@@ -445,6 +445,12 @@ Armed state is read from IRIS on each poll, so driving the terminal at the same 
 described above, with the same one caveat: a `system_alert` finding outlives it, because the alert
 sits in the metrics proxy's in-memory buffer where IRIS cannot reach.
 
+It is also the one control that is not instant. When a scenario has left errored messages behind,
+Reset purges the message store — the per-host error count on a host tile is a `COUNT(*)` over those
+rows, so nothing restorable clears it — and that scales with how long the stack has been up
+(measured: 0.3s for 2,550 headers, 31.5s for 153,144). A reset with no errors to clear skips the
+purge entirely and returns in well under a second, which is the usual case.
+
 ### Before a rehearsal: three things that will bite
 
 - **`AGENT_MODE` defaults to `mock`.** Rebuild or restart the engine without `PG_AGENT_MODE=live`

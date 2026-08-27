@@ -383,6 +383,16 @@ and timeouts, and re-enables every host. The old instruction here was to remove 
 from `PatientDemographicsOperation` and recompile — the delay is now a global the
 operation reads at runtime, so there is nothing to leave behind in source.
 
+It also **purges the message store, but only when errored messages exist.** The per-host error
+count is `COUNT(*) FROM Ens.MessageHeader WHERE Status = 8` grouped by target host — a property of
+the store rather than of the configuration, which is why it used to survive a reset, a production
+restart and a container restart alike. Nothing restorable moves it, so the rows are deleted.
+The gate matters: a reset after a scenario that errored nothing leaves message history alone, so
+the Message Viewer still has traces to show, and only the run that actually errored pays the purge
+(measured: 0.3s for 2,550 headers, 31.5s for 153,144). `pKeepIntegrity` keeps anything still in
+flight, so a handful of errored rows can survive into the next reset; `Reset()` says so when it
+happens rather than reporting a count that quietly did not reach 0.
+
 ---
 
 ## Verify metrics
