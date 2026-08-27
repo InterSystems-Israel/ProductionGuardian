@@ -239,7 +239,19 @@ const server = createFindingsServer({
     }
     return triggers.arm(scenario);
   },
-  resetTriggers: () => triggers.reset(),
+  resetTriggers: async () => {
+    const result = await triggers.reset();
+    // A reset restores inbound load in one step; the rolling mean keeps the pre-reset rate for
+    // another 30 minutes. Left unsaid, that measurably reported `throughput_drop` on all three
+    // hosts of an idle, healthy production with nothing armed — see `BaselineStore.beginRegime()`.
+    //
+    // AFTER the await, and only when the reset reports ok: the boundary must land past the last
+    // ambiguous sample, and a reset that failed changed no load to re-baseline against. `Date.now()`
+    // rather than the last poll's timestamp because the polls and this call are independent clocks
+    // and the reset happened just now, not at the last poll.
+    if (result.ok) engine.beginRegime(Date.now());
+    return result;
+  },
 });
 
 server.listen(PORT, () => {

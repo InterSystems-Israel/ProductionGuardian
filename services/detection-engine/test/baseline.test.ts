@@ -202,3 +202,172 @@ describe('self-inflation (inherent to a rolling mean)', () => {
     );
   });
 });
+
+/**
+ * The regime boundary — `beginRegime()`.
+ *
+ * A rolling mean cannot distinguish "load collapsed" from "load was deliberately turned back
+ * down", and a demo reset does the second every time. These pin the boundary that lets the
+ * caller say which it was; `silence.test.ts` has the measured incident that motivated it.
+ */
+describe('regime boundary', () => {
+  it('excludes pre-boundary samples from the mean', () => {
+    const store = new BaselineStore(1800, 12);
+    let at = T0;
+    // The measured shape: 2.0/sec armed, then 0.5/sec idle.
+    for (let i = 0; i < 60; i += 1, at += STEP) {
+      store.record('EMR Source', 'messagesPerSec', 2.0, at);
+    }
+    store.beginRegime(at);
+    for (let i = 0; i < 12; i += 1, at += STEP) {
+      store.record('EMR Source', 'messagesPerSec', 0.5, at);
+    }
+    assert.equal(
+      store.baseline('EMR Source', 'messagesPerSec'),
+      0.5,
+      'the mean must describe the new regime only, not the average of both',
+    );
+  });
+
+  it('re-warms: no baseline until minSamples arrive after the boundary', () => {
+    const store = new BaselineStore(1800, 12);
+    let at = T0;
+    for (let i = 0; i < 60; i += 1, at += STEP) {
+      store.record('EMR Source', 'messagesPerSec', 2.0, at);
+    }
+    assert.equal(store.baseline('EMR Source', 'messagesPerSec'), 2.0, 'precondition: warm');
+
+    store.beginRegime(at);
+    assert.equal(
+      store.baseline('EMR Source', 'messagesPerSec'),
+      null,
+      'a declared regime change must warm up again rather than serve the old mean',
+    );
+
+    for (let i = 0; i < 11; i += 1, at += STEP) {
+      store.record('EMR Source', 'messagesPerSec', 0.5, at);
+    }
+    assert.equal(store.baseline('EMR Source', 'messagesPerSec'), null, '11 of 12 is still warming');
+    store.record('EMR Source', 'messagesPerSec', 0.5, at);
+    assert.equal(store.baseline('EMR Source', 'messagesPerSec'), 0.5, 'warm at exactly 12');
+  });
+
+  it('leaves recent() intact, so the graphs and the slope fit keep their history', () => {
+    // Deliberate asymmetry. The statistics must forget; the display must not, or pressing
+    // Reset all blanks every host graph for a minute.
+    const store = new BaselineStore(1800, 12);
+    let at = T0;
+    for (let i = 0; i < 20; i += 1, at += STEP) {
+      store.record('EMR Source', 'messagesPerSec', 2.0, at);
+    }
+    store.beginRegime(at);
+    store.record('EMR Source', 'messagesPerSec', 0.5, at);
+    const points = store.recent('EMR Source', 'messagesPerSec', at, 1800 * 1000);
+    assert.equal(points.length, 21, 'every sample in the window is still readable');
+    assert.equal(points[0]?.value, 2.0, 'including the pre-boundary ones');
+  });
+
+  it('applies to every host and metric at once', () => {
+    // One reset changes the whole production's load, not one host's.
+    const store = new BaselineStore(1800, 12);
+    let at = T0;
+    for (const host of ['EMR Source', 'Lab Router', 'Cloud API']) {
+      let hostAt = at;
+      for (let i = 0; i < 12; i += 1, hostAt += STEP) {
+        store.record(host, 'messagesPerSec', 2.0, hostAt);
+        store.record(host, 'queued', 40, hostAt);
+      }
+    }
+    at += 12 * STEP;
+    store.beginRegime(at);
+    for (const host of ['EMR Source', 'Lab Router', 'Cloud API']) {
+      assert.equal(store.baseline(host, 'messagesPerSec'), null, `${host} messagesPerSec`);
+      assert.equal(store.baseline(host, 'queued'), null, `${host} queued`);
+    }
+  });
+});
+
+/**
+ * `messagesPerSec` is baselined by MEDIAN, every other metric by mean — `ROBUST_METRICS`.
+ *
+ * The reason is the direction of harm, argued in full at that constant: `throughput_drop` is the
+ * only comparative rule where LOWER is worse, so it is the only one an inflated baseline makes
+ * NOISIER rather than quieter. These tests pin both halves — that the spike is absorbed here, and
+ * that the mean (and therefore self-inflation) is untouched everywhere else.
+ */
+describe('robust estimator for messagesPerSec', () => {
+  /** The measured drain burst: 271 messages in 2s reported as one 54.8/sec sample. */
+  const DRAIN_BURST = 54.8;
+
+  it('a single 270x drain burst does not become the new normal', () => {
+    const store = new BaselineStore(1800, 12);
+    let at = T0;
+    // Exactly the live shape: the burst lands first, then true idle alternating 0.4/0.6.
+    store.record('Cloud API', 'messagesPerSec', DRAIN_BURST, at);
+    at += STEP;
+    for (let i = 0; i < 52; i += 1, at += STEP) {
+      store.record('Cloud API', 'messagesPerSec', i % 2 === 0 ? 0.4 : 0.6, at);
+    }
+    const baseline = store.baseline('Cloud API', 'messagesPerSec');
+    assert.ok(baseline !== null, 'precondition: warm');
+    assert.ok(
+      baseline > 0.4 && baseline < 0.7,
+      `baseline ${baseline} must describe the idle rate; the mean gave 1.5283 here and fired ` +
+        'throughput_drop on a healthy production',
+    );
+  });
+
+  it('survives the burst at the earliest possible moment, with only minSamples', () => {
+    // The riskiest instant: one burst in twelve is 8% of the window, where it was 2% above.
+    // A mean here gives 4.58 -- nine times the truth.
+    const store = new BaselineStore(1800, 12);
+    let at = T0;
+    store.record('Cloud API', 'messagesPerSec', DRAIN_BURST, at);
+    at += STEP;
+    for (let i = 0; i < 11; i += 1, at += STEP) {
+      store.record('Cloud API', 'messagesPerSec', 0.5, at);
+    }
+    assert.equal(store.baseline('Cloud API', 'messagesPerSec'), 0.5, 'warm, and unmoved');
+  });
+
+  it('still holds a real throughput drop, rather than absorbing it like the mean', () => {
+    // Not a weakening. A host that stops moving messages must fill MORE THAN HALF the window
+    // with zeroes before its own baseline decays, where a mean began absorbing the first zero.
+    const store = new BaselineStore(1800, 12);
+    let at = T0;
+    for (let i = 0; i < 40; i += 1, at += STEP) {
+      store.record('Cloud API', 'messagesPerSec', 2.0, at);
+    }
+    for (let i = 0; i < 15; i += 1, at += STEP) {
+      store.record('Cloud API', 'messagesPerSec', 0, at);
+    }
+    assert.equal(
+      store.baseline('Cloud API', 'messagesPerSec'),
+      2.0,
+      'the baseline must still say what normal was while the host is stopped',
+    );
+  });
+
+  it('averages the two middle values on an even count, so it moves smoothly', () => {
+    const store = new BaselineStore(1800, 12);
+    let at = T0;
+    for (const value of [1, 1, 1, 1, 1, 1, 2, 3, 3, 3, 3, 3]) {
+      store.record('Cloud API', 'messagesPerSec', value, at);
+      at += STEP;
+    }
+    // Sorted, the two middle values are 1 and 2 -> 1.5. A median that picked one neighbour
+    // would step between 1 and 2 as samples arrive; the mean of these twelve is 1.9167.
+    assert.equal(store.baseline('Cloud API', 'messagesPerSec'), 1.5);
+  });
+
+  it('leaves every other metric on the mean, so self-inflation stays exactly as pinned', () => {
+    // `queued` is the metric §5.1 documents. If this ever returns 0, the estimator has leaked
+    // past messagesPerSec and the self-inflation tests above are no longer testing the shipped
+    // behaviour -- which is a real change, not a cleanup.
+    const store = new BaselineStore(1800, 12);
+    let at = T0;
+    for (let i = 0; i < 11; i += 1, at += STEP) store.record('Cloud API', 'queued', 0, at);
+    store.record('Cloud API', 'queued', 480, at);
+    assert.equal(store.baseline('Cloud API', 'queued'), 40, 'mean of eleven 0s and one 480');
+  });
+});
