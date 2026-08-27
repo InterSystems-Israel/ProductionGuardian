@@ -214,12 +214,20 @@ ClassMethod SlowProcessing(pMilliseconds As %Integer = 3000) As %Status
     write "  ", ..#OPERATION, " now takes ", pMilliseconds, "ms per message.", !
     write "  No recompile: the operation reads ^ProductionGuardian.Trigger(""SlowMs"") per message.", !
     write "  Gate is the 1.5s ", ..#OPERATION, " floor, which beats 3x its ~0.05s baseline.", !
-    if pMilliseconds < 1500 {
+    if pMilliseconds < 2000 {
         // Named rather than refused: a smaller delay is still a legitimate thing to arm, it just
         // does not reach the reporting floor for this host. Silence with no explanation is what
         // sends someone looking for a broken rule.
-        write "  NOTE  under 1500ms this host reports nothing -- its floor tolerates a ~1s", !
-        write "        outbound call. Pass 3000 to see the finding.", !
+        //
+        // 2000, NOT the 1500ms floor itself. The measured processing time comes in UNDER the
+        // armed value -- `SlowProcessing(1000)` measured 840ms, ~0.84x -- so the armed value that
+        // actually reaches a 1.5s floor is ~1786ms, and a boundary at 1500 left [1500, 1785]
+        // inducing nothing while printing no note. That band is the exact failure this note
+        // exists to prevent, so the boundary belongs above the floor rather than on it.
+        write "  NOTE  under 2000ms this host reports no slow_processing -- its floor is 1.5s", !
+        write "        and the induced delay measures ~0.84x what you pass, so 1500 is not", !
+        write "        enough. Pass 3000 to see the finding.", !
+        write "        growing_queue_wait still fires once traffic overlaps.", !
     }
     quit $$$OK
 }
