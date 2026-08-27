@@ -233,7 +233,7 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
       for (const { metric, of } of MOCK_SERIES_METRICS) {
         const value = of(host);
         if (value === null || !Number.isFinite(value)) continue;
-        const key = `${host.host} ${metric}`;
+        const key = `${host.host}\u0000${metric}`;
         const points = mockSeries.get(key) ?? [];
         // Same second as the previous point means two reads inside one tick; replace rather than
         // append, so the graph does not gain a vertical pair at one x position.
