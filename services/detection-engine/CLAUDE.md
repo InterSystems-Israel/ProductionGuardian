@@ -280,6 +280,38 @@ The lesson generalises: a rule tested in isolation can be dead once composed wit
 `test/scenario.test.ts` exists to catch that class — it asserts the demo loop can actually produce
 all eight types.
 
+### 5.4 A finding that no action can clear is a defect in the threshold, not in the fix
+
+`Cloud API`'s `slow_processing` floor is **1.5s**, not the 0.2s the rule ships — a `hostOverrides`
+entry, with the full derivation in `thresholds.json`. It looks like an over-tolerant bound and it is
+not; **do not lower it back without reading that note.**
+
+The reasoning is worth stating here because it generalises past this one number. MVP 2's scenario
+throttles `Cloud API`'s downstream to ~1s per call, and Smart Resolve fixes it by enlarging the pool.
+`avgProcessingTime` reads **1.01s before the fix and 1.01s after it** — measured, 13 samples across
+two sessions — because pool size changes *concurrency*, not per-message latency: four workers make
+four 1s waits overlap, so throughput quadruples and the queue drains to zero while every individual
+message still takes ~1s.
+
+So at a 0.3s floor this rule emitted a `critical` finding that **the product's own remediation could
+not clear**, and it sat on the board after a fix that had emptied the queue. That is the shape to
+watch for: when a comparative rule reads a metric the recommended action does not move, no
+multiplier and no floor can make it fire during the fault and clear after it — the two values are
+the same measurement. The choice is then between suppressing it for that host and shipping a finding
+that outlives every remedy, and the second is worse than a coverage gap, because it teaches an
+operator that a cleared condition still shows red.
+
+Suppression is right *here* specifically because the host is an outbound operation whose processing
+time is a remote dependency's latency, and because the two findings that do describe the fault —
+`queue_buildup` and `growing_queue_wait` — both clear correctly. Verified end to end on
+2026-08-27: two criticals during the fault, `queue_buildup` gone 72s after the apply, the last
+finding aged out at ~200s, then zero findings held for a further 200s with the throttle still armed.
+
+**The baseline was deliberately not touched.** Raising `referenceBaselines` to 0.34 would also have
+silenced it, and would have put an invented normal into every finding message and into the evidence
+the agent reads — the values in that block are captured from `contracts/samples/`, per §6. The floor
+answers "is this worth reporting", which is the question that actually changed.
+
 ## 6. Never invent data
 
 - **No fabricated hosts, metrics, or findings outside `fixtures/`.** Fixtures use the LABDEMO

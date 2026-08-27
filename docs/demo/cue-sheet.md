@@ -105,10 +105,14 @@ people ask for afterwards.
 | Act | Question | Beat | Wall clock |
 |---|---|---|---|
 | **1** | *Does it see the problem?* | WHAT | ~2 min |
-| **2** | *Does it understand and fix it?* | WHY → FIX | ~4 min |
+| **2** | *Does it understand and fix it?* | WHY → FIX | ~6 min |
 | **3** | *What if there is no button to press?* | the honest answer | ~2 min |
 
-Total ≈ 8 minutes of demo. Budget 15 with questions.
+Total ≈ 10 minutes of demo. Budget 15 with questions.
+
+Act 2 was ~4 min until 2026-08-27, on the assumption that the drain beat ended when the queue hit
+zero. Re-measured, the last finding takes ~200s rather than ~103s to age out — see §2.3. The number
+here is the one that matters for a slot, so it follows the measurement rather than the intent.
 
 ---
 
@@ -153,12 +157,22 @@ the most common real-world failure and the hardest to see, because every individ
 ```
 queue_buildup       critical   Queue depth 123 with no baseline queue
 growing_queue_wait  critical   Average queue wait 37.66s is 1883x baseline
-slow_processing     critical   Average processing time 1.01s is 20x baseline
 ```
 
-**Say:** *"Three findings, and each states the actual number — not 'queue is high'. 37 seconds of
+**Say:** *"Two findings, and each states the actual number — not 'queue is high'. 37 seconds of
 queue wait against a normal of hundredths of a second. And notice the host still reports its status
 as OK, because it is: the process is running fine. The finding carries the alarm, not the status."*
+
+> **This was three findings until 2026-08-27**, the third being
+> `slow_processing critical Average processing time 1.01s is 20x baseline`. It was removed by
+> raising `Cloud API`'s processing-time floor to 1.5s, because **that 1.01s is the same before and
+> after the fix** — the throttled downstream takes ~1s per call whether one worker or four are
+> waiting on it, so the finding survived Act 2.3 and read on stage as *"the fix didn't fully
+> work"*. Both findings that remain are about **queueing**, which is exactly what the fix
+> addresses, so the board now empties completely. If someone asks why a 1s downstream call is not
+> itself reported: that floor is a deliberate tolerance for an outbound operation, recorded in
+> `thresholds.json`, and the honest answer is that Guardian treats ~1s per remote call as this
+> host's normal.
 
 **Show:** the severity tiles. **Hosts OK now reads 2 of 3**, not 3 — a host with a critical finding is
 not counted as OK. Click the host to filter the findings to it and open its live graphs.
@@ -216,23 +230,39 @@ Then approve. **Measured:** `outcome: applied`, `reversal: {"host": "Cloud API",
 **Say:** *"Applied, and the previous value was captured live so it is reversible. Both the preview and
 the apply are in the audit trail as separate rows."*
 
-### 2.3 Watch it drain — the money shot (90s)
+### 2.3 Watch it drain — the money shot (~3.5 min)
 
-**Measured drain, pool 1 → 4:**
+**Measured drain, pool 1 → 4** (re-measured end to end on 2026-08-27):
 
 ```
-t+1s    queued=165
-t+27s   queued=121
-t+52s   queued=74
-t+77s   queued=25
-t+103s  queued=0      <- findings clear on their own
+t+0s     queued=157   2 findings
+t+54s    queued=49    2 findings
+t+72s    queued=10    1 finding    <- queue_buildup clears
+t+90s    queued=0     1 finding    <- the QUEUE is gone here
+t+182s   queued=0     1 finding    growing_queue_wait "340ms is 17x baseline"
+t+202s   queued=0     0 findings   <- the BOARD is clean here
 ```
 
-**Say:** *"Four workers now, so the downstream waits overlap. It drains about twice as fast as messages
-arrive, and the findings disappear when the condition does — no acknowledging, no clearing, no
-tombstones. If it is still listed, it is still true."*
+**The queue empties at ~90s; the board takes until ~200s, and the gap is not a bug.**
+`growing_queue_wait` is an *average* over a window that still contains the backlog, so it decays
+rather than dropping. Verified it then held at zero findings for a further 200s. The old version of
+this block collapsed both into one line (`t+103s queued=0 <- findings clear on their own`), which
+sets a presenter up to say "cleared" while one finding is still on screen.
 
-> **Fill the 103 seconds** with the safety model — it is the right moment because they have just watched
+**Say at ~90s:** *"Queue's at zero."* **Then, while the last finding decays:** *"Four workers now,
+so the downstream waits overlap. That one remaining finding is an average — it still has the
+backlog in its window, and it will age out rather than being switched off. Which is the point:
+the findings disappear when the condition does. No acknowledging, no clearing, no tombstones. If
+it is still listed, it is still true."*
+
+> **The board really does reach zero now, and that is new.** Until 2026-08-27 a third finding —
+> `slow_processing`, on the same host — survived this beat forever, because the throttled downstream
+> takes ~1s per message whether one worker or four are waiting on it. Raising `Cloud API`'s
+> processing-time floor to 1.5s removed it (Act 1.3 has the detail). If you are presenting from an
+> older build and see a stuck `slow_processing critical`, that is what it is — say the fix addressed
+> the backlog and the downstream is still a second per call, which is true and on-message.
+
+> **Fill the time** with the safety model — it is the right moment because they have just watched
 > an AI change a production:
 > - **one** action, **one** host, bounded 2–8 — anything else is refused by name
 > - dry run first, and that path returns before writing
