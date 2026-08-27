@@ -159,12 +159,31 @@ Non-negotiable behaviours:
 - **Rules are pure functions** of `(sample, window, config)`. No I/O, no clock reads inside a
   rule — pass time in. This is what makes them testable against fixtures.
 
-### 5.1 Baseline self-inflation — and the one metric now exempt from it
+### 5.1 Baseline self-inflation — and the two exemptions from it
 
 **A reference baseline exempts a host+metric.** `thresholds.json` `referenceBaselines` states a
 normal that does not move; where one exists it wins over the rolling mean, and self-inflation
-cannot occur for that pair. Currently only `Cloud API` / `queued`, set to `0`. Everything else
-still behaves exactly as described below, which is most metrics on most hosts.
+cannot occur for that pair. Currently only `Cloud API` / `queued`, set to `0`.
+
+**`messagesPerSec` is exempt everywhere, because its baseline is a MEDIAN, not a mean.**
+`ROBUST_METRICS` in `baseline/window.ts` carries the full argument and the measurements; the short
+version is that self-inflation is only *safe* when higher is worse. Where higher is worse an
+inflated baseline makes a rule quieter, which is the failure direction you want. `throughput_drop`
+is the only comparative rule where **lower** is worse, so for it an inflated baseline is the
+opposite: it manufactures findings on a healthy production, which MVP §6 names as the top risk.
+
+It was measured doing exactly that (2026-08-27). A reset after `pool_bottleneck` removes the
+throttle and the accumulated backlog flushes in one burst — 402 messages in 3 seconds, ~134/sec
+against an idle 0.5/sec — and a single sample of that burst supplied 68% of a 53-sample mean,
+giving a baseline of 1.53 against a true 0.50 and firing `throughput_drop` on all three hosts with
+nothing armed. No window length fixes that; a longer window only holds the spike for longer.
+
+Note the direction this exemption cuts: a median makes `throughput_drop` **hold a real drop for
+longer**, since a stopped host must fill more than half the window with zeroes before its own
+baseline decays. So this is not the "excluding breaching samples" option listed at the end of this
+section — it does not exclude anything, and the burst is still recorded and still graphed.
+
+Everything else behaves exactly as described below, which is most metrics on most hosts.
 
 Why it was needed, with the arithmetic rather than the anecdote. §5.1 as originally written
 describes a **step**: queue jumps 0 → 486, fires, then clears as the mean climbs. A **ramp** is

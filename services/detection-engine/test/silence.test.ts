@@ -25,6 +25,7 @@ import { validateConfig, type ThresholdConfig } from '../src/config/thresholds.t
 import { DetectionEngine } from '../src/detect/engine.ts';
 import { MockProxyClient, type ScenarioStep } from '../src/proxy/mockClient.ts';
 import type { Finding } from '../src/types/healthscan.ts';
+import type { ProxyHost, ProxyResponse } from '../src/types/proxy.ts';
 
 const serviceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const fixtureDir = resolve(serviceRoot, 'fixtures/proxy');
@@ -194,5 +195,174 @@ describe('a reference baseline defeats self-inflation for the metric it covers',
         `dead_host vanished at poll ${17 + index} while the host was still Disabled`,
       );
     }
+  });
+});
+
+/**
+ * Resetting a scenario must not itself produce findings.
+ *
+ * MEASURED on the live stack, 2026-08-27. `pool_bottleneck` arms `pRateSecs=0.5`, which
+ * quadruples inbound load: LABDEMO idles at 0.5 msg/sec and the scenario drives 2.0. The
+ * rail's `Reset all` restores the generator instantly, but the baseline is a 30-MINUTE
+ * trailing mean, so for half an hour afterwards it still averages in the elevated block:
+ *
+ *     09:09..09:18   2.0 msg/sec      <- pool_bottleneck armed
+ *     09:18:46       reset            <- generator restored to 0.5/sec
+ *     09:19..09:39   0.5 msg/sec      <- true idle, nothing armed, production healthy
+ *
+ * rolling mean at the reset = 1.19, current sample = 0.4, fraction = 0.34, and
+ * `throughput_drop.baselineFraction` is 0.40 -- so all three hosts reported
+ * `warning  Throughput 0.4 msg/sec is 66% below baseline` with nothing armed. The
+ * finding's own `detectedAt` was 09:18:46: the reset caused it.
+ *
+ * `throughput_drop` is the ONLY rule this can hit, and that is not luck -- it is the only
+ * comparative rule where LOWER is worse (see its comment in `rules/index.ts`). Every other
+ * rule sees a reset as a value falling back under its floor and goes quiet.
+ */
+describe('a reset does not manufacture a throughput_drop', () => {
+  /** Idle throughput as the proxy actually reports it -- see quantization note below. */
+  const IDLE = [0.4, 0.6];
+  /** What `pool_bottleneck` drives: `pRateSecs=0.5` -> 2/sec. */
+  const ARMED = 2.0;
+
+  /**
+   * One poll at a given inbound rate, with the other measured idle values held constant.
+   *
+   * `Lab Router` runs at DOUBLE the rate of the other two because it both receives and
+   * sends each message, so its message counter advances twice per HL7 message. Measured,
+   * not assumed: 0.8/sec against 0.4/sec on the same poll.
+   */
+  function pollAt(rate: number, at: number): ProxyResponse {
+    const host = (
+      name: string,
+      type: string,
+      messagesPerSec: number,
+      avgProcessingTime: number,
+    ): ProxyHost => ({
+      host: name,
+      type,
+      status: 'OK',
+      isFramework: false,
+      queued: 0,
+      messages: 1000,
+      messagesPerSec,
+      errored: 0,
+      avgProcessingTime,
+      avgQueueingTime: 0,
+      lastActivity: new Date(at).toISOString(),
+      lastActivityElapsedSeconds: 0.1,
+    });
+    return {
+      sampledAt: new Date(at).toISOString(),
+      production: 'ProductionGuardian.LabDemo.Production',
+      hosts: [
+        host('EMR Source', 'service', rate, 0),
+        host('Lab Router', 'process', rate * 2, 0.01),
+        host('Cloud API', 'operation', rate, 0.01),
+      ],
+      alerts: [],
+      warming: false,
+      productionQueued: 0,
+    };
+  }
+
+  /**
+   * The drain burst, MEASURED from `Ens.MessageHeader` on the live stack rather than modelled.
+   *
+   * `pool_bottleneck` throttles `Cloud API`'s downstream to ~1s per call, so while it is armed
+   * the host clears 1 msg/sec against a 2/sec inflow and a backlog accumulates. `Reset all`
+   * removes the throttle, and the whole backlog then flushes at once:
+   *
+   *     09:52:30..47   1 message each second      <- throttled, 1s per call
+   *     09:52:48       102 messages               <- reset; throttle gone
+   *     09:52:49       169 messages
+   *     09:52:50..     1 message every 2 seconds  <- true idle, 0.5/sec
+   *
+   * 271 messages in two seconds, ~135/sec, and the proxy reported `messagesPerSec: 54.8` for
+   * the poll containing them. That number is not an artifact and the arithmetic proves it:
+   * IRIS computes the rate as messages-in-interval / interval, and 274 / 5s = 54.8 exactly.
+   * The burst is REAL WORK, so it is recorded, not rejected -- see `ROBUST_METRICS`.
+   */
+  const DRAIN_BURST = 54.8;
+
+  /**
+   * Drive the armed rate, then the idle rate, and report what was on the board after the
+   * load stepped back down.
+   *
+   * `tellEngine` decides whether the engine is told the regime changed; `burst` inserts the
+   * measured drain flush as the first post-reset sample, where it actually landed. The two
+   * options are separate because they are separate mechanisms -- a sustained step down, and a
+   * transient inside the new regime -- and each on its own produced a false positive.
+   */
+  function afterReset(options: { tellEngine: boolean; burst?: boolean }): Finding[] {
+    const engine = new DetectionEngine(CONFIG);
+    const POLL = 5_000; // the shipped engine poll, and what the measurement above used
+    let at = Date.parse('2026-08-27T09:09:00Z');
+
+    // 10 minutes armed -- long enough to fill the baseline with the elevated rate.
+    for (let poll = 0; poll < 120; poll += 1) {
+      engine.applyPoll(pollAt(ARMED, at), at);
+      at += POLL;
+    }
+
+    if (options.tellEngine) engine.beginRegime(at);
+
+    // The backlog flushes on the first poll after the reset, before load is idle.
+    if (options.burst === true) {
+      engine.applyPoll(pollAt(DRAIN_BURST, at), at);
+      at += POLL;
+    }
+
+    // 5 minutes of true idle. Well past minBaselineSamples, nowhere near the 30-minute
+    // window, which is exactly the gap that produced the incident.
+    for (let poll = 0; poll < 60; poll += 1) {
+      engine.applyPoll(pollAt(IDLE[poll % 2]!, at), at);
+      at += POLL;
+    }
+    return engine.snapshot().findings;
+  }
+
+  it('stays silent once the load steps back down to idle', () => {
+    const findings = afterReset({ tellEngine: true });
+    assert.deepEqual(
+      findings.map((f) => `${f.severity} ${f.type} on ${f.host}`),
+      [],
+      'a healthy idle production after a reset must report nothing',
+    );
+  });
+
+  it('stays silent even though the backlog flushed at 54.8 msg/sec on the way down', () => {
+    // THE SECOND MECHANISM, and the one that made the regime boundary alone insufficient.
+    // Measured after `beginRegime` shipped: `EMR Source` and `Lab Router` re-warmed clean, but
+    // `Cloud API` -- the only host with a backlog to flush -- came back with
+    //
+    //     baselineValue: 1.528301886792453   == 81 / 53
+    //
+    // against a current 0.4, and fired `warning throughput_drop`. One sample of 54.8 out of 53
+    // supplied 68% of the mean; excluding it gives (81 - 54.8) / 52 = 0.504, the true idle rate.
+    // A 270x transient is not something a mean can absorb, at any window length.
+    const findings = afterReset({ tellEngine: true, burst: true });
+    assert.deepEqual(
+      findings.map((f) => `${f.severity} ${f.type} on ${f.host}`),
+      [],
+      'the drain burst must not become the new normal',
+    );
+  });
+
+  it('and WITHOUT being told, the false positive is reproducible', () => {
+    // Pinned deliberately, the way baseline.test.ts pins self-inflation: this is the
+    // mechanism, not a hypothesis. If this test ever goes green on its own, the rolling
+    // mean stopped spanning the reset and `beginRegime` may no longer be needed -- which
+    // is a real change worth noticing rather than silently inheriting.
+    const findings = afterReset({ tellEngine: false });
+    assert.deepEqual(
+      findings.map((f) => `${f.type} on ${f.host}`).sort(),
+      [
+        'throughput_drop on Cloud API',
+        'throughput_drop on EMR Source',
+        'throughput_drop on Lab Router',
+      ],
+      'the un-reset baseline must still reproduce the incident on all three hosts',
+    );
   });
 });

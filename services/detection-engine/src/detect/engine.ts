@@ -115,6 +115,27 @@ export class DetectionEngine {
   }
 
   /**
+   * Declare a load-regime change at `at`: baselines re-warm instead of averaging across it.
+   *
+   * Called after a demo reset succeeds, because a reset restores inbound load in one step
+   * while the rolling mean keeps the pre-reset rate for a further 30 minutes — which
+   * measurably produced `throughput_drop` on all three hosts of a healthy, idle production
+   * (2026-08-27). `BaselineStore.beginRegime()` has the numbers.
+   *
+   * The engine goes back to `warming` for `minBaselineSamples` polls (60s at the shipped
+   * 5s interval) and reports NO comparative findings in that time. That is the intended
+   * trade and it is the honest one: for a minute after the load changes we genuinely do not
+   * know what normal is, and MVP §6 is explicit that a guessed baseline is worse than none.
+   *
+   * Does NOT touch the finding registry. A false positive already on the board clears on the
+   * next poll because the rule stops returning a verdict, which is the same route every
+   * finding takes when its condition ends — no special-case teardown.
+   */
+  beginRegime(at: number): void {
+    this.#baselines.beginRegime(at);
+  }
+
+  /**
    * Record a baseline sample only if it was actually measured (#49).
    *
    * `null` means "IRIS does not expose this per host", not zero. Recording it as zero
