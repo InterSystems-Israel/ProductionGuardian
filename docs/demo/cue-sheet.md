@@ -75,7 +75,7 @@ look like it ran. The `@'` form passed `$zversion` through untouched and IRIS an
 build. Two layout rules the parser enforces: `@'` must end its line, and `'@` must start its own
 line at **column 0** — indent it and PowerShell does not see the terminator.
 
-### The five traps, in the order they will bite you
+### The traps, in the order they will bite you
 
 1. **`AGENT_MODE` defaults to `mock`.** A canned investigation is built from *real measured values*, so
    it reads as correct and demonstrates nothing about the agent. Check `source: "agent"` and a
@@ -93,6 +93,21 @@ line at **column 0** — indent it and PowerShell does not see the terminator.
    restores it to 1. If the queue never builds, check this first.
 5. **Never `curl /api/monitor/alerts`.** It is consume-on-read — reading it destroys the alert the
    `system_alert` path depends on. Use `:3001/proxy/alerts`.
+6. **Reset all empties the Message Viewer, whenever a scenario errored.** Clearing the per-host error
+   count means deleting message rows — that count is a `COUNT(*)` over `Ens.MessageHeader`, so nothing
+   restorable moves it — and `Ens.Purge` has no status filter, so it cannot delete only the errored
+   ones. Measured: **2,550 headers removed to clear 21 errored.** The completed traffic goes with them,
+   and how much survives depends on which sessions happened to be in flight, not on anything you can
+   plan. **So if a later beat needs the Message Viewer populated, show it before you reset.** A reset
+   with nothing errored skips the purge entirely and leaves history alone.
+7. **Reset all restarts the baselines, so nothing comparative fires for about a minute.** This is
+   deliberate — a load step-down is not a fault, and after a reset the engine genuinely does not know
+   what normal is yet — but it means *reset, arm, expect a finding* looks broken for the first ~60s
+   (`minBaselineSamples` × the shipped poll interval; both live in `services/detection-engine/`, so
+   check there rather than trusting this number). `queue_buildup`, `throughput_drop`, `slow_processing`
+   and `growing_queue_wait` are all comparative and all silent in that window; `dead_host` is absolute
+   and unaffected, which makes it the safe thing to arm first. **The reliable signal that the wait is
+   over is Early Warning: it says "Baseline still warming — no projection yet" until it is.**
 
 **Open two browser tabs before you start:** `http://localhost:5173` (the dashboard) and the
 Management Portal link from its header (the IRIS interoperability editor). Switching tabs is faster
