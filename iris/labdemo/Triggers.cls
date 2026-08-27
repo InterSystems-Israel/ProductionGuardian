@@ -199,21 +199,44 @@ ClassMethod ErrorRate() As %Status
 /// Sets a global the operation reads at runtime, so nothing is edited or recompiled. The
 /// README used to say "add `hang 1` to the top of OnMessage, recompile", which is a source
 /// edit mid-demo and leaves a hang behind if forgotten.
-ClassMethod SlowProcessing(pMilliseconds As %Integer = 1000) As %Status
+///
+/// DEFAULT RAISED 1000 -> 3000 on 2026-08-27, because the engine's floor for this host moved.
+/// `Cloud API`'s `slow_processing` floor is now 1.5s rather than 0.3s -- `PoolBottleneck()`
+/// throttles the same host to ~1.01s per message and that value is identical before and after
+/// Smart Resolve enlarges the pool, so the finding had to be suppressed there or it outlived the
+/// fix that cleared the queue (see the `hostOverrides` note in the engine's thresholds.json).
+/// 1000ms measured 840ms here and would now be silent, which is the one way this class can look
+/// armed and induce nothing. 3000ms lands ~2x over the floor with no ambiguity.
+ClassMethod SlowProcessing(pMilliseconds As %Integer = 3000) As %Status
 {
     set sc = ..CheckProduction()
     if $$$ISERR(sc) {
         quit sc
     }
     if pMilliseconds < 1 {
-        write "REFUSED  a delay under 1ms induces nothing; pass e.g. 1000", !
+        write "REFUSED  a delay under 1ms induces nothing; pass e.g. 3000", !
         quit $$$ERROR($$$GeneralError, "delay must be >= 1ms")
     }
     set ^ProductionGuardian.Trigger("SlowMs") = pMilliseconds
     write "ARMED  slow_processing  (+ growing_queue_wait once traffic overlaps)", !
     write "  ", ..#OPERATION, " now takes ", pMilliseconds, "ms per message.", !
     write "  No recompile: the operation reads ^ProductionGuardian.Trigger(""SlowMs"") per message.", !
-    write "  Gate is the greater of the 0.3s Cloud API floor and 3x its ~0.05s baseline.", !
+    write "  Gate is the 1.5s ", ..#OPERATION, " floor, which beats 3x its ~0.05s baseline.", !
+    if pMilliseconds < 2000 {
+        // Named rather than refused: a smaller delay is still a legitimate thing to arm, it just
+        // does not reach the reporting floor for this host. Silence with no explanation is what
+        // sends someone looking for a broken rule.
+        //
+        // 2000, NOT the 1500ms floor itself. The measured processing time comes in UNDER the
+        // armed value -- `SlowProcessing(1000)` measured 840ms, ~0.84x -- so the armed value that
+        // actually reaches a 1.5s floor is ~1786ms, and a boundary at 1500 left [1500, 1785]
+        // inducing nothing while printing no note. That band is the exact failure this note
+        // exists to prevent, so the boundary belongs above the floor rather than on it.
+        write "  NOTE  under 2000ms this host reports no slow_processing -- its floor is 1.5s", !
+        write "        and the induced delay measures ~0.84x what you pass, so 1500 is not", !
+        write "        enough. Pass 3000 to see the finding.", !
+        write "        growing_queue_wait still fires once traffic overlaps.", !
+    }
     quit $$$OK
 }
 

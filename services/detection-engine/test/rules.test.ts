@@ -6,9 +6,12 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { BaselineStore } from '../src/baseline/window.ts';
-import { DEFAULT_CONFIG, type ThresholdConfig } from '../src/config/thresholds.ts';
+import { DEFAULT_CONFIG, type ThresholdConfig, validateConfig } from '../src/config/thresholds.ts';
 import { HOST_RULES } from '../src/detect/rules/index.ts';
 import type { RawHostMetrics, Rule, RuleVerdict } from '../src/detect/rules/types.ts';
 import type { Host } from '../src/types/healthscan.ts';
@@ -265,6 +268,57 @@ describe('slow_processing', () => {
       { config },
     );
     assert.equal(verdict, null, '2s is under the overridden 5s floor');
+  });
+});
+
+/**
+ * The COMMITTED floor, not DEFAULT_CONFIG's — this one decides what an audience sees.
+ *
+ * MVP 2's scenario throttles `Cloud API`'s downstream to ~1s per call, and `avgProcessingTime` reads
+ * 1.01s BOTH at pool 1 behind a queue AND at pool 4 with the queue drained, because pool size changes
+ * concurrency rather than per-message latency. So any floor under 1.01 emits a `critical` finding that
+ * **Smart Resolve cannot clear** — it sat on the board after a fix that had emptied the queue, which
+ * reads as the fix not working. Lowering this floor back re-introduces exactly that, and the two cases
+ * below are the boundary: tolerate ~1s, still catch a downstream that is genuinely slower.
+ *
+ * A COLD baseline store on purpose. `referenceBaselines` states `Cloud API`/`avgProcessingTime` as
+ * 0.05 and `effectiveBaseline` prefers it over the rolling mean unconditionally, so this mirrors the
+ * live path rather than warming a window the engine would ignore.
+ */
+describe('the committed Cloud API processing floor (thresholds.json, not DEFAULT_CONFIG)', () => {
+  const serviceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const committed = validateConfig(
+    JSON.parse(readFileSync(resolve(serviceRoot, 'thresholds.json'), 'utf8')),
+  );
+  const cold = () => new BaselineStore(1800, DEFAULT_CONFIG.minBaselineSamples);
+
+  it('stays silent at the 1.01s the pool_bottleneck scenario produces', () => {
+    const verdict = evaluate(
+      'slow_processing',
+      host({ host: 'Cloud API', avgProcessingTime: 1.01 }),
+      cold(),
+      { config: committed },
+    );
+    assert.equal(
+      verdict,
+      null,
+      'a finding at 1.01s outlives Smart Resolve, because 1.01s is the reading both before and ' +
+        'after the pool change. See the hostOverrides note in thresholds.json.',
+    );
+  });
+
+  it('still fires, critical, on a downstream genuinely slower than the tolerance', () => {
+    const verdict = evaluate(
+      'slow_processing',
+      host({ host: 'Cloud API', avgProcessingTime: 2.0 }),
+      cold(),
+      { config: committed },
+    );
+    assert.ok(
+      verdict !== null,
+      'the floor is a tolerance for a ~1s remote call, not a way to switch this rule off for the host',
+    );
+    assert.equal(verdict.severity, 'critical', '2.0s against a stated 0.05s normal is 40x');
   });
 });
 
