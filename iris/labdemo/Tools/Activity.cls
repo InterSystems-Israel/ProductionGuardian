@@ -97,8 +97,8 @@
 /// WHY NOT SIMPLY DROP THE COLUMN. Because it carries the one piece of shape a throughput question
 /// needs -- "which kind of message" -- and a diagnosis that cannot distinguish two message types on
 /// one host is materially weaker. Returning a CLASSIFICATION keeps the shape and drops the payload,
-/// which is the same trade `ErrorSummary`'s catalogue makes: fixed strings looked up by a verified
-/// key, never a value copied out of a row.
+/// which is the same trade `Tools.ErrorCatalogue.Summary`'s catalogue makes: fixed strings looked up by
+/// a verified key, never a value copied out of a row.
 ///
 /// ─────────────────────────────────────────────────────────────────────────────────────────────
 /// NULLABILITY, per `contracts/mcp-tools.md` §2.1: an unmeasurable value is not a small one. An
@@ -155,7 +155,11 @@ ClassMethod GetActivityCoverage() As %DynamicObject
         set row = ..CoverageRow(resolution)
         if $isobject(row) {
             do out.resolutions.%Push(row)
-            set out.readable = 1
+            // `%Set(...,"boolean")` rather than `= 1`. A bare assignment of 1 to a %DynamicObject key
+            // serialises as the NUMBER 1, so this key came back as `"readable":1` while the literal on
+            // the line above initialised it to `false` -- one key, two JSON types, depending on which
+            // path ran. `contracts/mcp-tools.md` shows `true`, so the number was out of contract.
+            do out.%Set("readable", 1, "boolean")
         }
     }
     if 'out.readable {
@@ -184,20 +188,29 @@ ClassMethod GetActivityCoverage() As %DynamicObject
         // four contracts and requires it verbatim, spaces intact and no case folding, so an
         // uppercased name would be a host name that matches nothing the agent can pass back to
         // `get_host_status` or the engine can join on.
-        do out.hosts.%Push({
+        set entry = {
             "host": (rs.%Get("HostName")),
             "hostType": (..HostTypeName(rs.%Get("HostType"))),
-            // `application` distinguishes the three LABDEMO hosts from framework plumbing without
-            // the caller needing a list of framework names. `Ens.Activity.Operation.Local` writes
-            // these rows and appears in them, and `iris/CLAUDE.md` §3 is explicit that it is not an
-            // application host -- so an agent asked "which host is slowest" must be able to tell
-            // `Ens.MonitorService` from `Cloud API` rather than reporting the framework's own
-            // bookkeeping as a finding.
-            "application": (..IsApplicationHost(rs.%Get("HostName"))),
             "messages": (+rs.%Get("Msgs")),
             "firstActivityUTC": (..IsoUTC(rs.%Get("FirstSlot"))),
             "lastActivityUTC": (..IsoUTC(rs.%Get("LastSlot")))
-        })
+        }
+        // `application` distinguishes the three LABDEMO hosts from framework plumbing without the
+        // caller needing a list of framework names. `Ens.Activity.Operation.Local` writes these rows
+        // and appears in them, and `iris/CLAUDE.md` §3 is explicit that it is not an application host
+        // -- so an agent asked "which host is slowest" must be able to tell `Ens.MonitorService` from
+        // `Cloud API` rather than reporting the framework's own bookkeeping as a finding.
+        //
+        // SET OUTSIDE THE LITERAL BECAUSE A LITERAL CANNOT CARRY A TYPE. Inside the `{...}` this
+        // emitted `"application":1` / `"application":0`, and the contract's own sample shows `true`.
+        // Measured consequence rather than a tidiness point: asked "how many hosts are in this
+        // production", the chat answered "7 ... both application hosts and framework-related hosts"
+        // against 3 application hosts, while the prompt paragraph telling it to read this flag names
+        // `true` and `false`. A rule stated in one vocabulary and a payload emitted in another.
+        do entry.%Set("application",
+            ##class(ProductionGuardian.LabDemo.Tools.HostRoster).IsApplication(rs.%Get("HostName")),
+            "boolean")
+        do out.hosts.%Push(entry)
     }
     quit out
 }
@@ -280,7 +293,7 @@ ClassMethod GetActivityTrend(host As %String, resolution As %String = "hours", b
         // A SUCCESS, and it says so. An unknown host and a silent host are different facts, so the
         // reason names which -- checked against the production's own config item set rather than
         // guessed from the absence of rows.
-        set out.reason = $select(..IsConfigItem(host): "no recorded activity for this host",
+        set out.reason = $select(##class(ProductionGuardian.LabDemo.Tools.HostRoster).IsConfigItem(host): "no recorded activity for this host",
             1: "no activity recorded, and '" _ host _ "' is not a config item in " _ ..#PRODUCTION)
         quit out
     }
@@ -311,7 +324,9 @@ ClassMethod GetActivityTrend(host As %String, resolution As %String = "hours", b
         })
     }
 
-    set out.measured = 1
+    // Typed, for the reason spelled out at `GetActivityCoverage`'s `readable`: `= 1` on a
+    // %DynamicObject key emits the number 1, against the `false` the literal above initialised it to.
+    do out.%Set("measured", 1, "boolean")
     set out.from = out.buckets.%Get(0).startUTC
     set out.to = out.buckets.%Get(out.buckets.%Size() - 1).startUTC
     // A TOTALS BLOCK over exactly the buckets returned, so a question about the window as a whole
@@ -407,10 +422,9 @@ ClassMethod CompareHostActivity(resolution As %String = "hours", buckets As %Int
 
     while rs.%Next() {
         set host = rs.%Get("HostName"), msgs = +rs.%Get("Msgs")
-        do out.hosts.%Push({
+        set entry = {
             "host": (host),
             "hostType": (..HostTypeName(rs.%Get("HostType"))),
-            "application": (..IsApplicationHost(host)),
             "messages": (msgs),
             "avgProcessingTime": (..Divide(+rs.%Get("Dur"), msgs)),
             "avgQueueingTime": (..Divide(+rs.%Get("QDur"), msgs)),
@@ -424,8 +438,12 @@ ClassMethod CompareHostActivity(resolution As %String = "hours", buckets As %Int
             // the message body via an overridable hook, so it is treated as untrusted text and only
             // independently-verifiable configuration names survive.
             "messageKinds": (..MessageKinds(table, host))
-        })
-        set out.measured = 1
+        }
+        // Typed and set outside the literal — see `GetActivityCoverage`.
+        do entry.%Set("application",
+            ##class(ProductionGuardian.LabDemo.Tools.HostRoster).IsApplication(host), "boolean")
+        do out.hosts.%Push(entry)
+        do out.%Set("measured", 1, "boolean")
     }
     set out.from = ..IsoUTC(from)
     set out.to = ..IsoUTC(to)
@@ -517,7 +535,7 @@ ClassMethod MessageKinds(table As %String, host As %String) As %DynamicArray [ P
 /// WHY VERIFICATION AND NOT A REGEX. A pattern like "looks like a class name" would pass
 /// `Patient.Smith.John` -- three dots and legal identifier characters -- and a pattern for "looks
 /// like an HL7 structure" would pass `MRN_12345`. Both would be a leak through a gap in a pattern,
-/// which is precisely why `Tools.Read.ClassifyError` is an allowlist of literal tokens rather than a
+/// which is precisely why `Tools.ErrorCatalogue.Classify` is an allowlist of literal tokens rather than a
 /// shape test. Checking against what this instance actually has is the strongest available test and
 /// it fails closed: an unrecognised value is refused rather than reasoned about.
 ///
@@ -629,46 +647,10 @@ ClassMethod HostTypeName(type As %String) As %String [ Private ]
         : "unknown")
 }
 
-/// Is this host one of the production's APPLICATION config items? Private.
-///
-/// Reads the running production's `<Item>` set and excludes the framework hosts, rather than
-/// carrying a list of framework names. Root `CLAUDE.md` §6 makes `Production.cls`'s item set the
-/// authority precisely because a copied host list is what went stale when `FHIR Transform` was
-/// removed -- so this asks the production instead of restating it.
-///
-/// `Ens.*` prefixed items are framework: `Ens.Activity.Operation.Local` IS a config item and
-/// `iris/CLAUDE.md` §3 states it is not an application host. The activity tables also record hosts
-/// that are not config items at all -- `Ens.MonitorService`, `Ens.Alerting.AlertMonitor`,
-/// `Ens.ScheduleService`, `Ens.ScheduleHandler` -- which are framework services the interop
-/// framework runs itself. Both cases resolve to `false` here, by the prefix test and by absence
-/// respectively.
-ClassMethod IsApplicationHost(host As %String) As %Boolean [ Private ]
-{
-    if $extract(host, 1, 4) = "Ens." {
-        quit 0
-    }
-    quit ..IsConfigItem(host)
-}
-
-/// Is this host a config item in the production this class reports on? Private.
-ClassMethod IsConfigItem(host As %String) As %Boolean [ Private ]
-{
-    set def = ##class(Ens.Config.Production).%OpenId(..#PRODUCTION)
-    if '$isobject(def) {
-        quit 0
-    }
-    // Explicit result variable rather than a bare `quit` inside the FOR -- the same reasoning as
-    // `Tools.Read.FindItem`, where breaking the loop left the variable holding whatever was last
-    // examined.
-    set result = 0
-    for i = 1:1:def.Items.Count() {
-        if def.Items.GetAt(i).Name = host {
-            set result = 1
-            quit
-        }
-    }
-    quit result
-}
+// `IsApplicationHost` AND `IsConfigItem` USED TO LIVE HERE, as two `[ Private ]` helpers. They are now
+// `Tools.HostRoster.IsApplication` and `.IsConfigItem`, public on a class that is deliberately not a
+// `%AI.Tool` subclass so they can be shared without becoming callable tools. `Tools.EventLog` groups by
+// host as well and needs the same answer; see `HostRoster`'s class comment for why it is one copy.
 
 /// numerator / denominator, or "" when the denominator is zero. Private.
 ///

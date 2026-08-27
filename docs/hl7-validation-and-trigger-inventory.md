@@ -202,7 +202,7 @@ can see, because `Ens.MessageHeader.Status` stays `9` regardless.
 
 One genuinely different code exists but never reaches us. A structurally incomplete message
 (required segments absent) validates to **`<EnsEDI>ErrMapRequired`**, which is **not in
-`ClassifyError`'s allowlist** and would therefore land as **`unclassified`**. That path was
+`Tools.ErrorCatalogue.Classify`'s allowlist** and would therefore land as **`unclassified`**. That path was
 reachable only through a direct `Validate()` call in this investigation; through the router the
 wrapping error is `<Ens>ErrGeneral`, so `unclassified` was not observed on the live path.
 
@@ -238,7 +238,7 @@ leaks 'Invalid value'?  no
 leaks 'Doc Identifier'? no
 ```
 
-So the allowlist-not-denylist design in `ClassifyError` is doing exactly the job its comment
+So the allowlist-not-denylist design in `Tools.ErrorCatalogue.Classify` is doing exactly the job its comment
 claims, on an error shape nobody anticipated when it was written. **The lesson is that the
 design is load-bearing, not that the risk is theoretical**: any future change that returned
 log text — for any error code, including a well-intentioned exception for a validation code —
@@ -334,7 +334,7 @@ trigger can have — "an armed scenario that looks armed and shows nothing" — 
    is configured so failures produce `Status = 8` headers. The first is additive and cheap; the
    second changes message flow and is a bigger decision.
 2. **A distinguishable error code.** `<Ens>ErrGeneral` is the catch-all. A validation-specific
-   token in `ClassifyError`'s allowlist plus an `ErrorSummary` row would be a
+   token in `Tools.ErrorCatalogue.Classify`'s allowlist plus a `.Summary` row would be a
    `contracts/mcp-tools.md` §3.4a change.
 3. **A rule, or a mapping onto an existing one.** This is the part MVP 3 explicitly avoided for
    its own scenario ("No new rule is needed... MVP 3 adds a scenario, not a detection type"), so

@@ -70,16 +70,25 @@
 ///      reach a write, because there is nothing to reach. `AuthPolicy` would refuse it anyway
 ///      without `PG_Resolve`; both hold, and this one does not depend on a policy being consulted.
 ///   2. **Every tool it can call is one that cannot return message content.** That is the tools'
-///      guarantee, enforced in `Tools.Activity.ClassifyDimension` and `Tools.Read.ClassifyError` by
-///      allowlist. A question asking for a patient name cannot be answered because no tool will
-///      return one -- not because the model declines.
+///      guarantee, enforced by allowlist in `Tools.Activity.ClassifyDimension` and
+///      `Tools.ErrorCatalogue.Classify`. A question asking for a patient name cannot be answered
+///      because no tool will return one -- not because the model declines.
+///
+///      THE EVENT-LOG TOOLS ARE THE HARDEST CASE AND THE GUARD IS STRUCTURAL THERE TOO.
+///      `Ens_Util.Log` is the one table in reach whose rows carry PHI in free text -- `Text`,
+///      `StatusValue` and `Stack` all embed the formatted message. `Tools.EventLog` uses two separate
+///      queries rather than one: the aggregate query selects no text column at all, and the only
+///      query that reads `Text` is bounded to `Type <= 3` and passes every value through
+///      `ErrorCatalogue.Classify`, which returns a token from a fixed list or "unclassified" and
+///      never the text. So the boundary is a query that cannot select the column, not a filter
+///      applied to what it selected.
 ///   3. **The question is length-capped and never concatenated into the SYSTEM prompt.** It goes in
 ///      as the user turn, where it belongs. Splicing user text into the system prompt is what makes
 ///      "ignore your instructions" a live technique; keeping the roles separate is the mitigation
 ///      that does not depend on filtering.
 ///
 /// There is deliberately NO attempt to detect a "malicious" question by pattern. A denylist of
-/// phrasings is the shape `Tools.Read.ClassifyError` rejects for PHI and it is weaker here: the
+/// phrasings is the shape `Tools.ErrorCatalogue.Classify` rejects for PHI and it is weaker here: the
 /// model is not the boundary, the tool surface is.
 ///
 /// ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -100,20 +109,27 @@
 /// `source: "static"` on the wire so nothing downstream can mistake it for the agent's work.
 ///
 /// WHY NOT AN AGENT TURN WITH THE TOOLS WITHHELD, which was the other candidate. Withholding the tool
-/// set would make `toolCalls: 0` structural, exactly as `GovernAgent(agent, 0, "activity")` makes
+/// set would make `toolCalls: 0` structural, exactly as `GovernAgent(agent, 0, "chat")` makes
 /// `SetPoolSize` unreachable -- but it would still be a model composing the sentence, and a model with
 /// no tools can still assert a number from its priors. For a greeting that is a small risk with no
 /// upside: nothing about "hello" needs generating. Static text cannot hallucinate, costs nothing, and
-/// answers identically at every rehearsal. `Tools.Read.ErrorSummary` is the precedent -- a fixed
+/// answers identically at every rehearsal. `Tools.ErrorCatalogue.Summary` is the precedent -- a fixed
 /// catalogue looked up by a verified key, chosen so the model cannot author it.
 ///
 /// THE CAPABILITY ANSWER IS THE STRONGEST CASE FOR STATIC TEXT, not the weakest. "What can you do" is
 /// a question about THIS SYSTEM, not about the data, so a model answering it is guessing at its own
 /// tool list -- and the observed answer did exactly that, describing itself and then reporting
-/// statistics nobody asked for. The catalogue entry is grounded in the three tools `Tools.Activity`
-/// actually publishes, and if that set ever changes this text is part of the change:
+/// statistics nobody asked for. The catalogue entry is grounded in the tools this agent is actually
+/// registered for, and if that set ever changes this text is part of the change:
 /// `Setup.AIHub.ReportTools()` already fails a boot on an unexpected tool count, so the drift is
 /// visible at the same place the tool itself is.
+///
+/// THAT HAS NOW HAPPENED ONCE, WHICH IS THE ONLY EVIDENCE THE ARRANGEMENT WORKS. Adding
+/// `Tools.EventLog` took the agent from three tools to five, and `ReportTools()`'s expected count went
+/// 10 -> 12 in the same commit as this paragraph, `SmallTalkText`'s "Three things", and
+/// `SystemPrompt`'s "These three tools are ALL you have". A capability sentence the model composed
+/// would have needed none of those edits and would have been wrong for exactly as long as nobody
+/// asked it what it could do.
 ///
 /// FAIL OPEN, DELIBERATELY, AND THE ASYMMETRY IS THE WHOLE DESIGN. An unmatched utterance goes to the
 /// agent with its tools. So the cost of a miss is today's behaviour -- a pleasantry answered with
@@ -486,13 +502,20 @@ ClassMethod SmallTalkAnswer(kind As %String, question As %String) As %DynamicObj
 /// is the same one, arriving from the other direction -- `ErrorSummary` is fixed so a log row cannot
 /// leak through it, and this is fixed so a model cannot invent a capability the system does not have.
 ///
-/// THE CAPABILITY TEXT IS GROUNDED IN THE THREE TOOLS `Tools.Activity` PUBLISHES and says nothing
-/// beyond them. It names what CANNOT be answered as well, because the two most likely follow-ups are
-/// both out of reach: the current instantaneous state (this agent has the history tools only -- see
-/// `Governance.ACTIVITYTOOLS`) and anything about message content (no tool will return it).
+/// THE CAPABILITY TEXT IS GROUNDED IN THE FIVE TOOLS THIS AGENT IS REGISTERED FOR -- `Tools.Activity`'s
+/// three and `Tools.EventLog`'s two -- and says nothing beyond them. It names what CANNOT be answered
+/// as well, because the two most likely follow-ups are both out of reach: the current instantaneous
+/// state (this agent has the recorded-history tools only -- see `Governance.ACTIVITYTOOLS`) and
+/// anything about message content (no tool will return it).
 /// Deliberately no host names: root `CLAUDE.md` §6 makes `Production.cls`'s item set the authority and
-/// a copied list here is what went stale when `FHIR Transform` was removed. The three example
-/// questions are about SHAPE for the same reason the panel's suggestion chips are.
+/// a copied list here is what went stale when `FHIR Transform` was removed. The example questions are
+/// about SHAPE for the same reason the panel's suggestion chips are.
+///
+/// THE EVENT-LOG SENTENCE IS THE ONE MOST LIKELY TO BE MISREAD AS A PHI OFFER, so it names the unit it
+/// returns. "I can tell you what the production logged" invites "show me the log line", and the honest
+/// answer is that counts, codes and the class that logged them are available and the message text is
+/// not. Saying that here costs a clause; leaving it to the agent's refusal costs a metered call and an
+/// operator who thinks the assistant is being coy about data it has.
 ///
 /// EACH REPLY INVITES A QUESTION rather than only being polite. A greeting that says "hello" and stops
 /// leaves an operator looking at an empty input, and the reported defect is fundamentally about the
@@ -502,24 +525,33 @@ ClassMethod SmallTalkText(kind As %String) As %String [ Private ]
     if kind = "greeting" {
         quit "Hello. I can answer questions about this production's recorded interoperability "
             _ "activity -- message volume, throughput, and processing and queueing times over a "
-            _ "period you choose. Ask me something and I will read the activity tables for it."
+            _ "period you choose -- and about what the production itself logged over that period, "
+            _ "including errors and warnings. Ask me something and I will read the tables for it."
     }
     if kind = "thanks" {
-        quit "You're welcome. Ask again whenever you want another look at the activity figures."
+        quit "You're welcome. Ask again whenever you want another look at the activity or the "
+            _ "event log."
     }
     if kind = "farewell" {
-        quit "Goodbye. The activity history stays here whenever you want to come back to it."
+        quit "Goodbye. The activity history and the event log stay here whenever you want to come "
+            _ "back to them."
     }
     if kind = "capability" {
-        quit "I answer questions about this production's recorded interoperability activity, by "
-            _ "reading the IRIS activity tables through governed, audited tools. Three things: "
+        quit "I answer questions about this production's recorded activity and its event log, by "
+            _ "reading the IRIS tables through governed, audited tools. On activity, three things: "
             _ "which hosts have recorded activity and how far back the history goes; how one host's "
             _ "throughput and latency have moved over time, bucket by bucket; and how all the hosts "
             _ "compare over one window, ranked by volume. So ""which host is busiest"", ""is anything "
             _ "falling behind on queueing time"" and ""how has throughput changed today"" are all "
-            _ "answerable, at ten-second, hourly or daily resolution. Two things I cannot do: I see "
-            _ "recorded history rather than the current instantaneous state of a host, and I never "
-            _ "see message content or patient data -- counts, durations and configuration only."
+            _ "answerable, at ten-second, hourly or daily resolution. On the event log, two more: how "
+            _ "many entries each host wrote at each severity over a window, with the error codes that "
+            _ "appeared and what kind of fault each one is; and how that volume moved over time, so "
+            _ """are there errors"", ""what is failing"" and ""when did it start"" are answerable too. "
+            _ "Entries the production wrote about itself -- starts, stops and failures to start -- are "
+            _ "included, and they are the ones no host-by-host view shows. Two things I cannot do: I "
+            _ "see recorded history rather than the current instantaneous state of a host, and I never "
+            _ "see message content or patient data -- so from the log you get counts, severities, "
+            _ "error codes and the class that logged them, never the logged text itself."
     }
     // NO DEFAULT SENTENCE. Every kind `SmallTalkKind` can return is handled above, and "" here would
     // fail `chat.ts`'s `answer` check and surface as `unavailable` -- which is the correct outcome for
@@ -564,14 +596,21 @@ ClassMethod BuildAgent(Output pStatus As %Status) As %AI.Agent [ Private ]
     // `ToolManager.FindTools()` is namespace-wide DISCOVERY and lists `SetPoolSize`, `%AI.Tools.SQL`
     // and `ShellTools` regardless of what is registered -- so it looks alarming and proves nothing.
     //
-    // "activity" -- THE ACTIVITY TOOLS ONLY, and this is a correctness guard, not a further safety
-    // one. Given the current-state tools as well, the model answered history questions from the
-    // instantaneous reading: "which host has the highest average queueing time" came back as 0.12s
-    // from `GetProcessingTime` when the recorded answer was 77.66s, with `confidence: 1`. The prompt
-    // already named each tool and what it was for, which did not help. `Tools.Governance`'s
-    // ACTIVITYTOOLS comment carries both measurements. AI Detective keeps the full set because it
-    // explains one finding and needs the live status beside it.
-    set pStatus = ##class(ProductionGuardian.LabDemo.Tools.Governance).GovernAgent(agent, 0, "activity")
+    // "chat" -- THE ACTIVITY TOOLS AND THE EVENT-LOG TOOLS, and the exclusion is a correctness guard
+    // rather than a further safety one. Given the current-state tools as well, the model answered
+    // history questions from the instantaneous reading: "which host has the highest average queueing
+    // time" came back as 0.12s from `GetProcessingTime` when the recorded answer was 77.66s, with
+    // `confidence: 1`. The prompt already named each tool and what it was for, which did not help.
+    // `Tools.Governance`'s ACTIVITYTOOLS comment carries both measurements. AI Detective keeps the
+    // full set because it explains one finding and needs the live status beside it.
+    //
+    // WHY THE EVENT LOG JOINED THIS SET AND NOT `Tools.Read`'s. Both families it now has answer "what
+    // happened over a period"; `Tools.Read` answers "what is true right now". That is the line the
+    // 0.12-vs-77.66 measurement is about, and an event-log history sits on the recorded side of it.
+    // The overlap with `Tools.Read.GetRecentErrors` is real and is a milder risk than the one above --
+    // both read `Ens_Util.Log`, so a model picking the "wrong" one gets a true answer at a different
+    // scope rather than one three orders of magnitude out. `Governance.EVENTLOGTOOLS` has the numbers.
+    set pStatus = ##class(ProductionGuardian.LabDemo.Tools.Governance).GovernAgent(agent, 0, "chat")
     if $$$ISERR(pStatus) {
         quit $$$NULLOREF
     }
@@ -589,19 +628,66 @@ ClassMethod SystemPrompt() As %String [ Private ]
     // over three live runs on an armed scenario only one produced the evidence-derived answer -- the
     // other two wrote a fluent paragraph having read nothing. Naming the tool that answers the
     // question is what closed that.
-    set p = p _ "get_activity_coverage lists which hosts have recorded activity and how far back the "
+    // NAMED IN THE FORM THE RUNTIME ACTUALLY ACCEPTS, which the three activity names were not.
+    // `%AI.ToolMgr` derives a tool name from the ClassMethod name, so `%Discover()` on this manager
+    // reports `GetActivityCoverage`, `GetActivityTrend`, `CompareHostActivity` -- measured, not read
+    // off the contract, whose §1 table uses snake_case as section titles. The model was mapping
+    // `get_activity_coverage` in this prose onto the PascalCase name in its tool schema by resemblance
+    // and getting away with it. That is a coincidence to stop relying on rather than a convention:
+    // naming a tool the model cannot call is the same defect class as the two chat defects already
+    // written up here, and it fails silently by looking like the model chose not to call anything.
+    set p = p _ "GetActivityCoverage lists which hosts have recorded activity and how far back the "
     set p = p _ "data goes -- call it first when you do not already know a host name or a date range. "
-    set p = p _ "get_activity_trend gives one host's throughput and latency bucket by bucket, so it is "
+    set p = p _ "GetActivityTrend gives one host's throughput and latency bucket by bucket, so it is "
     set p = p _ "what answers ""is this getting worse"" or ""when did it start"". "
-    set p = p _ "compare_host_activity ranks every host over one window, so it is what answers "
+    set p = p _ "CompareHostActivity ranks every host over one window, so it is what answers "
     set p = p _ """which host is busiest"", ""which is slowest"" or ""where is the time going"" in a "
     set p = p _ "SINGLE call -- prefer it over calling the trend tool once per host. "
 
-    // SAYS WHAT IT DOES NOT HAVE. The three tools above are all it is given (GovernAgent's
-    // "activity" set), and stating that is what stops the model narrating a tool call it cannot make
-    // and then reporting the absence as a finding about the production. The registration is the
-    // guard; this sentence only keeps the narrative honest about it.
-    set p = p _ "These three tools are ALL you have. You cannot read the current instantaneous "
+    // THE EVENT-LOG PAIR. Separated from the three above because they answer a different question:
+    // the activity tools say how much moved and how fast, and these say what the production SAID
+    // while it moved. An operator asking "any errors?" is asking this pair, and before MVP 3 the chat
+    // had no tool that could answer it at all -- it would answer from throughput, which is inference.
+    set p = p _ "GetEventLogSummary reads what the production itself logged over a window: how many "
+    set p = p _ "entries each host wrote at each severity, which error codes appeared with a "
+    set p = p _ "plain-language summary of each, and which class and method wrote them. It is what "
+    set p = p _ "answers ""are there errors"", ""what is failing"" and ""what went wrong with X"". "
+    set p = p _ "GetEventLogTrend gives log volume by severity bucket by bucket, INCLUDING buckets "
+    set p = p _ "with none, so it is what answers ""when did the errors start"" or ""has it stopped"". "
+
+    // THE "(production)" SCOPE, and this is the measured fact that makes the pair worth having.
+    // 91 rows on this instance are production-lifecycle events with a NULL ConfigName -- they belong
+    // to the production, not to any host -- and every error logged today is one of them. A model that
+    // does not know to look for them cannot see a production that failed to start, which is the single
+    // most operator-relevant thing in the table.
+    //
+    // THE TWO TOOLS REACH THAT SCOPE DIFFERENTLY, and the first version of this paragraph got it
+    // wrong: it told the model to "pass the host name (production)" to both, and `GetEventLogSummary`
+    // HAS NO HOST ARGUMENT -- it returns every host every time. Written from the design rather than
+    // from the signature, which is the same mistake as the snake_case tool names two blocks up and
+    // caught the same way, by running it. The model ignored the unfollowable half, correctly: it reads
+    // the real argument schema from the tool definition and only reads this prose for meaning.
+    set p = p _ "Some log entries belong to the production itself rather than to any host -- starts, "
+    set p = p _ "stops and failures to start. GetEventLogSummary always returns every host at once, "
+    set p = p _ "with those entries grouped under the host name ""(production)"" -- look for that entry "
+    set p = p _ "rather than trying to ask for it. GetEventLogTrend does take a host, and "
+    set p = p _ """(production)"" is a valid one to pass it; omit the host to trend everything together. "
+
+    // THE `application` FLAG, because "how many hosts" is a question the summary will otherwise get
+    // wrong. Nine host names come back on this instance and five are framework services the interop
+    // framework runs for itself -- an operator counting hosts on the dashboard sees three. The flag is
+    // in the payload; this sentence is what makes the model read it rather than counting the array.
+    set p = p _ "Each host entry carries an application flag. true is a component of this production; "
+    set p = p _ "false is IRIS interoperability framework plumbing, which an operator does not manage "
+    set p = p _ "and should not be counted as one of their hosts; null is the ""(production)"" entry, "
+    set p = p _ "which is the production itself rather than a host. Lead with the application hosts and "
+    set p = p _ "the production, and mention framework entries only if they are what is failing. "
+
+    // SAYS WHAT IT DOES NOT HAVE. The five tools above are all it is given (GovernAgent's "chat"
+    // set), and stating that is what stops the model narrating a tool call it cannot make and then
+    // reporting the absence as a finding about the production. The registration is the guard; this
+    // sentence only keeps the narrative honest about it.
+    set p = p _ "These five tools are ALL you have. You cannot read the current instantaneous "
     set p = p _ "status, queue depth or pool size of a host, and you must not claim to have. Every "
     set p = p _ "number you report is a RECORDED figure over a stated period, so say which period. "
 
@@ -610,6 +696,22 @@ ClassMethod SystemPrompt() As %String [ Private ]
     // minutes" with sixty-minute buckets and reports a spike as a flat line.
     set p = p _ "Choose the resolution from the span the question asks about: ""days"" for a week or "
     set p = p _ "more, ""hours"" for a day, ""seconds"" (ten-second buckets) for the last few minutes. "
+
+    // THE TWO FAMILIES TAKE DIFFERENT RESOLUTION VOCABULARIES AND DIFFERENT WINDOW ARGUMENTS, so the
+    // sentence above cannot cover both. `GetActivityTrend` takes seconds/hours/days, because its tables
+    // are pre-bucketed at those grains; `GetEventLogTrend` takes minutes/hours/days, because
+    // `Ens_Util.Log` has no buckets and the finest clean prefix of a TimeLogged string is the minute.
+    // `EventLog.#RESOLUTIONS` carries that argument. Both refuse an unrecognised value with an explicit
+    // error rather than silently substituting one -- the model recovers from that fine, but it costs an
+    // iteration out of five, and the cap is the reason to spend a sentence here.
+    //
+    // AND THE WINDOWS ARE NOT THE SAME KIND OF NUMBER. The summary takes a duration in minutes; the
+    // trend takes a COUNT OF BUCKETS at whatever resolution it was given. Stating the two caps without
+    // stating that distinction is how a model asks for 1440 buckets of days.
+    set p = p _ "The event-log trend takes a different resolution set -- ""minutes"", ""hours"" or "
+    set p = p _ """days"". GetEventLogSummary's window is a DURATION in minutes, at most 1440 (one "
+    set p = p _ "day). GetEventLogTrend's is a COUNT OF BUCKETS at its resolution, at most 720 -- so 24 "
+    set p = p _ "hourly buckets is one day, and 90 minute buckets is the last hour and a half. "
 
     // THE ARITHMETIC THE MODEL GETS WRONG UNLESS TOLD. avgQueueingTime and avgProcessingTime measure
     // different things and the distinction is the whole diagnosis for a throughput-bound host: this
@@ -627,6 +729,76 @@ ClassMethod SystemPrompt() As %String [ Private ]
     set p = p _ "A null average means NOT MEASURED, never zero and never instant: it is a bucket with "
     set p = p _ "no messages. Say so rather than treating it as a value. "
 
+    // AND THE EVENT LOG INVERTS THE SIGN, which is why it needs its own sentence rather than being
+    // folded into the one above. For a latency average, zero is impossible and null means unmeasurable.
+    // For a log count, zero is a MEASUREMENT -- the query ran and found no rows -- and it is usually the
+    // answer the operator most wants. A model applying the null rule uniformly hedges on a clean
+    // window, which reads as "I could not check" when the truth is "I checked and it is clear".
+    set p = p _ "An event-log count of zero is the opposite: it is a real measurement meaning nothing "
+    set p = p _ "was logged in that window, so report it as good news plainly rather than as missing "
+    set p = p _ "data. "
+
+    // "unclassified" IS THE EVENT LOG'S "other". Same reasoning as the messageKinds sentence below --
+    // the code was not on the allowlist, so its meaning is genuinely unknown here and the summary comes
+    // back null. A model that guesses from the code string is inventing a diagnosis, and the sources
+    // field is the honest thing to fall back on because a verified class and method name still say what
+    // KIND of event it was. On this instance every unclassified error and warning row is an
+    // `Ens.Director` production-lifecycle event, so the fallback is not hypothetical.
+    set p = p _ "An error code of ""unclassified"" with a null summary means the code was not "
+    set p = p _ "recognised, NOT that the error is unimportant: report the count and the class and "
+    set p = p _ "method that logged it, and do not guess what the error means. "
+
+    // AND THE `sources` ARRAY IS EVIDENCE, NOT FOOTNOTES -- measured, on the first live run of the
+    // question this pair was added for. Asked "did the production have trouble starting or stopping
+    // today", the model called both tools, correctly counted the 10 error rows, and answered "there
+    // were no issues starting or stopping the production, as indicated by the absence of any related
+    // errors" with `confidence: 0.9`. All 10 rows it had just counted were `Ens.Director` lifecycle
+    // events and 9 of them were `StartProduction` failures. It had the answer in `sources` and read
+    // right past it, because every one of those codes is `unclassified` and it took an unrecognised
+    // code for an absent fault.
+    //
+    // NO STRUCTURAL GUARD IS AVAILABLE HERE, which is why this is prose after the class comment argues
+    // against relying on prose. The 0.12-vs-77.66 defect had one -- withhold the tool -- because two
+    // tools disagreed. This is one tool whose payload was under-read, so there is nothing to withhold;
+    // the only alternative would be the tool refusing to return a count without an interpretation,
+    // which is `ErrorCatalogue`'s invented-diagnosis line. So it is a sentence, and it was verified by
+    // re-running the same question rather than by assuming it took.
+    set p = p _ "The sources array names the class and method that wrote the entries, and when the "
+    set p = p _ "code is unclassified that is the ONLY thing that says what kind of event it was -- "
+    set p = p _ "read it before answering a question about a kind of event. Entries written by "
+    set p = p _ "Ens.Director are the production starting, stopping or failing to do either. "
+
+    // THE CONCLUSION RULE, stated separately because the sentence above only supplies the evidence.
+    // "No classified error matching the question" is not "no error", and that substitution is what
+    // produced the wrong clause above. A non-zero count the model cannot interpret must be reported as
+    // uninterpreted, which is the same honesty the null and "other" rules ask for.
+    set p = p _ "Only a count of ZERO supports saying nothing happened. If the count is not zero and "
+    set p = p _ "you cannot tell whether those entries answer the question, say how many there were "
+    set p = p _ "and what wrote them, and say you cannot rule them in or out. "
+
+    // AND THEN THE PROSE ABOVE WAS MEASURED AND FOUND INSUFFICIENT, so the interpretation moved into
+    // the payload and this sentence only points at it. Re-running the same question after the two
+    // sentences above landed, the model still closed with "the production started and operated without
+    // additional issues indicated in the logs" -- at `confidence: 1` this time -- with 9
+    // `Ens.Director.StartProduction` error rows sitting in the `sources` array it had just been told to
+    // read. It held on one run of three, which is not a fix.
+    //
+    // `lifecycleFaults` IS THE STRUCTURAL GUARD the block above says was unavailable, and finding one
+    // took admitting what the missing piece actually was: not evidence (the model had it) but the JOIN
+    // from `Ens.Director.StartProduction` to "the production failed to start". That join is a fixed
+    // catalogue keyed on a method name already verified against `%Dictionary.CompiledMethod` -- exactly
+    // `ErrorCatalogue.Summary`'s shape, so it is the sanctioned pattern rather than a new one, and it
+    // derives nothing from a log row, so the PHI boundary is untouched. The array is ALWAYS present on
+    // the "(production)" entry, which is what makes empty mean measured-clean instead of not-checked.
+    set p = p _ "The ""(production)"" entry also carries a lifecycleFaults array: each entry is a "
+    set p = p _ "lifecycle event (""start"", ""stop"", ""update"" or ""other""), a severity and a count, "
+    set p = p _ "and it is the DIRECT answer to whether the production had trouble starting or stopping. "
+    set p = p _ "A start entry at error severity means the production FAILED TO START that many times, "
+    set p = p _ "whatever the error codes say. This array is always present, so an empty one is a "
+    set p = p _ "measurement meaning the lifecycle was clean -- and a non-empty one contradicts any "
+    set p = p _ "statement that the production started without issues. Read it before answering a "
+    set p = p _ "question about starting, stopping or restarting. "
+
     // WHAT IT MAY NOT CLAIM. Two things, and both are things the tools structurally cannot supply --
     // so this is telling the model what it will NOT find rather than asking it to refrain.
     set p = p _ "You are given metrics and configuration only. You never see message content, patient "
@@ -636,6 +808,14 @@ ClassMethod SystemPrompt() As %String [ Private ]
     set p = p _ "The messageKinds field classifies the KIND of message and returns ""other"" for any "
     set p = p _ "value that could not be verified as a schema or class name; ""other"" means "
     set p = p _ "unverified, so do not speculate about what it was. "
+
+    // THE `AtLeast` SUFFIX MEANS WHAT IT SAYS, and the model will not infer that from the number alone.
+    // Those counts are a MAX across severity groups rather than a sum -- see `Tools.EventLog`, which
+    // takes the lower bound deliberately because a sum would double-count a job that logged both an
+    // error and an info. Reported as an exact figure it would be quietly too low, which is the one
+    // direction an operator cannot check against anything.
+    set p = p _ "Fields whose names end in ""AtLeast"" are lower bounds, not exact counts. Say ""at "
+    set p = p _ "least N"" and never just ""N"". "
 
     // NO ACTIONS. The write tool is not registered on this manager, so a recommendation to act would
     // be a promise the system cannot keep -- the same defect `DropUnapplicableAction` exists to
