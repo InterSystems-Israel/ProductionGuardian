@@ -81,9 +81,12 @@ line at **column 0** — indent it and PowerShell does not see the terminator.
    it reads as correct and demonstrates nothing about the agent. Check `source: "agent"` and a
    non-zero `toolCalls` in any investigation — those two cannot be faked. This is the standing
    pre-demo check and it has caught a real regression.
-2. **`Reset()` cannot clear the event log.** It restores settings, but a previous scenario's errors
-   stay in the 60-minute window and a later diagnosis reads them as evidence. That is exactly how a
-   pool bottleneck got diagnosed as a connectivity failure. **Always purge** (step 5).
+2. **`Reset()` cannot clear the event log** — and note it is now the *only* error store it cannot
+   clear, which is why this trap is easy to talk yourself out of. Reset purges the MESSAGE store, so
+   the error count on a host tile does return to 0. The EVENT LOG is a different table: a previous
+   scenario's errors stay in the 60-minute window and a later diagnosis reads them as evidence. That
+   is exactly how a pool bottleneck got diagnosed as a connectivity failure. So a clean tile does not
+   mean clean evidence — **always purge** (step 5).
 3. **Restarting the `iris` container disarms triggers.** Recompiling `Production.cls` resets its item
    settings, so `FilePath` and `PoolSize` revert. Re-arm after any restart; the rail shows live state.
 4. **`Cloud API` may be left at pool 4** from a previous run of the Smart Resolve beat. `Reset()`

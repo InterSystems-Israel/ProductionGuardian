@@ -1,3 +1,5 @@
+Include Ensemble
+
 /// Trigger toggles: induce any of the eight Health Scan finding types on demand.
 ///
 /// Dev A acceptance criterion 3 (spec §3, `iris/CLAUDE.md` §6):
@@ -57,6 +59,12 @@ Parameter CLOSEDPORT = 59999;
 /// NOT CREATED, EVER. `FirstBoot.MakeDirectories()` creates the two real drop directories on every
 /// boot; if this one were in that list the scenario would disarm itself. Checked that it is not.
 Parameter MISSINGPATH = "/tmp/labdemo/hl7-in-missing/";
+
+/// How much message history PurgeErrored() keeps: none.
+///
+/// Ens.Purge's own default is 7 days, which on a demo instance that has been up for an hour would
+/// delete nothing at all and leave the error count exactly where it was.
+Parameter PURGEDAYSTOKEEP = 0;
 
 /// dead_host -- absolute, fires within two polls. The demo's headline finding.
 ClassMethod DeadHost() As %Status
@@ -543,6 +551,13 @@ ClassMethod Reset() As %Status
     if $$$ISERR(sc) {
         quit sc
     }
+
+    // LAST, and after UpdateProduction(), for two reasons. It is the only step whose cost scales
+    // with uptime, so everything cheap has already been restored if it is slow; and the port and
+    // the FilePath are live again by now, so the messages still queued to the operation succeed
+    // rather than the purge racing a host that is still producing the rows it deletes.
+    do ..PurgeErrored()
+
     write !, "  Findings clear on their own within ~10s; a drained queue may leave", !
     write "  growing_queue_wait briefly, which is a true reading of a real wait.", !
     write "  If a class changed, `update` is not enough -- stop and start the production.", !
@@ -878,6 +893,100 @@ ClassMethod RemoveSetting(pItem As %String, pName As %String) As %Status
 ClassMethod UpdateProduction() As %Status
 {
     quit ##class(Ens.Director).UpdateProduction()
+}
+
+/// Purge the errored messages an error scenario left behind, so Reset() clears the per-host error
+/// count on each dashboard host tile.
+///
+/// WHY RESET() COULD NOT ALREADY DO THIS. That count is neither a metric nor a setting: it is
+/// `COUNT(*) FROM Ens.MessageHeader WHERE Status = $$$eMessageStatusError` grouped by
+/// TargetConfigName, computed by `REST/HostStatusDispatcher.ErroredByHost()` because
+/// `iris_interop_messages_errored` carries no `host` label. So it is a property of the MESSAGE
+/// STORE, which is why it survived a container restart, a production restart and every Reset()
+/// before this one -- nothing this class restores can move it, the rows have to go.
+///
+/// ONLY WHEN THERE IS SOMETHING TO PURGE, and that gate is the point rather than an optimisation:
+///   - a reset after a scenario that errored nothing must not delete the demo's message history,
+///     which is what a presenter opens the Message Viewer to show;
+///   - this is the only step in Reset() whose cost scales with how long the stack has been up
+///     (measured: 31.5s to delete 153,144 headers), and the engine abandons /api/demo/reset on a
+///     timeout. A reset with no errors to clear pays one COUNT(*) and nothing else.
+///
+/// ENS.PURGE HAS NO STATUS FILTER -- checked rather than assumed, including `pExtendedOptions`,
+/// which offers StartDateTime, DoNotDeleteEndDateTime, LimitToConfigItems and WQCategory and
+/// nothing about status. `PurgeOneSession()` IS scoped and was rejected: it is a bare
+/// `DELETE FROM Ens.MessageHeader WHERE SessionId = ?` with no integrity check that never touches
+/// bodies, so it would orphan every body it left behind and would happily delete a session still
+/// in flight.
+///
+/// So this purges by DATE and lets pKeepIntegrity protect what is still moving, which it does
+/// exactly. Read from `Ens.Util.MessagePurge.generateDeleteSelectSQL`: a header is eligible only
+/// when no header in its session has a status outside {Completed, Aborted, Error, Discarded}. Error
+/// is INSIDE that set, so an errored message never blocks its own removal, while one still Created
+/// or Queued keeps its whole session. Measured on the live stack: all 845 errored rows removed, the
+/// 6,780 in-flight headers kept, and the proxy then published `errored` 0 on all three application
+/// hosts while `messages` kept climbing -- so throughput and its baseline are untouched.
+///
+/// PURGEDAYSTOKEEP = 0 KEEPS NOTHING, INCLUDING TODAY. Worth stating because "0 days" reads as
+/// "today survives": `Ens.Purge.GetDoNotDeleteDate(0)` returns TOMORROW's local midnight, so the
+/// `TimeCreated <` bound admits everything already written.
+///
+/// RETURNS NOTHING, unlike every other method here. A failed purge must not make Reset() report
+/// failure for the settings it has already restored, so this reports what happened and propagates
+/// no status there is anything useful to do with.
+ClassMethod PurgeErrored() [ Private ]
+{
+    set errored = ..ErroredCount()
+    if errored = 0 {
+        write "  no errored messages in the store; message history left alone", !
+        quit
+    }
+    if errored < 0 {
+        write "  could not count errored messages; skipped the purge", !
+        quit
+    }
+
+    set started = $zh
+    set sc = ##class(Ens.Purge).PurgeMessagesByDate(..#PURGEDAYSTOKEEP, .deleted, 1, 1)
+    set elapsed = $zh - started
+    if $$$ISERR(sc) {
+        write "  PURGE FAILED: ", $system.Status.GetErrorText(sc), !
+        write "    the ", errored, " errored messages remain, so the host error count is unchanged", !
+        quit
+    }
+
+    set remaining = ..ErroredCount()
+    write "  purged ", +$get(deleted), " message headers and ", +$get(deleted("bodies")), " bodies in ", $fnumber(elapsed, "", 1), "s", !
+    write "    host error count ", errored, " -> ", $select(remaining < 0: "unknown", 1: remaining), !
+    if remaining > 0 {
+        // NOT a failure, and said out loud because a count that did not reach 0 otherwise reads as a
+        // purge that half worked: those sessions still hold a message that has not finished, and
+        // pKeepIntegrity is right to refuse them.
+        write "    the ", remaining, " left are in sessions still holding an in-flight message;", !
+        write "    they clear on a later Reset(), once those sessions finish", !
+    }
+}
+
+/// How many errored message headers the store holds, or -1 when that cannot be measured.
+///
+/// -1 RATHER THAN 0, by GetPoolSize()'s rule that an unmeasurable value is not a small one (#33).
+/// Returning 0 from a failed query would have PurgeErrored() print "no errored messages" and skip --
+/// a confident claim about the one number this whole path exists to change.
+ClassMethod ErroredCount() As %Integer [ Private ]
+{
+    set rs = ##class(%SQL.Statement).%ExecDirect(, "SELECT COUNT(*) FROM Ens.MessageHeader WHERE Status = ?", $$$eMessageStatusError)
+    if '$isobject(rs) {
+        quit -1
+    }
+    if 'rs.%Next() {
+        quit -1
+    }
+    // Checked AFTER the fetch, as in HostStatusDispatcher.ErroredByHost(): %SQLCODE is 100 at the
+    // end of a successful result set and only negative on a real error.
+    if rs.%SQLCODE < 0 {
+        quit -1
+    }
+    quit +rs.%GetData(1)
 }
 
 /// stalled_host's configured wait, for the message StalledHost() prints.
