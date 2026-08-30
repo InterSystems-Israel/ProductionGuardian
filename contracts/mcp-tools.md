@@ -59,6 +59,8 @@ silently disagrees with its neighbour is worse than one that is wrong out loud:
 | `compare_host_activity` | `PG.Tools.Activity` | read | `PG_Read` | `PG_Read` | `Ens_Activity_Data.{Seconds,Hours,Days}`, all hosts — §3.9 |
 | `get_event_log_summary` | `PG.Tools.EventLog` | read | `PG_Read` | `PG_Read` | `Ens_Util.Log`, aggregated, **no text** — §3.10 |
 | `get_event_log_trend` | `PG.Tools.EventLog` | read | `PG_Read` | `PG_Read` | `Ens_Util.Log`, bucketed, **no text** — §3.11 |
+| `get_recent_config_changes` | `PG.Tools.ChangeLog` | read | `PG_Read` | `PG_Read` | `%SYS.Audit`, `ModifyConfiguration` rows, **allowlisted** — §3.12 |
+| `get_active_findings` | `PG.Tools.Findings` | read | `PG_Read` | `PG_Read` | **nothing in IRIS** — the snapshot supplied with the request — §3.13 |
 | `set_pool_size` | `PG.Tools.Resolve` | **write** | `PG_Read` | **`PG_Resolve`** | `Ens.Config.Production` + `Ens.Director.UpdateProduction()` |
 
 ### The names in this column are section titles, not callable names
@@ -87,7 +89,7 @@ Two consequences worth stating rather than leaving to be rediscovered:
 `Guardian_Resolve`. §5 explains the resource-not-role choice and why the write tool is
 **listable to `PG_Read` but executable only by `PG_Resolve`**.
 
-Four classes, not twelve, because discovery is per class: `%AI.Tool` exposes every public method of a
+Six classes, not fourteen, because discovery is per class: `%AI.Tool` exposes every public method of a
 subclass as a tool (§7). Splitting read from write across classes means the write tool can carry
 class-level parameters — `REQUIRESAUTH`, its own `Policy` — that must not apply to the read tools.
 `PG.Tools.Activity` is a **third** class rather than five more methods on `PG.Tools.Read` for two
@@ -101,7 +103,18 @@ count the opposite holds: a window with no rows is a *measured* zero, the query 
 and it is usually the answer the operator most wants. Folding these two methods into `Tools.Activity`
 would have put both rules in one class where a reader cannot tell which applies to which field.
 
-**A fifth class carries no tools at all, deliberately.** `PG.Tools.ErrorCatalogue` holds the error-code
+`PG.Tools.ChangeLog` and `PG.Tools.Findings` are the **fifth and sixth**, and each is one tool in one
+file for a reason the two above do not cover:
+
+- **`ChangeLog` reads a HISTORICAL record of the very thing `PG.Tools.Read` reads live.** A tool that
+  returns "`FilePath` was changed to X" sitting in the same class as one that returns "`FilePath` is
+  currently Y" is one docstring away from a model reporting an audit row's `newValue` as the present
+  setting. Separate files make the two families answer visibly different questions.
+- **`Findings` reads nothing in IRIS at all** — it republishes a snapshot the caller supplied with the
+  request (§3.13). Every other tool in this catalogue is a query against this instance, and putting a
+  non-query among them would make "these tools read the production" false for one method in fourteen.
+
+**A seventh class carries no tools at all, deliberately.** `PG.Tools.ErrorCatalogue` holds the error-code
 allowlist and its summary catalogue — §3.4a — which `PG.Tools.Read` and `PG.Tools.EventLog` both need.
 It does **not** extend `%AI.Tool`, so `FindTools`' `$$issubclassof` filter skips it and its two public
 methods are not tools. That is the only arrangement that neither copies the PHI boundary into two
@@ -109,10 +122,15 @@ files nor publishes it as two callable tools, and §3.4a's "adding a row is a co
 checkable while there is a single row set to review.
 
 **`Setup.AIHub.ReportTools()` prints the discovered count on every boot and flags an unexpected one.**
-It expects **12**. That guard is the reason an accidentally-public helper is caught at boot rather
+It expects **14**. That guard is the reason an accidentally-public helper is caught at boot rather
 than in review, so the number moves only with the tool list read back — the two `EventLog` tools were
 confirmed by discovery before the expectation was raised, which mattered here: that class has eight
 `[ Private ]` helpers and would have discovered ten tools had any of them been left public.
+
+**The count is 14 from `ChangeLog` and `Findings`, one tool each and six private helpers between
+them** — and `Tools.Read.#SETTINGALLOWLIST` is a `Parameter` rather than a ClassMethod for this exact
+reason: `ChangeLog` needs the same allowlist, and a public accessor for it on a `%AI.Tool` subclass
+would have become a fifteenth tool that returns a list of setting names to the model.
 
 ---
 
@@ -1421,6 +1439,212 @@ safe to make public: `%AI.ToolMgr.FindTools` filters on `$issubclassof(className
 nothing in either can become a callable tool. Verified by count — `ReportTools()` still reads
 `12 (expected 12)` with both classes present.
 
+### 3.12 `get_recent_config_changes` — read, added in MVP 3
+
+**Runtime name `GetRecentConfigChanges`.** Which setting changed on which host, from what value to what
+value, and when — read from `%SYS.Audit`. The one question no other tool in this catalogue can answer:
+*did someone change something?*
+
+**Input**: `host` (optional — omit for every host of this production), `sinceHours` (optional, default
+`168`, `1..720`).
+
+**Output**: `host`, `sinceHours`, `since`, `now`, `changes[]`, `suppressed`, `truncated`, `sanitised`,
+`auditEnabled`, `retention`.
+
+`changes[]`: `host`, `setting`, `previousValue`, `newValue`, `changedAt`. Newest first.
+
+#### The reporting rule is part of the contract, not a prompt detail
+
+**A consumer of this tool MUST NOT recommend reverting a change it reports.** Whoever made the change
+had a reason the instance cannot see, and the value they *intended* may be neither the old one nor the
+new one — a typo in a new path is not repaired by restoring the old path. So `previousValue` is
+**evidence, not a recommendation**, and it is returned precisely because "changed from a directory that
+exists to one that does not" is a diagnosis while "`FilePath` changed" is not.
+
+Stated here rather than only in the two system prompts because it constrains what a *caller* may do
+with the output. `investigation-api.md`'s `manualRemediation.target` is the shape most likely to break
+it: a recently-changed setting must not become a remediation step proposing the old value.
+
+#### Two columns carry everything, and the names are the wrong way round
+
+Measured on the live instance rather than assumed:
+
+```
+Description   item EMR Source of ProductionGuardian.LabDemo.Production
+EventData     FilePath:/tmp/labdemo/hl7-in-missing/>>/tmp/labdemo/hl7-in/
+```
+
+`Description` is the **subject** and `EventData` is the **detail**. Both are `varbinary` in the SQL
+projection, so **`EventData LIKE '%>>%'` returns SQLCODE -29** — a SQL-side content filter cannot be
+written, and every predicate is on `Event` and `UTCTimeStamp` with the shape tests done in
+ObjectScript over a `TOP 400` result set.
+
+**Host attribution is anchored at both ends** — between the literal `item ` and the literal
+` of <production class>` — because config item names contain spaces, so neither `$piece(d," ",2)` nor a
+containment test recovers `EMR Source`. Anchoring on the production class is also what drops a row
+describing a *different* production instead of reporting it as ours.
+
+**Only 8 of this instance's 82 `ModifyConfiguration` rows are setting changes.** The rest are lifecycle
+text (`Production class compiled`, `Item updated using Management Portal V2 interface`), which is why
+the `>>` test is a filter rather than an assertion.
+
+#### An empty list is not evidence that nothing changed, and the payload says so three ways
+
+This is the tool's central caveat and the reason three fields exist that a naive version would omit:
+
+- **`retention`** — `rows`, `oldest`, `newest` and a `note`, counted over `ModifyConfiguration` only.
+  IRIS purges audit data on a schedule (measured: an `AuditChange` / "Delete audit data" pair ran
+  2026-08-30 06:00 here), so the log's depth is a property of the instance.
+- **`auditEnabled`** — `true`, `false`, or **`null` for "could not tell"**, which is why it is not a
+  plain boolean. Read from `Security.System.Get()`; `Security.System.AuditEnabled()` does not exist on
+  this instance.
+- **`suppressed`** — a **count** of changes whose setting name is not allowlisted, never their names.
+  Published so "nothing changed" and "something changed that I may not name" are distinguishable
+  answers; conflating them is how an agent concludes a host was untouched.
+
+**Not every setting change is audited.** `Ens.Config.Production.%Save()` writes no audit row — only the
+Management Portal's own save path does. Measured by arming `Triggers.MissingFolder()` and finding the
+newest row three days stale. `Triggers.SetSetting()` therefore emits a byte-compatible row itself via
+`$SYSTEM.Security.Audit()`, **after** the save succeeds; anything else in this codebase that mutates a
+setting through `%Save()` is invisible here.
+
+**A row is not readable the instant it is written.** IRIS buffers audit writes and a daemon flushes
+them — measured: a trigger armed, this tool called from the next line of the same session reported
+`changes: []` with `retention.newest` 101 seconds stale, and the identical call a minute later returned
+the row stamped at the earlier time. So **a caller must not assert a change exists immediately after
+making one.** An agent turn spends seconds per tool call, so no consumer of this contract is affected in
+practice; a test that arms and asserts in one breath is.
+
+#### The data boundary — `Username` is never read
+
+`setting`, `previousValue` and `newValue` are allowlisted: `Tools.Read.#SETTINGALLOWLIST` (§3.4b, the
+same list, shared as a `Parameter` rather than copied) plus `PoolSize` and `Enabled`, which are
+`Ens.Config.Item` properties rather than `Settings` rows and are already published by §3.3 and §3.1.
+
+**`Username`, `ClientIPAddress`, `OSUsername`, `CSPSessionID`, `Roles`, `Pid`, `JobId` and `UserInfo`
+are not selected at all.** An operator's identity is neither a metric nor configuration, so it fails
+§6 on its face — and the tool does not need it: "this was changed 40 minutes ago" carries the whole
+diagnostic weight, while naming a person invites an agent to assign blame it cannot support.
+
+```jsonc
+// <- host omitted, sinceHours 24
+{
+  "host": null, "sinceHours": 24,
+  "since": "2026-08-29T09:40:00Z", "now": "2026-08-30T09:40:00Z",
+  "changes": [
+    { "host": "EMR Source", "setting": "FilePath",
+      "previousValue": "/tmp/labdemo/hl7-in/", "newValue": "/tmp/labdemo/hl7-in-missing/",
+      "changedAt": "2026-08-30T09:02:14Z" },
+    { "host": "Cloud API", "setting": "HTTPPort",
+      "previousValue": "52773", "newValue": "52771",
+      "changedAt": "2026-08-29T16:45:03Z" }
+  ],
+  "suppressed": 0, "truncated": false, "sanitised": true, "auditEnabled": true,
+  "retention": { "rows": 82, "oldest": "2026-08-11T07:22:41Z", "newest": "2026-08-30T09:02:14Z",
+    "note": "IRIS purges audit data on a schedule, and a setting changed through code rather than the Management Portal may not be audited at all -- an empty result is not proof that nothing changed" }
+}
+```
+
+A failed query sets `error` and leaves `changes` **null, not `[]`** — §2.1's rule applied to a list.
+
+#### AI Detective calls this on EVERY investigation, and that is part of the contract
+
+`REST.AgentDispatcher.BuildGoal()` names `GetRecentConfigChanges` in a `MUST`, alongside
+`get_recent_errors` and `get_host_settings`. **Unconditionally, not for misconfiguration-shaped
+findings only** — "misconfiguration-shaped" is a conclusion, and a model cannot use it to decide what
+evidence to gather without the circularity that left the tool uncalled: registered, described in the
+system prompt, and `toolCalls: 2` on the missing-folder scenario it exists for. Consumers should size
+for one bounded call per investigation, not one per some subset.
+
+**Reporting a change stays discretionary; looking does not.** The prohibition below is what governs the
+report:
+
+> A recent change is **evidence, never a recommendation.** An agent may state that a setting changed,
+> when, and from what to what, and may say it is the likely cause. It must **not** recommend reverting
+> it, must not put a revert in `manualRemediation.steps`, and must not call the previous value the
+> correct one — the value the operator INTENDED may be neither the old one nor the new one, and a typo
+> in a new path is not repaired by restoring the old path.
+
+Verified live across three consecutive runs on the armed missing-folder scenario: `toolCalls: 3`, the
+change cited in `rootCause` and as an `evidence` entry attributed to this tool, and no revert in any of
+the nine remediation steps produced. This is a **prompt-enforced** rule with no structural guard, and
+deliberately so — a guard would have to recognise "revert" in free prose, so it would pass a paraphrase
+and fail an honest one.
+
+### 3.13 `get_active_findings` — read, added in MVP 3, and it reads nothing in IRIS
+
+**Runtime name `GetActiveFindings`.** What Production Guardian is reporting about this production right
+now: every open finding with its host, type, severity, the value that triggered it and the baseline it
+was compared against.
+
+**Input**: `host` (optional — omit for the whole production).
+
+**Output**: `host`, `supplied`, `count`, `findings[]`, `asOf`, `state`, `sanitised`, and `note` or
+`reason` where they apply.
+
+`findings[]`: the eight `healthscan.d.ts` `Finding` keys — `id`, `host`, `type`, `severity`,
+`currentValue`, `baselineValue`, `detectedAt`, `message`. **Allowlisted and copied key by key**, so a
+future engine field cannot reach the LLM by arriving in a payload; a key absent from a supplied finding
+is republished as `null` rather than omitted.
+
+#### Why it exists
+
+The chat assistant could describe what the production *did* — throughput, latency, the event log — and
+could not see what Production Guardian was *saying* about it. So "are there any issues right now?" was
+answered from an activity table while a live `queue_buildup` on `Cloud API` went unmentioned with the
+dashboard showing it in red two panels away.
+
+#### The findings are SUPPLIED WITH THE REQUEST, not queried
+
+Findings are computed by the detection engine on `:3002`, outside this instance. The engine sends them
+in the body of its `POST /labdemo/chat/ask` (`findings`, `findingsAsOf`, `findingsState`);
+`REST.ChatDispatcher` stashes them in a process-private global on entry and this tool republishes them.
+
+Chosen over an IRIS→engine callback because the engine already holds the snapshot in the process making
+the request, and a callback needs an engine URL inside the IRIS container — the class of configuration
+`iris/CLAUDE.md` records going missing on three separate cold boots, failing as "no findings", which
+reads as a healthy production.
+
+Chosen over injecting the findings into the prompt text because a tool keeps `evidence[].tool`
+attribution, keeps the §5.5 audit guarantee ("every tool call is audited, read and write"), and does
+not tax every turn with tokens a throughput question does not want.
+
+**Two consequences a consumer must know.** The findings describe the instant the question was asked,
+not the instant the model speaks — `asOf` is the engine's poll clock and is never substituted with an
+IRIS timestamp. And this tool is registered for the **chat** tool set only: AI Detective's caller
+supplies no snapshot, because `/api/investigate` already hands that agent the one finding it must
+explain, so registering it there would advertise a tool that can only answer `supplied: false`.
+
+#### An empty list must never be read as a healthy production
+
+Four distinct payloads mean four different things, and three of them carry no findings:
+
+| Payload | Meaning |
+|---|---|
+| `supplied: false` + `reason` | no snapshot reached the request — an older client, or a hand-rolled POST. **Not** an error, and **not** an all-clear |
+| `count: 0`, `state: "warming"` | the engine has no baseline, so its six comparative rules are structurally silent. **Nothing has been measured** |
+| `count: 0`, `state: "stale"` | the last list the engine could compute; the proxy was unreachable at that poll. Old, not wrong |
+| `count: 0`, `state: "ok"` | the only payload that supports "no open findings" |
+
+`state` is forwarded from `EngineSnapshot.state` for exactly this reason. Without it, `count: 0` is
+ambiguous between the four rows above, and the reassuring reading is available without the consumer
+doing anything wrong — which is the same failure as `supplied: false` wearing the shape of a successful
+answer. §2.1 governs: an unmeasurable value is not a small one, and here the "value" is a list.
+
+```jsonc
+// <- host "Cloud API"
+{
+  "host": "Cloud API", "supplied": true, "count": 1,
+  "findings": [
+    { "id": "cloud-api-queue-buildup", "host": "Cloud API", "type": "queue_buildup",
+      "severity": "critical", "currentValue": 486, "baselineValue": 0,
+      "detectedAt": "2026-08-30T09:38:12Z",
+      "message": "Queue depth 486 is 32x baseline" }
+  ],
+  "asOf": "2026-08-30T09:39:50Z", "state": "ok", "sanitised": true
+}
+```
+
 ## 4. Errors, and the three things that are not the same
 
 A caller must be able to tell these apart, and only one of them is an error.
@@ -1536,7 +1760,7 @@ Three consequences:
 
 | Resource | Held by role | Grants |
 |---|---|---|
-| `PG_Read` | `Guardian_Read` | listing and executing the five read tools; **listing** `set_pool_size` |
+| `PG_Read` | `Guardian_Read` | listing and executing **every** read tool in §1; **listing** `set_pool_size` |
 | `PG_Resolve` | `Guardian_Resolve` | **executing** `set_pool_size` |
 
 **BOTH ROLES ALSO NEED A DATABASE PRIVILEGE — `%DB_%DEFAULT:RW` on this image.** Added 2026-08-19
@@ -1572,6 +1796,12 @@ act" invites the stronger reading, and the stronger reading is false.
 render `audit.role` as an opaque string and never compare it to a literal. That instruction stands
 even now that the value is fixed: Dev C comparing against a literal is what would make a later rename
 a dashboard change. The names here match `resolve-api.md`'s examples so nothing has to be rewritten.
+
+**"Every read tool" rather than a number, deliberately.** This row read "the five read tools" from
+Day 1 through three families being added, so it was wrong by eight before anyone noticed — the #84
+stale-copy shape, in a table whose *other* column is load-bearing. `AuthPolicy` is generic: it requires
+`PG_Read` for every tool and `PG_Resolve` additionally for `SetPoolSize`, so **a new read tool needs no
+change here at all**, which is exactly why nothing forces the count to be maintained.
 
 Resources are named `PG_*` and roles `Guardian_*` — **neither takes a `%` prefix.**
 
@@ -1716,8 +1946,8 @@ Forbidden, for every tool: message bodies or any part of one, HL7 segments or fi
 identifiers of any kind, `Ens.MessageBody` contents, `Ens.MessageHeader` field values other than
 counts, `Ens.Util.Log` text, credentials, and stack traces.
 
-**Two tools are where this is a live risk** rather than a formality, and both handle it the same way —
-classify against an allowlist, never pass the value through:
+**Three tools are where this is a live risk** rather than a formality, and all three handle it the same
+way — classify or allowlist, never pass the value through:
 
 - **`get_recent_errors`** (§3.4, §3.4a): extracts only the IRIS error code and maps it to a catalogue
   string, with `unclassified` and no text for anything unrecognised. `Ens_Util.Log` on this instance
@@ -1727,6 +1957,10 @@ classify against an allowlist, never pass the value through:
   free-text per-host override available as well. So it is never returned raw; only a value this
   instance can independently verify as a loaded HL7 structure or a compiled class name survives, and
   everything else becomes `other` with no text.
+- **`get_recent_config_changes`** (§3.12): `%SYS.Audit.EventData` is **free text written by whatever
+  performed the change**, so an audit row is a *less* controlled source than a live item read. Only an
+  allowlisted setting name has its values returned; anything else is counted and never named, and the
+  eight actor-identifying columns are not selected at all.
 
 **The second one is the more instructive**, because nothing about the column name says it carries
 message-derived data. It was found by tracing `GetStatsUserDimension` through the platform rather
@@ -1741,6 +1975,13 @@ Two smaller edges, both worth naming because they are the ones that get missed:
 - **Counts are not content, but a count of one can be.** A count is permitted at every window size
   this contract allows. `sinceMinutes` is bounded at 60 and `limit` at 50 partly for that reason —
   the tool is an evidence source about a *condition*, not a message search interface.
+
+- **One tool returns data this instance did not produce**, which is a direction this section did not
+  previously have to cover. `get_active_findings` (§3.13) republishes a snapshot the *caller* supplied
+  over HTTP. The boundary is held the same way — an allowlist of the eight `Finding` keys, copied key
+  by key rather than filtered — so a field the detection engine adds later cannot reach the model by
+  arriving in a payload. Every one of those eight is a metric or a classification, and `message` is
+  composed by the engine from metric values.
 
 If a future tool needs message content to do its job, that is not a sanitisation problem. It is a
 tool that does not belong in this catalogue.

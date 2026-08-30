@@ -4,6 +4,132 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-08-30 — two tools: what was CHANGED, and what Guardian is REPORTING
+
+**`mcp-tools.md` §1, §3.12, §3.13, §5.3's role table, and §6.** Additive: twelve tools become
+fourteen, thirteen read and one write. No existing tool's input, output or name changes, so a consumer
+that never calls the new pair sees nothing different. Four stale counts in prose are corrected on the
+way through.
+
+**Both asked for directly**, and each closes a gap where the product answered from the wrong source:
+
+> *"check audit table for changes and suggest that there may be a change/typo to recently changed value
+> if it fits … you can bring it up in analysis but do not suggest the fix because they likely changed it
+> for a reason and we do not know what they wanted to change it to."*
+
+> *"the ask about activity only checks the tables but not the findings. so when there is an issue, when
+> we chat and ask if there is any issues (like pool bottleneck) it will not relate to the findings. it
+> should."*
+
+### `get_recent_config_changes` (§3.12)
+
+Which setting changed on which host, from what value to what value, and when — from `%SYS.Audit`. Every
+other read tool answers a question about the production's *behaviour*; none could answer the one an
+operator asks first, which is *did someone change something?* On this instance `EMR Source`'s `FilePath`
+and `Cloud API`'s `HTTPPort` were both edited within hours of the findings they caused, with nothing
+reading it.
+
+**The reporting rule is in the contract, not only in the prompts**, because it constrains what a
+*caller* may do with the output: **a consumer must not recommend reverting a change it reports.** The
+old value is returned — withholding it would leave "FilePath changed" where "changed from a directory
+that exists to one that does not" is the diagnosis — so the restraint has to be stated rather than
+engineered. `investigation-api.md`'s `manualRemediation.target` is the shape most likely to break it.
+
+**Three fields exist because an empty list is not evidence**, and a caller cannot infer any of them:
+`retention` (IRIS purges audit data on a schedule — measured, a purge ran 2026-08-30 06:00 here),
+`auditEnabled` (`true` / `false` / **`null` for "could not tell"**), and `suppressed` (a *count* of
+non-allowlisted setting names, never the names).
+
+**Measured facts that a reader would otherwise have to rediscover**, all of them written into §3.12:
+`Description` is the subject and `EventData` is the detail, which is the reverse of the names; both are
+`varbinary`, so **`EventData LIKE '%>>%'` returns SQLCODE -29** and no SQL-side content filter can be
+written; host attribution must be anchored at *both* ends because config item names contain spaces; and
+only 8 of this instance's 82 `ModifyConfiguration` rows are setting changes at all.
+
+**One behaviour change outside the contract, and it is a fix rather than a feature.**
+`Triggers.SetSetting()` mutated a live production setting and wrote **no audit row** — measured by
+arming `MissingFolder()` and finding the newest row three days stale, because only the Management
+Portal's own save path audits and that method goes through `Ens.Config.Production.%Save()`. It now emits
+a byte-compatible row itself via `$SYSTEM.Security.Audit()`, **after** the save succeeds, so the log
+never claims a change that did not land. Without this the feature would have been undemonstrable
+through the exact two scenarios it was asked for.
+
+**`Username` and seven other actor columns are never selected** (§6). "This was changed 40 minutes ago"
+carries the whole diagnostic weight; naming a person invites an agent to assign blame it cannot support.
+`%SYS.Audit.EventData` is also free text written by whatever performed the change, which makes an audit
+row a *less* controlled source than a live item read — §6 now lists this tool as the third live risk
+alongside `get_recent_errors` and `compare_host_activity`.
+
+**§3.12 also states that AI Detective calls this on EVERY investigation**, which is a contract fact
+rather than an implementation note — a consumer sizes for one bounded call per investigation. It is
+there because the first version of this tool shipped registered, described in the system prompt, and
+**never called**: `toolCalls: 2` on the missing-folder scenario it was built for, the model satisfied
+after reading the errors and the settings. `BuildGoal()` already carried a `MUST` for the previous two
+tools for the same measured reason, so the third repeated a failure the codebase had already recorded.
+A description is not a directive.
+
+### `get_active_findings` (§3.13)
+
+What Production Guardian is reporting right now. The chat could describe what the production *did* and
+could not see what Guardian was *saying* about it, so "are there any issues?" was answered from an
+activity table while a live `queue_buildup` sat on the dashboard two panels away.
+
+**It reads nothing in IRIS** — the first tool in this catalogue that is not a query against the
+instance. Findings are computed in the detection engine, so it sends them with the question
+(`findings`, `findingsAsOf`, `findingsState` on `POST /labdemo/chat/ask`) and the tool republishes them.
+Chosen over an IRIS→engine callback, which would need an engine URL inside the container — the class of
+configuration `iris/CLAUDE.md` records going missing on three separate cold boots, failing as "no
+findings", which reads as a healthy production. Chosen over prompt injection, which loses
+`evidence[].tool` attribution and the §5.5 audit guarantee and taxes every turn.
+
+**The `state` field is the part worth reviewing.** `count: 0` means four different things, and three of
+them are not an all-clear: `supplied: false` is no snapshot, `warming` is *nothing measured yet* (the
+engine's six comparative rules are structurally silent below `minBaselineSamples`), `stale` is a
+last-known list, and only `ok` supports "no open findings". §2.1's rule — an unmeasurable value is not a
+small one — applied to a list rather than a number.
+
+**Registered for the `chat` tool set only.** AI Detective's caller supplies no snapshot, because
+`/api/investigate` already hands that agent the finding it must explain, so registering it there would
+advertise a tool that can only answer `supplied: false`.
+
+### Four stale counts corrected
+
+Each was right when written and staled when a family was added — #84's shape, and all four are in this
+file's own prose rather than in a ratified field:
+
+| Was | Now |
+|---|---|
+| "Four classes, not twelve" | six classes, fourteen tools |
+| "A fifth class carries no tools" (`ErrorCatalogue`) | a seventh |
+| `ReportTools()` "expects **12**" | expects **14** |
+| §5.3: `PG_Read` grants "the five read tools" | **every** read tool in §1 — and the count is now deliberately absent, because `AuthPolicy` is generic and a new read tool requires no change there, so nothing forces the number to be maintained |
+
+**`Tools.Read.#SETTINGALLOWLIST` became a `Parameter` rather than a ClassMethod** so `ChangeLog` could
+share the one list. A public accessor on a `%AI.Tool` subclass would have become a fifteenth tool that
+returns setting names to the model; a second copy of the list would have been #84 again.
+
+### Verified live, both scenarios the user named
+
+Against the running four-container stack with `AGENT_MODE=live` and a real `gpt-4o-mini`, not a mock:
+
+| Check | Result |
+|---|---|
+| chat under `warming`, nothing armed | `toolCalls: 1`, `evidence[].tool: GetActiveFindings`, and the model **refused an all-clear** — "state is 'warming' … not possible to confirm that everything is functioning correctly" |
+| chat with `PoolBottleneck()` armed | both real findings cited with their own numbers — queue depth 70, queue wait 7.68s at 384x baseline — attributed to `GetActiveFindings`, `confidence: 1` |
+| AI Detective on the armed `MissingFolder()` `dead_host` | `toolCalls: 3` across three consecutive runs; the 10:27:26 `FilePath` change cited in `rootCause` and as attributed evidence; **no revert in any of the nine remediation steps** |
+
+The `supplied: true` path is the one thing only a live run could test — it rests on the agent loop
+running in the CSP request's own process, which is what makes a process-private global a valid handoff.
+
+**One regression was found and fixed by these runs**, which is the argument for making them: the first
+`BuildGoal()` directive closed by deferring to "the rules in your instructions", and every evidence entry
+came back with `source` unset across three runs. `investigate.ts` maps an unrecognised source to
+`"llm"`, so the reply stayed schema-valid while claiming the model had reasoned out values it had read
+from governed tools — attribution silently lost, in the field §5.5's audit story depends on. The goal is
+the last thing the model reads; a requirement stated there must not point at another part of the prompt.
+
+---
+
 
 ## 2026-08-26 — the event log becomes readable: two tools, a shared host roster, and one inference moved into the payload
 
