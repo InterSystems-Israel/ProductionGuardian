@@ -75,7 +75,7 @@ look like it ran. The `@'` form passed `$zversion` through untouched and IRIS an
 build. Two layout rules the parser enforces: `@'` must end its line, and `'@` must start its own
 line at **column 0** — indent it and PowerShell does not see the terminator.
 
-### The five traps, in the order they will bite you
+### The traps, in the order they will bite you
 
 1. **`AGENT_MODE` defaults to `mock`.** A canned investigation is built from *real measured values*, so
    it reads as correct and demonstrates nothing about the agent. Check `source: "agent"` and a
@@ -93,6 +93,30 @@ line at **column 0** — indent it and PowerShell does not see the terminator.
    restores it to 1. If the queue never builds, check this first.
 5. **Never `curl /api/monitor/alerts`.** It is consume-on-read — reading it destroys the alert the
    `system_alert` path depends on. Use `:3001/proxy/alerts`.
+6. **Reset all empties the Message Viewer, whenever a scenario errored.** Clearing the per-host error
+   count means deleting message rows — that count is a `COUNT(*)` over `Ens.MessageHeader`, so nothing
+   restorable moves it — and `Ens.Purge` has no status filter, so it cannot delete only the errored
+   ones. Measured: **2,550 headers removed to clear 21 errored.** The completed traffic goes with them,
+   and how much survives depends on which sessions happened to be in flight, not on anything you can
+   plan. **So if a later beat needs the Message Viewer populated, show it before you reset.** A reset
+   with nothing errored skips the purge entirely and leaves history alone.
+7. **Reset all restarts the baselines, and exactly two rules go quiet — not all of them.** The reset
+   declares a new load regime so the rolling mean re-warms instead of averaging across the step down,
+   which is right: a load step-down is not a fault. But the wait is far narrower than it sounds, and
+   assuming otherwise costs you either a minute you did not owe or a finding you read as a bug because
+   it arrived "too early". **Only `throughput_drop` and `elevated_error_rate` go silent**, because
+   `messagesPerSec` and `errorsPerMinute` are the only two metrics with no `referenceBaselines` entry,
+   so they are the only two that wait for the mean. `queue_buildup`, `slow_processing` and
+   `growing_queue_wait` read metrics that *do* have a reference, and a reference replaces the rolling
+   mean outright rather than filling in until it warms — so **they fire immediately, Act 1's headline
+   finding included.** `dead_host` is absolute and unaffected. Those two that do pause are waiting for
+   `minBaselineSamples` × the shipped poll interval — about a minute on the shipped values, but both
+   numbers live in `services/detection-engine/`, so check there rather than trusting this
+   approximation.
+   **Do not wait for a UI signal, because there isn't one.** Early Warning cannot report "Baseline
+   still warming" for these hosts — every one of them has a `queued` reference, so its threshold is
+   never null and that state is unreachable. Right after a reset it shows *"Watching — not trending
+   toward a threshold"* with a tick, which is reassurance rather than readiness.
 
 **Open two browser tabs before you start:** `http://localhost:5173` (the dashboard) and the
 Management Portal link from its header (the IRIS interoperability editor). Switching tabs is faster

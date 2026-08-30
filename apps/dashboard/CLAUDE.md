@@ -480,10 +480,14 @@ all shipped and there was an end-to-end flow worth scripting. Kept rather than d
 and still is not a blocker for any acceptance criterion.
 
 The cue sheet is deliberately **measured rather than written from memory** — every timing in it was
-taken from the containerised stack (77s for `pool_bottleneck` to take effect, 12s to `dead_host`, 103s
-for a queue of 165 to drain after an approve), and it names the five traps that have each cost a
-rehearsal. A cue sheet full of plausible-sounding numbers would be worse than none, because a presenter
-would trust it.
+taken from the containerised stack — and it names the traps that have each cost a rehearsal. A cue
+sheet full of plausible-sounding numbers would be worse than none, because a presenter would trust it.
+
+**The numbers and the trap count live in `docs/demo/cue-sheet.md` and are not restated here**, which
+is §8's rule applied to this paragraph rather than only to the latency bar. It used to quote three
+timings and "the five traps", and both halves went stale: the drain was re-measured as ~90s to an
+empty queue and ~200s to a clean board (from 157 queued, not 165), and the trap list has grown past
+five. A count in prose above a numbered list is a copied value like any other.
 
 **Overall acceptance (from the MVP doc):** *dashboard renders all hosts + findings live; updates within 10 s of a change; fallback to demo mode is seamless.*
 
