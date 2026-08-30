@@ -200,6 +200,15 @@ const server = createFindingsServer({
         chat: async (body: unknown) =>
           chat(parseChatRequest(body), {
             callAgent: callChatAgent,
+            /* The findings the agent may cite, read fresh per question rather than closed over.
+               This is the whole of the engine's side of "the chat should relate to the findings":
+               we hand over our own measurements and IRIS republishes them as a governed tool. The
+               snapshot is already in hand here -- `snapshot:` above calls the same method -- which
+               is why this needs no callback into this service from the IRIS container. */
+            findings: () => {
+              const snap = engine.snapshot();
+              return { findings: snap.findings, lastPollAt: snap.lastPollAt, state: snap.state };
+            },
             log: (m: string) => console.error(m),
           }),
       }),

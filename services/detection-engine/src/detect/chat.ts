@@ -21,7 +21,26 @@
  * conversation state is held anywhere in the engine. A held map keyed by conversation id would be
  * state that survives a restart in one direction only — the UI would think it had context that IRIS
  * had lost, which is the disagree-about-what-happened shape this project keeps paying for.
+ *
+ * THE FINDINGS ARE THE ONE THING WE ADD TO THE QUESTION, and the exception is worth arguing because
+ * "we orchestrate, we do not reason" is the rule above. The agent inside IRIS can read what the
+ * production DID — throughput, latency, the event log, recent configuration changes — and could not
+ * see what Production Guardian is SAYING about it, so "are there any issues right now?" was answered
+ * from an activity table while a live `queue_buildup` sat on the dashboard two panels away.
+ *
+ * Findings are computed HERE, so IRIS cannot read them without calling back into this service. We
+ * send them with the question instead: `index.ts` already holds the snapshot in the same process that
+ * handles the request, and a callback would need an engine URL inside the IRIS container — the class
+ * of configuration `iris/CLAUDE.md` records going missing on three separate cold boots, failing as
+ * "no findings", which reads as a healthy production.
+ *
+ * This does not cross the reasoning line: we forward our own measurements verbatim and compose no
+ * narrative from them. `iris/labdemo/Tools/Findings.cls` republishes them as a governed, audited tool
+ * so a finding-derived claim gets `evidence[].tool` attribution like every other claim, and its class
+ * comment carries the rest of the argument.
  */
+
+import type { Finding, HealthScanState } from '../types/healthscan.ts';
 
 /** One prior turn, as the client replays it. */
 export interface ChatTurn {
@@ -89,15 +108,60 @@ export interface ChatResponse {
   };
 }
 
-/** What this service sends the dispatcher. */
+/** What the CLIENT sends us — and nothing more. See `parseChatRequest`. */
 interface ChatRequest {
   question: string;
   history: ChatTurn[];
 }
 
+/**
+ * What we send the dispatcher: the client's question plus our own findings.
+ *
+ * A SEPARATE TYPE FROM `ChatRequest`, and the separation is the security boundary rather than
+ * tidiness. `parseChatRequest` reads a body that arrived over HTTP from a browser; if `findings`
+ * lived on that type, the parser would be one careless `b['findings']` away from letting a caller
+ * post fabricated findings straight through to an external LLM, which would then cite them as
+ * measurements read by a governed tool. Findings can only be attached HERE, from `deps`, so there is
+ * no code path by which a client-supplied value becomes one.
+ */
+interface ChatAgentRequest extends ChatRequest {
+  findings: Finding[];
+  /** ISO seconds of the poll the findings came from, or null before the first poll. */
+  findingsAsOf: string | null;
+  /**
+   * The engine state at that poll, forwarded because an empty list means different things in each.
+   *
+   * `warming` is the one that matters: below `minBaselineSamples` the six comparative rules are
+   * silent by design, so zero findings is "not measured yet" and asserting a healthy production from
+   * it would be exactly the false all-clear this whole feature exists to prevent. `stale` means the
+   * proxy is unreachable and the list is last-known — old, not wrong. `Tools.Findings` republishes
+   * this and the chat prompt is told what each means.
+   */
+  findingsState: HealthScanState;
+}
+
+/** The slice of `EngineSnapshot` this module needs, so a test can supply one without an engine. */
+export interface ChatFindingsSnapshot {
+  findings: Finding[];
+  lastPollAt: number | null;
+  state: HealthScanState;
+}
+
 export interface ChatDeps {
   /** Calls the chat dispatcher in IRIS. Injected so the endpoint is testable without an LLM. */
-  callAgent(request: ChatRequest, timeoutMs: number): Promise<unknown>;
+  callAgent(request: ChatAgentRequest, timeoutMs: number): Promise<unknown>;
+  /**
+   * The current findings, read at the instant the question is answered.
+   *
+   * A SUPPLIER RATHER THAN A VALUE, because the composition root wires this once at startup and the
+   * snapshot must be the one current when the question arrives, not when the wiring ran.
+   *
+   * OPTIONAL, and an absent supplier is not an error: the engine can be wired without one (a test, or
+   * a deployment where the chat is reached before the first poll). It forwards an empty list with
+   * `findingsState: 'warming'`, which is the state that tells the agent NOT to read the emptiness as
+   * health — so the degraded case degrades toward silence rather than toward a false all-clear.
+   */
+  findings?: () => ChatFindingsSnapshot;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -118,6 +182,16 @@ const MAX_QUESTION = 600;
 
 /** Prior turns forwarded. Mirrors `ChatDispatcher.#MAXHISTORY`. */
 const MAX_HISTORY = 6;
+
+/**
+ * Findings forwarded with a question. Mirrors `Tools.Findings.#MAXFINDINGS`.
+ *
+ * THE FIRST OF TWO CAPS ON PURPOSE, like the question-length cap above and for the same reason in
+ * reverse: this one keeps the request small, and IRIS's keeps a hand-rolled POST from filling the
+ * model's context. Eight finding types across three reported hosts is 24 at the absolute ceiling, so
+ * 25 cannot clip a real production — which is why a cap here needs no accompanying "truncated" flag.
+ */
+const MAX_FINDINGS = 25;
 
 function isoSeconds(ms: number): string {
   return `${new Date(Math.round(ms / 1000) * 1000).toISOString().slice(0, 19)}Z`;
@@ -266,9 +340,24 @@ export async function chat(request: ChatRequest, deps: ChatDeps): Promise<ChatRe
      role `inv-` ids play for an investigation. */
   const requestId = `chat-${started}`;
 
+  /* READ ONCE, HERE, so every field describes the same instant. Reading the snapshot per field would
+     let `findings` and `state` come from different polls, and a stale-vs-ok disagreement between two
+     values in one payload is unreadable from the far side. */
+  const snapshot = deps.findings?.();
+  const outbound: ChatAgentRequest = {
+    ...request,
+    findings: snapshot === undefined ? [] : snapshot.findings.slice(0, MAX_FINDINGS),
+    findingsAsOf:
+      snapshot === undefined || snapshot.lastPollAt === null
+        ? null
+        : isoSeconds(snapshot.lastPollAt),
+    /* No supplier means no measurement, which is what `warming` says. See `ChatDeps.findings`. */
+    findingsState: snapshot === undefined ? 'warming' : snapshot.state,
+  };
+
   let raw: unknown;
   try {
-    raw = await deps.callAgent(request, TIMEOUT_MS);
+    raw = await deps.callAgent(outbound, TIMEOUT_MS);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     deps.log?.(`chat ${requestId} failed: ${message}`);

@@ -377,10 +377,13 @@ ClassMethod CreateRoles() As %Status
 /// Printed on every setup run so the regression is visible at boot rather than in a review.
 ClassMethod ReportTools()
 {
-    // TWELVE since the chat assistant gained the event log, from ten. `Tools.EventLog` adds two read
-    // tools over `Ens_Util.Log` -- GetEventLogSummary and GetEventLogTrend (mcp-tools.md §3.10-3.11).
-    // Before that it was ten, from seven, when `Tools.Activity` added three over
-    // `Ens_Activity_Data.{Seconds,Hours,Days}` (§3.7-3.9).
+    // FOURTEEN since the audit log and the findings snapshot became readable, from twelve. `Tools.ChangeLog`
+    // adds GetRecentConfigChanges over `%SYS.Audit` and `Tools.Findings` adds GetActiveFindings over the
+    // snapshot the engine supplies with a chat request (mcp-tools.md §3.12-3.13) -- one tool each, and
+    // seven `[ Private ]` helpers between them that would make it twenty-one if the keyword were dropped.
+    // Before that it was twelve, from ten, when `Tools.EventLog` added two read tools over `Ens_Util.Log`
+    // -- GetEventLogSummary and GetEventLogTrend (§3.10-3.11). Before that ten, from seven, when
+    // `Tools.Activity` added three over `Ens_Activity_Data.{Seconds,Hours,Days}` (§3.7-3.9).
     //
     // Moved DELIBERATELY and with the tool list read back, which is the discipline the bump to 7
     // established: the guard's whole value is that an unexpected count is loud, and bumping it without
@@ -396,12 +399,19 @@ ClassMethod ReportTools()
     // Verified rather than assumed: `%IsA("%AI.Tool")` on `Tools.ErrorCatalogue` returns 0, and the
     // count read back as 12 after `Tools.HostRoster` landed with two public methods. Listing either here
     // would call `%Discover()` on a class that has no such method.
-    set expected = 12
+    set expected = 14
     set found = 0
     // EVERY TOOL CLASS IS LISTED HERE, not only registered in Governance. A tool class the count does
     // not cover is a class whose accidental extra method nothing catches at boot -- which is the one
     // thing this method exists to prevent.
-    for class = "ProductionGuardian.LabDemo.Tools.Read", "ProductionGuardian.LabDemo.Tools.Activity", "ProductionGuardian.LabDemo.Tools.EventLog", "ProductionGuardian.LabDemo.Tools.Resolve" {
+    //
+    // `Tools.Findings` IS LISTED EVEN THOUGH `Governance.ToolManager()` DELIBERATELY DOES NOT REGISTER IT.
+    // That asymmetry is the sentence above doing its job: the tool is registered only for the "chat" tool
+    // set (it republishes a snapshot supplied with a chat request, so it could only answer supplied:false
+    // through a context-free manager), and discovery is about what a class EXPOSES rather than about who
+    // is given it. A class left out here because one caller does not want it is a class whose extra
+    // public method reaches an LLM with nothing counting it.
+    for class = "ProductionGuardian.LabDemo.Tools.Read", "ProductionGuardian.LabDemo.Tools.Activity", "ProductionGuardian.LabDemo.Tools.EventLog", "ProductionGuardian.LabDemo.Tools.ChangeLog", "ProductionGuardian.LabDemo.Tools.Findings", "ProductionGuardian.LabDemo.Tools.Resolve" {
         if '##class(%Dictionary.CompiledClass).%ExistsId(class) {
             write "3. tools ", class, ": NOT COMPILED", !
             continue

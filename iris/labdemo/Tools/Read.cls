@@ -34,6 +34,40 @@ Class ProductionGuardian.LabDemo.Tools.Read Extends %AI.Tool
 /// reporting on a different production than the one it was authorised for.
 Parameter PRODUCTION = "ProductionGuardian.LabDemo.Production";
 
+/// The setting names any tool in this project may put in front of an external LLM.
+///
+/// Path and target settings, because those are what a misconfiguration diagnosis needs -- where the
+/// host reads from, where it writes to, and where it sends. Everything else is refused BY
+/// CONSTRUCTION rather than by review: returning a whole `Settings` collection would be one
+/// `Credentials` row away from naming a stored secret, and one future setting away from something
+/// worse, because a production is configured by people and people put surprising things in free-text
+/// settings. Adding a name here is a decision.
+///
+/// `Credentials` is deliberately ABSENT even though it is only an identifier: it names a stored
+/// secret, and an agent has no diagnostic use for it that outweighs saying its name out loud.
+///
+/// A PARAMETER RATHER THAN A LIST INSIDE `GetHostSettings`, because `Tools.ChangeLog` needs the same
+/// answer to a different question -- "may I say this setting's value" is one rule whether the value
+/// came from the live item or from an audit row. A parameter is the only shape that shares it: a
+/// public ClassMethod here would silently become a seventh tool (see the class comment), and a
+/// second copy of the list is the stale-copy defect this project has paid for twice (#84).
+///
+/// CallInterval, not PollInterval. This list named a setting that does not exist on any adapter in
+/// this production, so the entry could never match and the polling interval was unreachable to the
+/// agent -- a dead allowlist row, which is worse than an absent one because it reads as coverage.
+/// Same root cause as the invalid setting in Production.cls: `Ens.InboundAdapter` calls it
+/// CallInterval and nothing calls it PollInterval.
+Parameter SETTINGALLOWLIST = {$listbuild(
+    "FilePath",
+    "ArchivePath",
+    "WorkPath",
+    "FileSpec",
+    "CallInterval",
+    "HTTPServer",
+    "HTTPPort",
+    "URL",
+    "TargetConfigNames")};
+
 /// Report the configured and observed status of one interoperability host.
 ///
 /// Returns status as IRIS reports it, plus whether the host is enabled in the production. Use
@@ -110,15 +144,10 @@ ClassMethod GetPoolSize(host As %String) As %DynamicObject
 /// only, never message content". A setting VALUE is configuration by definition; it was typed by
 /// whoever deployed the production, not derived from a message.
 ///
-/// AN ALLOWLIST OF SETTING NAMES, NOT EVERY SETTING. Returning the whole collection would be one
-/// `Credentials` row away from handing an external LLM the name of a credential set, and one future
-/// setting away from something worse -- a production is configured by people, and people put
-/// surprising things in free-text settings. So the tool names what it will return and refuses the
-/// rest by construction. Adding a name here is a decision, which is the same reasoning as
-/// `Tools.Resolve`'s single whitelisted host and the `#5021` catalogue.
-///
-/// `Credentials` is deliberately ABSENT even though it is only an identifier: it names a stored
-/// secret, and an agent has no diagnostic use for it that outweighs saying its name out loud.
+/// AN ALLOWLIST OF SETTING NAMES, NOT EVERY SETTING -- `#SETTINGALLOWLIST`, which carries the
+/// reasoning and is shared with `Tools.ChangeLog`. Same shape as `Tools.Resolve`'s single
+/// whitelisted host and the `#5021` catalogue: the tool names what it will return and refuses the
+/// rest by construction.
 ClassMethod GetHostSettings(host As %String) As %DynamicObject
 {
     set out = { "host": (host), "found": false, "settings": {} }
@@ -129,24 +158,9 @@ ClassMethod GetHostSettings(host As %String) As %DynamicObject
     }
     do out.%Set("found", 1, "boolean")
 
-    // The allowlist. Path and target settings, because those are what a misconfiguration diagnosis
-    // needs -- where the host reads from, where it writes to, and where it sends.
-    set allowed = $listbuild(
-        "FilePath",
-        "ArchivePath",
-        "WorkPath",
-        "FileSpec",
-        // CallInterval, not PollInterval. This allowlist named a setting that does not
-        // exist on any adapter in this production, so the entry could never match and
-        // the polling interval was unreachable to the agent -- a dead allowlist row,
-        // which is worse than an absent one because it reads as coverage. Same root
-        // cause as the invalid setting in Production.cls: `Ens.InboundAdapter` calls it
-        // CallInterval and nothing calls it PollInterval.
-        "CallInterval",
-        "HTTPServer",
-        "HTTPPort",
-        "URL",
-        "TargetConfigNames")
+    // The allowlist lives in #SETTINGALLOWLIST -- see that parameter for what is on it, what is
+    // deliberately off it, and why it is a parameter rather than a list written here.
+    set allowed = ..#SETTINGALLOWLIST
 
     for i = 1:1:item.Settings.Count() {
         set setting = item.Settings.GetAt(i)

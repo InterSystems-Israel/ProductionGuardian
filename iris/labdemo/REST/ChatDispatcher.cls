@@ -271,6 +271,14 @@ ClassMethod Ask() As %Status
 {
     set %response.ContentType = "application/json"
     try {
+        // KILLED FIRST, BEFORE THE BODY IS EVEN READ, and the ordering is the whole correctness
+        // argument rather than tidiness. CSP processes are POOLED AND REUSED, so a process-private
+        // global outlives the request that set it: a question arriving without a findings snapshot
+        // would read the PREVIOUS question's and answer confidently about a production state minutes
+        // stale. Killing on the way out instead would be skipped by every early return above --
+        // malformed body, over-long question, small talk -- and by any exception path.
+        kill ^||PGGuardian("chat")
+
         set body = ##class(%DynamicObject).%FromJSON(%request.Content)
         set question = body.%Get("question", "")
 
@@ -296,6 +304,12 @@ ClassMethod Ask() As %Status
             write ..SmallTalkAnswer(kind, question).%ToJSON()
             return $$$OK
         }
+
+        // THE FINDINGS HANDOFF, and it happens AFTER small talk and BEFORE the agent is built.
+        // After, because a greeting needs no snapshot and storing one for it would be work on a path
+        // that never reads it; before, because `Tools.Findings` is registered during `BuildAgent` and
+        // the tool may be called on the first iteration.
+        do ..StashFindings(body)
 
         set agent = ..BuildAgent(.sc)
         if $$$ISERR(sc) {
@@ -337,6 +351,55 @@ ClassMethod Ask() As %Status
     } catch ex {
         return ..Fail(500, "chat failed: " _ ex.DisplayString())
     }
+}
+
+/// Hand the request's findings snapshot to `Tools.Findings` through a process-private global. Private.
+///
+/// THE ENGINE SENDS THE FINDINGS WITH THE QUESTION rather than IRIS fetching them, and the three
+/// reasons are argued in `Tools.Findings`'s class comment — briefly: the engine already holds the
+/// snapshot in the process making this request, IRIS would need an engine URL that three cold boots
+/// have shown going missing, and a findings read has no meaning outside the instant it was asked.
+///
+/// ABSENT IS NORMAL, NOT AN ERROR. An older dashboard build or a hand-rolled POST sends no `findings`
+/// key, and this returns having stored nothing — the tool then answers `supplied: false`, which the
+/// system prompt tells the model not to read as a healthy production. Refusing the request instead
+/// would break a client that worked yesterday for a capability it never asked for.
+///
+/// NOT TRUSTED FOR SIZE. The array arrives over HTTP from another service, and a process-private
+/// global node holds a bounded string, so the element count is capped HERE as well as in the tool.
+/// Two caps rather than one, deliberately: this one protects the global, the tool's protects the
+/// model's context, and the engine's own protects the request. Eight finding types across three hosts
+/// is 24 at the ceiling, so none of the three can clip a real production.
+ClassMethod StashFindings(body As %DynamicObject) [ Private ]
+{
+    if '$isobject(body) {
+        quit
+    }
+    set findings = body.%Get("findings")
+    // %Get returns "" for an absent key and a non-array for a malformed one. Both are "no snapshot
+    // supplied", and neither is worth failing the question over.
+    if '$isobject(findings) || 'findings.%IsA("%Library.DynamicArray") {
+        quit
+    }
+
+    set capped = []
+    set iter = findings.%GetIterator()
+    while iter.%GetNext(.index, .finding) {
+        if capped.%Size() >= ##class(ProductionGuardian.LabDemo.Tools.Findings).#MAXFINDINGS {
+            quit
+        }
+        do capped.%Push(finding)
+    }
+
+    set ^||PGGuardian("chat", "findings") = capped.%ToJSON()
+    // The instant the engine measured them, so the model can say "as of" rather than implying the
+    // reading is from the moment it is speaking. Absent is "" rather than a substituted `$ztimestamp`:
+    // stamping it here would be this class inventing a measurement time for another service's reading.
+    set ^||PGGuardian("chat", "asOf") = body.%Get("findingsAsOf", "")
+    // `ok`, `warming` or `stale`. Stored UNVALIDATED against that set on purpose: the tool treats
+    // anything it does not recognise as `ok`-equivalent phrasing, and an engine that adds a fourth
+    // state should degrade to a plain answer rather than have this class reject a state it predates.
+    set ^||PGGuardian("chat", "state") = body.%Get("findingsState", "")
 }
 
 /// Classify small talk, or "" for anything that should reach the agent. Private.
@@ -636,6 +699,35 @@ ClassMethod SystemPrompt() As %String [ Private ]
     // and getting away with it. That is a coincidence to stop relying on rather than a convention:
     // naming a tool the model cannot call is the same defect class as the two chat defects already
     // written up here, and it fails silently by looking like the model chose not to call anything.
+    // THE FINDINGS TOOL GOES FIRST, because "is anything wrong?" is the commonest question this chat
+    // is asked and it was the one question the chat could not answer. Before MVP 3 it had no tool that
+    // could see a finding at all, so it answered from an activity table -- a live `queue_buildup` on
+    // `Cloud API` went unmentioned while the dashboard showed it in red two panels away. Naming it
+    // first is the same technique as the block below: the model calls the tool that the prose puts
+    // next to the question.
+    set p = p _ "GetActiveFindings is what Production Guardian is reporting about this production "
+    set p = p _ "RIGHT NOW -- every open finding with its host, type, severity, the value that "
+    set p = p _ "triggered it and the baseline it was compared against. Call it FIRST for any question "
+    set p = p _ "about whether something is wrong now, or about a condition the operator names such as "
+    set p = p _ "a queue building, a pool bottleneck, a host being down or errors rising -- and relate "
+    set p = p _ "your answer to the findings it returns rather than inferring the same conclusion from "
+    set p = p _ "throughput. "
+    // `supplied: false` MUST NOT READ AS HEALTHY. The tool says so in its own payload, and the rule is
+    // restated here because this is the one failure in the family where the honest answer and the
+    // reassuring answer are the same shape -- an empty list. See `Tools.Findings`'s class comment.
+    set p = p _ "If it returns supplied: false, no findings snapshot reached this request: say you "
+    set p = p _ "could not read the current findings, and do NOT conclude the production is healthy. "
+    // AN EMPTY LIST IS NOT AN ALL-CLEAR EITHER, in two of the three engine states. This is the same
+    // failure as `supplied: false` wearing the shape of a successful answer, which makes it the more
+    // dangerous of the two -- `count: 0` with `state: warming` is a production nobody has measured yet,
+    // and the reassuring reading of it is available without the model doing anything wrong. The tool
+    // puts the distinction in `note`; this tells the model to read it.
+    set p = p _ "When it returns count: 0, read the state field before saying nothing is wrong: "
+    set p = p _ """warming"" means the engine has no baseline yet and its comparative rules cannot "
+    set p = p _ "fire, so nothing has been measured; ""stale"" means the list is the last one it could "
+    set p = p _ "compute and may be out of date. Report either as such. Only ""ok"" with count: 0 "
+    set p = p _ "supports ""no open findings"". "
+
     set p = p _ "GetActivityCoverage lists which hosts have recorded activity and how far back the "
     set p = p _ "data goes -- call it first when you do not already know a host name or a date range. "
     set p = p _ "GetActivityTrend gives one host's throughput and latency bucket by bucket, so it is "
@@ -654,6 +746,34 @@ ClassMethod SystemPrompt() As %String [ Private ]
     set p = p _ "answers ""are there errors"", ""what is failing"" and ""what went wrong with X"". "
     set p = p _ "GetEventLogTrend gives log volume by severity bucket by bucket, INCLUDING buckets "
     set p = p _ "with none, so it is what answers ""when did the errors start"" or ""has it stopped"". "
+
+    // THE AUDIT TOOL, and the rule it comes with is a PRODUCT rule rather than a prompting nicety.
+    // "Did someone change something" is the first thing an operator asks about a broken host, and on
+    // this instance the answer was sitting in `%SYS.Audit` unread: `EMR Source`'s FilePath and
+    // `Cloud API`'s HTTPPort were both edited within hours of the findings they caused.
+    //
+    // THE PREVIOUS VALUE IS EVIDENCE, NOT A RECOMMENDATION, and the tool deliberately returns it
+    // rather than withholding it -- an agent that can only say "FilePath changed" cannot say "changed
+    // from a directory that exists to one that does not", which is the whole diagnostic content. So the
+    // restraint has to live here, in the prompt. See `Tools.ChangeLog`'s class comment for the full
+    // argument; the operative half is that whoever made the change had a reason this instance cannot
+    // see, and the value they INTENDED may be neither the old one nor the new one.
+    set p = p _ "GetRecentConfigChanges lists configuration changes to this production's hosts from the "
+    set p = p _ "IRIS audit log -- which setting changed on which host, from what value to what value, "
+    set p = p _ "and when. Call it whenever a host is faulting or a finding is open: a change close in "
+    set p = p _ "time to the fault is worth reporting as a possible cause, and a value that looks like a "
+    set p = p _ "typo is worth pointing at. "
+    set p = p _ "But you must NOT recommend reverting a change and must not call the previous value the "
+    set p = p _ "correct one. Whoever made the change had a reason you cannot see, and the value they "
+    set p = p _ "intended may be neither the old one nor the new one. Report what changed and when, say "
+    set p = p _ "it may be related, and leave the decision to the operator. "
+    // SILENCE IS NOT EVIDENCE, and unlike the event log's zero this one genuinely is ambiguous: IRIS
+    // purges audit data on a schedule, and a setting changed through `Ens.Config.Production.%Save()`
+    // rather than the Management Portal is never audited at all. The payload carries `retention` and
+    // `auditEnabled` for exactly this; the sentence is what makes the model read them.
+    set p = p _ "An empty change list does not prove nothing was changed -- audit data is purged on a "
+    set p = p _ "schedule and some changes are not audited. Read the retention and auditEnabled fields "
+    set p = p _ "before saying a host's configuration was untouched. "
 
     // THE "(production)" SCOPE, and this is the measured fact that makes the pair worth having.
     // 91 rows on this instance are production-lifecycle events with a NULL ConfigName -- they belong
@@ -683,13 +803,27 @@ ClassMethod SystemPrompt() As %String [ Private ]
     set p = p _ "which is the production itself rather than a host. Lead with the application hosts and "
     set p = p _ "the production, and mention framework entries only if they are what is failing. "
 
-    // SAYS WHAT IT DOES NOT HAVE. The five tools above are all it is given (GovernAgent's "chat"
+    // SAYS WHAT IT DOES NOT HAVE. The seven tools above are all it is given (GovernAgent's "chat"
     // set), and stating that is what stops the model narrating a tool call it cannot make and then
     // reporting the absence as a finding about the production. The registration is the guard; this
     // sentence only keeps the narrative honest about it.
-    set p = p _ "These five tools are ALL you have. You cannot read the current instantaneous "
-    set p = p _ "status, queue depth or pool size of a host, and you must not claim to have. Every "
-    set p = p _ "number you report is a RECORDED figure over a stated period, so say which period. "
+    //
+    // AMENDED FOR `GetActiveFindings`, CAREFULLY, because this sentence is the one that closed the
+    // 0.12-vs-77.66 defect: asked which host had the highest average queueing time, a model holding
+    // the current-state tools answered 0.12s from `GetProcessingTime` when the recorded answer was
+    // 77.66s, at `confidence: 1`. The findings tool DOES carry current values, so "you cannot read
+    // current state" is no longer true and leaving it would be a lie the model can catch. But the
+    // narrow claim still holds and is the one that matters: there is no tool here that reads a host's
+    // status, queue depth or pool size ON DEMAND, and the findings snapshot covers only hosts with an
+    // open finding. Loosening this to "you have some current data" would reopen the defect; naming
+    // exactly which current data, and for which hosts, does not.
+    set p = p _ "These seven tools are ALL you have. Apart from GetActiveFindings you cannot read a "
+    set p = p _ "host's current status, queue depth or pool size, and you must not claim to have -- "
+    set p = p _ "there is no tool that reads those on demand, and the findings snapshot covers only "
+    set p = p _ "hosts with an open finding, so a host absent from it is UNMEASURED here rather than "
+    set p = p _ "healthy. Every other number you report is a RECORDED figure over a stated period, so "
+    set p = p _ "say which period -- and never answer a question about an average or a trend from a "
+    set p = p _ "finding's currentValue, which is one instant. "
 
     // THE RESOLUTION RULE. Stated as a mapping from the question's own time span, because the model
     // otherwise defaults to `hours` for everything -- which answers "what happened in the last two
