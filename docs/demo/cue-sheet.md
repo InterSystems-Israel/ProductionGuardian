@@ -100,14 +100,23 @@ line at **column 0** — indent it and PowerShell does not see the terminator.
    and how much survives depends on which sessions happened to be in flight, not on anything you can
    plan. **So if a later beat needs the Message Viewer populated, show it before you reset.** A reset
    with nothing errored skips the purge entirely and leaves history alone.
-7. **Reset all restarts the baselines, so nothing comparative fires for about a minute.** This is
-   deliberate — a load step-down is not a fault, and after a reset the engine genuinely does not know
-   what normal is yet — but it means *reset, arm, expect a finding* looks broken for the first ~60s
-   (`minBaselineSamples` × the shipped poll interval; both live in `services/detection-engine/`, so
-   check there rather than trusting this number). `queue_buildup`, `throughput_drop`, `slow_processing`
-   and `growing_queue_wait` are all comparative and all silent in that window; `dead_host` is absolute
-   and unaffected, which makes it the safe thing to arm first. **The reliable signal that the wait is
-   over is Early Warning: it says "Baseline still warming — no projection yet" until it is.**
+7. **Reset all restarts the baselines, and exactly two rules go quiet — not all of them.** The reset
+   declares a new load regime so the rolling mean re-warms instead of averaging across the step down,
+   which is right: a load step-down is not a fault. But the wait is far narrower than it sounds, and
+   assuming otherwise costs you either a minute you did not owe or a finding you read as a bug because
+   it arrived "too early". **Only `throughput_drop` and `elevated_error_rate` go silent**, because
+   `messagesPerSec` and `errorsPerMinute` are the only two metrics with no `referenceBaselines` entry,
+   so they are the only two that wait for the mean. `queue_buildup`, `slow_processing` and
+   `growing_queue_wait` read metrics that *do* have a reference, and a reference replaces the rolling
+   mean outright rather than filling in until it warms — so **they fire immediately, Act 1's headline
+   finding included.** `dead_host` is absolute and unaffected. Those two that do pause are waiting for
+   `minBaselineSamples` × the shipped poll interval — about a minute on the shipped values, but both
+   numbers live in `services/detection-engine/`, so check there rather than trusting this
+   approximation.
+   **Do not wait for a UI signal, because there isn't one.** Early Warning cannot report "Baseline
+   still warming" for these hosts — every one of them has a `queued` reference, so its threshold is
+   never null and that state is unreachable. Right after a reset it shows *"Watching — not trending
+   toward a threshold"* with a tick, which is reassurance rather than readiness.
 
 **Open two browser tabs before you start:** `http://localhost:5173` (the dashboard) and the
 Management Portal link from its header (the IRIS interoperability editor). Switching tabs is faster
