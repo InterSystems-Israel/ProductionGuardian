@@ -213,19 +213,139 @@ describe('chat', () => {
   });
 
   it('sends the question and history through to the agent unchanged', async () => {
-    let seen: unknown;
+    let seen: Record<string, unknown> | undefined;
     const withHistory = {
       question: 'and yesterday?',
       history: [{ role: 'user' as const, text: 'today?' }],
     };
     await chat(withHistory, {
       callAgent: async (req) => {
-        seen = req;
+        seen = req as unknown as Record<string, unknown>;
         return reply();
       },
       now: () => 1,
     });
-    assert.deepEqual(seen, withHistory);
+    // The CALLER'S two fields, asserted individually rather than by deep-equalling the whole
+    // request. This test used to `deepEqual(seen, withHistory)`, which said two things at once --
+    // "these two fields survive" and "nothing else is added" -- and the second was never the
+    // intent. Attaching findings is the point of the outbound type, so a whole-object equality
+    // here fails the moment the feature works.
+    assert.equal(seen?.['question'], 'and yesterday?');
+    assert.deepEqual(seen?.['history'], [{ role: 'user', text: 'today?' }]);
+    // Its complement is now the test below: the caller's body cannot ADD to the request either.
+  });
+
+  /**
+   * The findings attachment — the engine's whole side of "the chat should relate to the findings".
+   *
+   * WHAT IS WORTH ASSERTING, given the answer comes from a model. Not that the findings help, which
+   * only a live run shows, but that the request cannot MISREPRESENT them. Every test here is about a
+   * shape that would let the model state something untrue about the production:
+   *
+   *   - no supplier must not look like a measured all-clear
+   *   - a caller must not be able to post its own findings
+   *   - `findingsState` must survive, because `count: 0` means four different things and three of
+   *     them are not health (see `iris/labdemo/Tools/Findings.cls`)
+   */
+  const finding = (over: Record<string, unknown> = {}) => ({
+    id: 'f-1',
+    host: 'Cloud API',
+    type: 'queue_buildup',
+    severity: 'critical',
+    currentValue: 70,
+    baselineValue: 0,
+    detectedAt: '2026-08-30T10:26:00Z',
+    message: 'queue depth 70 with no baseline queue',
+    ...over,
+  });
+
+  /** Send a request through `chat` and hand back what the agent was actually called with. */
+  async function outbound(over: Partial<ChatDeps> = {}): Promise<Record<string, unknown>> {
+    let seen: Record<string, unknown> = {};
+    await chat(request, {
+      callAgent: async (req) => {
+        seen = req as unknown as Record<string, unknown>;
+        return reply();
+      },
+      now: () => 1,
+      ...over,
+    });
+    return seen;
+  }
+
+  it('attaches the supplied findings, their poll time and the engine state', async () => {
+    const seen = await outbound({
+      findings: () => ({
+        findings: [finding()] as never,
+        lastPollAt: 1_756_000_000_000,
+        state: 'ok',
+      }),
+    });
+    assert.equal((seen['findings'] as unknown[]).length, 1);
+    assert.equal((seen['findings'] as Record<string, unknown>[])[0]?.['type'], 'queue_buildup');
+    assert.equal(seen['findingsState'], 'ok');
+    assert.match(seen['findingsAsOf'] as string, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  });
+
+  it('sends warming rather than ok when no supplier is wired', async () => {
+    // The DEFAULT MATTERS MORE THAN THE HAPPY PATH. An older or misassembled build with no supplier
+    // sends an empty list, and `ok` + `count: 0` is the one combination the IRIS tool reports as
+    // "no open findings". Defaulting to `warming` makes the absence of a supplier read as "nothing
+    // has been measured", which is true, instead of as an all-clear, which would be invented.
+    const seen = await outbound();
+    assert.deepEqual(seen['findings'], []);
+    assert.equal(seen['findingsState'], 'warming');
+    assert.equal(seen['findingsAsOf'], null);
+  });
+
+  it('sends a null poll time rather than a fabricated timestamp before the first poll', async () => {
+    const seen = await outbound({
+      findings: () => ({ findings: [], lastPollAt: null, state: 'warming' }),
+    });
+    assert.equal(seen['findingsAsOf'], null);
+  });
+
+  it('carries stale through, because a stale list is old rather than wrong', async () => {
+    const seen = await outbound({
+      findings: () => ({ findings: [finding()] as never, lastPollAt: 1, state: 'stale' }),
+    });
+    assert.equal(seen['findingsState'], 'stale');
+  });
+
+  it('caps the findings it sends', async () => {
+    // The cap is the FIRST of two, the second being `Tools.Findings.#MAXFINDINGS`. Eight types
+    // across three hosts is 24 at the ceiling, so this cannot clip a real production -- it bounds a
+    // malformed snapshot, not a busy one.
+    const seen = await outbound({
+      findings: () => ({
+        findings: Array.from({ length: 40 }, (_, i) => finding({ id: `f-${i}` })) as never,
+        lastPollAt: 1,
+        state: 'ok',
+      }),
+    });
+    assert.equal((seen['findings'] as unknown[]).length, 25);
+  });
+
+  it('ignores findings a caller puts in the request body', async () => {
+    // The security half of splitting `ChatAgentRequest` from `ChatRequest`. Findings reach the model
+    // labelled as values read by a governed tool, so a caller-supplied one would be fabricated
+    // evidence wearing that label. `parseChatRequest` never reads the field; this pins that it
+    // cannot arrive by any other route either.
+    const posted = parseChatRequest({
+      question: 'is anything falling behind?',
+      findings: [finding({ message: 'everything is on fire' })],
+      findingsState: 'ok',
+    });
+    let seen: Record<string, unknown> = {};
+    await chat(posted, {
+      callAgent: async (req) => {
+        seen = req as unknown as Record<string, unknown>;
+        return reply();
+      },
+      now: () => 1,
+    });
+    assert.deepEqual(seen['findings'], []);
+    assert.equal(seen['findingsState'], 'warming');
   });
 
   it('stamps answeredAt at second precision with a Z suffix', async () => {

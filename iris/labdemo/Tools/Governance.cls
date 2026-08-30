@@ -87,10 +87,42 @@ Parameter ACTIVITYTOOLS = "ProductionGuardian.LabDemo.Tools.Activity";
 /// on this instance have a NULL `ConfigName`, which no host-filtered query can reach.
 Parameter EVENTLOGTOOLS = "ProductionGuardian.LabDemo.Tools.EventLog";
 
+/// The audit-log read tool — recent configuration changes to this production, from `%SYS.Audit`.
+///
+/// A FOURTH READ CLASS, and it sits on the RECORDED side of the line the `ACTIVITYTOOLS` comment
+/// draws, like `EVENTLOGTOOLS`: it answers "what was changed, and when", never "what is true now".
+/// So it travels with both `"all"` and `"chat"`. The chat needs it for the same reason AI Detective
+/// does — "did someone change something?" is the first question an operator asks about a broken host,
+/// and neither caller could answer it before.
+///
+/// ITS OWN CLASS RATHER THAN A METHOD ON `Tools.Read`, on `Tools.EventLog`'s second reason: a new tool
+/// FAMILY in a new file moves `Setup.AIHub.ReportTools()`'s count by an amount attributable to one
+/// file. The first reason applies too and more sharply — `Tools.Read` reads the LIVE production
+/// definition, and a tool that reads a historical record of it in the same class would be one
+/// docstring away from a model treating an audit row's `newValue` as the current setting.
+Parameter CHANGELOGTOOLS = "ProductionGuardian.LabDemo.Tools.ChangeLog";
+
+/// The current-findings tool — what the detection engine is reporting, supplied with the question.
+///
+/// REGISTERED FOR `"chat"` ONLY, and that is the one asymmetry in this table worth reading twice.
+/// `Tools.Findings` republishes a snapshot the CALLER sent; AI Detective's caller sends none, because
+/// `/api/investigate` already hands the agent the one finding it is asked to explain. Adding this to
+/// `"all"` would give that agent a tool that can only answer `supplied: false`, which costs an
+/// iteration of its five and teaches it that a findings read is unavailable on this instance.
+///
+/// It is also the only tool in the family that reads no IRIS data at all — see its class comment for
+/// why the findings are supplied rather than fetched, and for why the handoff node is killed before it
+/// is set rather than after it is read.
+Parameter FINDINGTOOLS = "ProductionGuardian.LabDemo.Tools.Findings";
+
 /// The write-tool class, in its own class so the RBAC requirement does not leak onto the reads.
 Parameter WRITETOOLS = "ProductionGuardian.LabDemo.Tools.Resolve";
 
-/// A tool manager with both policies registered and both tool sets loaded.
+/// A tool manager with both policies registered and every context-free tool family loaded.
+///
+/// "Context-free" is doing work in that sentence: it means every family except `FINDINGTOOLS`, and the
+/// exclusion is argued at the registration below rather than here. This docstring said "both tool
+/// sets" through two families being added, which is the stale-count shape #84 indicts.
 ///
 /// POLICIES BEFORE TOOL SETS. Registration order is not documented, and the ordering that has been
 /// exercised is this one -- a manager that registered tools first and policies second has never been
@@ -129,6 +161,15 @@ ClassMethod ToolManager(pIncludeWrite As %Boolean = 1, Output pStatus As %Status
     if $$$ISERR(pStatus) {
         quit $$$NULLOREF
     }
+    set pStatus = mgr.RegisterToolSet(..#CHANGELOGTOOLS)
+    if $$$ISERR(pStatus) {
+        quit $$$NULLOREF
+    }
+    // `FINDINGTOOLS` is NOT registered here, unlike every other read family. This factory serves
+    // `..Invoke()` and `Test.GovernanceProof` -- callers with no request context -- and the findings
+    // tool republishes a snapshot supplied with a chat request, so on this path it could only ever
+    // return `supplied: false`. Registering it would make a governed manager advertise a tool that
+    // cannot work through it.
     if pIncludeWrite {
         set pStatus = mgr.RegisterToolSet(..#WRITETOOLS)
         if $$$ISERR(pStatus) {
@@ -200,10 +241,14 @@ ClassMethod GovernAgent(pAgent As %AI.Agent, pIncludeWrite As %Boolean = 1, pToo
 
     // ONE POSITIVE CONDITION PER TOOL SET, spelling the membership out:
     //
-    //     all       READTOOLS  ACTIVITYTOOLS  EVENTLOGTOOLS      AI Detective
-    //     chat                 ACTIVITYTOOLS  EVENTLOGTOOLS      ChatDispatcher
-    //     activity             ACTIVITYTOOLS                     unchanged from before "chat"
-    //     current   READTOOLS                                    live state only
+    //     all       READTOOLS  ACTIVITYTOOLS  EVENTLOGTOOLS  CHANGELOGTOOLS                  AI Detective
+    //     chat                 ACTIVITYTOOLS  EVENTLOGTOOLS  CHANGELOGTOOLS  FINDINGTOOLS    ChatDispatcher
+    //     activity             ACTIVITYTOOLS                                                 unchanged from before "chat"
+    //     current   READTOOLS                                                               live state only
+    //
+    // `FINDINGTOOLS` IS IN EXACTLY ONE ROW, deliberately -- see its parameter comment. It is the only
+    // entry here that is not simply "does this caller want history", because the tool republishes what
+    // the caller supplied and AI Detective's caller supplies nothing.
     //
     // Written positively rather than as the `'= "activity"` exclusions this used to hold. With two
     // options an exclusion reads fine; with four, "not activity and not current" is a set a reader has
@@ -222,6 +267,18 @@ ClassMethod GovernAgent(pAgent As %AI.Agent, pIncludeWrite As %Boolean = 1, pToo
     }
     if (pToolSets = "all") || (pToolSets = "chat") {
         set sc = pAgent.ToolManager.RegisterToolSet(..#EVENTLOGTOOLS)
+        if $$$ISERR(sc) {
+            quit sc
+        }
+    }
+    if (pToolSets = "all") || (pToolSets = "chat") {
+        set sc = pAgent.ToolManager.RegisterToolSet(..#CHANGELOGTOOLS)
+        if $$$ISERR(sc) {
+            quit sc
+        }
+    }
+    if pToolSets = "chat" {
+        set sc = pAgent.ToolManager.RegisterToolSet(..#FINDINGTOOLS)
         if $$$ISERR(sc) {
             quit sc
         }

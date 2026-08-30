@@ -783,6 +783,7 @@ ClassMethod SetSetting(pItem As %String, pTarget As %String, pName As %String, p
     // catch it, since it only compares the production NAME (@tanifgit, #66). A trigger that
     // reports armed and is not is the worst failure this class can have.
     set foundItem = 0
+    set previous = ""
     for i = 1:1:def.Items.Count() {
         set item = def.Items.GetAt(i)
         if item.Name '= pItem {
@@ -793,6 +794,9 @@ ClassMethod SetSetting(pItem As %String, pTarget As %String, pName As %String, p
         for j = 1:1:item.Settings.Count() {
             set setting = item.Settings.GetAt(j)
             if setting.Name = pName {
+                // Captured BEFORE the overwrite, and it is the only moment it is knowable -- see
+                // ..AuditSettingChange() for who reads it and why nothing else can supply it.
+                set previous = setting.Value
                 set setting.Value = pValue
                 set found = 1
             }
@@ -808,7 +812,74 @@ ClassMethod SetSetting(pItem As %String, pTarget As %String, pName As %String, p
     if 'foundItem {
         quit $$$ERROR($$$GeneralError, "no such config item: " _ pItem _ " (renamed in Production.cls?)")
     }
-    quit def.%Save()
+    set sc = def.%Save()
+    if $$$ISERR(sc) {
+        quit sc
+    }
+    // AFTER the save succeeds, so the audit log never claims a change that did not land. An audit
+    // failure does NOT fail the arming: the setting really did change, and refusing to report the
+    // change is a smaller wrong than refusing to make it.
+    do ..AuditSettingChange(pItem, pName, previous, pValue)
+    quit $$$OK
+}
+
+/// Record a setting change in `%SYS.Audit` the way the Management Portal records one. Private.
+///
+/// WHY THIS METHOD EXISTS, MEASURED. `Ens.Config.Production.%Save()` writes NO audit row --
+/// only the Management Portal's own save path does. Verified by arming `MissingFolder()` and finding
+/// the newest `ModifyConfiguration` row three days old. So every toggle in this class mutated a live
+/// production setting and left no trace, which is a real gap in the project's own security story
+/// before it is a demo problem: root `CLAUDE.md` §2.1 requires that "the AI changed a production
+/// setting" be attributable, and a trigger changing one was not.
+///
+/// It is also what makes `Tools.ChangeLog` reachable from the demo. Without it the audit-correlation
+/// story could only be shown by editing a setting by hand in the Management Portal, and the two
+/// scenarios that most need it -- the missing folder and the unreachable downstream -- are both armed
+/// from here.
+///
+/// THE ROW IS BYTE-COMPATIBLE WITH A PORTAL ROW, so `Tools.ChangeLog` needs no special case:
+///
+///     Description  item EMR Source of ProductionGuardian.LabDemo.Production
+///     EventData    FilePath:/tmp/labdemo/hl7-in/>>/tmp/labdemo/hl7-in-missing/
+///
+/// **NOTE THE ARGUMENT ORDER.** `$SYSTEM.Security.Audit(source, type, event, ...)` takes the value
+/// that lands in the `EventData` column FOURTH and the one that lands in `Description` FIFTH -- the
+/// reverse of what the parameter names suggest. Measured by writing a row and reading the columns
+/// back, because getting it wrong produces a perfectly valid row that `Tools.ChangeLog` silently
+/// discards (its `HostOf` parse fails and the row is dropped as a lifecycle event).
+///
+/// NOT A NEW AUDIT EVENT. `%Ensemble/%Production/ModifyConfiguration` already exists in
+/// `Security.Events` -- confirmed with `##class(Security.Events).Exists()` -- so this reports a real
+/// change under the event that means what happened, rather than defining a parallel one a reviewer
+/// would have to learn about.
+///
+/// THE ROW IS NOT READABLE THE INSTANT IT IS WRITTEN, and this is worth knowing before it is
+/// rediscovered as a bug. Measured: `MissingFolder()` returned, `Tools.ChangeLog` was called from the
+/// next line of the same session and reported `changes: []` with `retention.newest` 101 seconds stale;
+/// the identical call a minute later returned the row, stamped `10:18:44` -- i.e. it had been written
+/// before the first query and was not yet visible to it. IRIS buffers audit writes and a daemon flushes
+/// them, so there is nothing to fix here and nothing to wait on in this method.
+///
+/// It matters in one place only: **never assert this row exists immediately after arming a trigger.**
+/// A demo is unaffected -- an operator noticing a finding, opening AI Detective and reading its
+/// evidence takes far longer than the flush, and an agent turn spends seconds per tool call regardless.
+///
+/// Returns nothing. A caller that could not act on a failed audit write should not be given a status
+/// to ignore, and `SetSetting` explicitly does not fail on one.
+ClassMethod AuditSettingChange(pItem As %String, pName As %String, pPrevious As %String, pValue As %String) [ Private ]
+{
+    try {
+        do $SYSTEM.Security.Audit(
+            "%Ensemble",
+            "%Production",
+            "ModifyConfiguration",
+            pName _ ":" _ pPrevious _ ">>" _ pValue,
+            "item " _ pItem _ " of " _ ..#PRODUCTION)
+    } catch ex {
+        // Deliberately swallowed and NOT written to the event log. Auditing may be switched off on a
+        // colleague's instance, and a per-toggle warning on a path that works correctly is noise --
+        // `Tools.ChangeLog` publishes `auditEnabled` so the absence is visible where it matters.
+    }
 }
 
 /// MVP 3 scenario 2 — the missing folder. A host that cannot read its inbound directory.
