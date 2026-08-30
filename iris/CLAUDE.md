@@ -13,7 +13,7 @@ Developer A owns:
 |---|---|
 | `iris/setup/` | One-time ObjectScript setup scripts for the demo namespace |
 | `iris/labdemo/` | LABDEMO production class, HL7 generator, trigger toggles |
-| `iris/labdemo/Tools/` | MVP 2: the six MCP tools, the authorization and audit policies, the governed-manager factory |
+| `iris/labdemo/Tools/` | MVP 2: the MCP tools, the authorization and audit policies, the governed-manager factory. **The count is in `contracts/mcp-tools.md` §1 and is not restated here** |
 | `iris/labdemo/Audit/` | MVP 2: the persisted audit trail — AI Hub ships no audit store |
 | `services/metrics-proxy/` | Node.js proxy: polls `/api/monitor/metrics` + `/api/monitor/alerts`, exposes per-host JSON |
 
@@ -114,13 +114,50 @@ npm run mock
 
 ## 7. MVP 2 — the governed MCP tools (read this before touching `Tools/`)
 
-Full measurements are in `docs/mvp2-aihub-verified-api.md`. The four rules that matter here:
+Full measurements are in `docs/mvp2-aihub-verified-api.md`. The rules that matter here — **deliberately
+not counted, for the reason the tool count below is not restated**: this line read "the four rules"
+while the section held six, which is the same staling this file indicts two paragraphs down:
 
 **Every public ClassMethod on a `%AI.Tool` subclass becomes an LLM-callable tool.** Verified by
 reading `%AI.Tool.Generator`. A helper left public on `Tools.Resolve` is a second way to mutate a
 live production. Helpers are `[ Private ]`, and `Setup.AIHub.Run()` prints the discovered tool count
-on every boot so a seventh name shows up at boot rather than in review. **Six is the expected
-count.**
+on every boot so an extra name shows up at boot rather than in review. **The expected count lives in
+`Setup.AIHub.ReportTools()` and in `contracts/mcp-tools.md` §1 — it is deliberately not restated
+here.** This line read "Six is the expected count" from MVP 2 through three families being added, so
+it was wrong by eight: #84's shape, in the file a newcomer trusts. Move the number in `ReportTools()`
+only after reading the discovered names back, which is the discipline every previous bump followed.
+
+**A shared list between two tool classes must be a `Parameter`, not a method.** `Tools.ChangeLog`
+needs `Tools.Read`'s setting allowlist, and a public accessor for it would have become another
+LLM-callable tool that returns setting names to the model. Parameters are cross-class accessible
+(`##class(X).#PARAM`) and generate no tool, so `#SETTINGALLOWLIST` is one — which is also the only
+arrangement that avoids a second copy of the list.
+
+**`Triggers.SetSetting()` writes its own audit row, and it has to.** A setting changed through
+`Ens.Config.Production.%Save()` is **not** audited — only the Management Portal's own save path is,
+measured by arming `MissingFolder()` and finding the newest `ModifyConfiguration` row three days
+stale. So the method emits a byte-compatible row via `$SYSTEM.Security.Audit()` **after** the save
+succeeds, and `get_recent_config_changes` can see what the triggers do. **Note the argument order:
+arg4 lands in `EventData` and arg5 in `Description`** — the reverse of what the names suggest, and
+getting it wrong produces a valid row that the tool's host parse silently discards as a lifecycle
+event. Anything else here that mutates a setting through `%Save()` is invisible to that tool.
+
+**A tool that is registered and described is not a tool that gets CALLED.** Adding a tool takes three
+things, and the third is the one that keeps being forgotten: register it in `Tools.Governance`,
+describe it in the system prompt, and **name it in a `MUST` in the per-request goal**. Measured twice.
+`BuildGoal` already carries that directive for `get_recent_errors` and `get_host_settings` because
+"use the tools" left them uncalled in two of three live runs; `GetRecentConfigChanges` then repeated
+it exactly — registered, its prompt paragraph verified present in the compiled `.INT`, and
+`toolCalls: 2` on the very scenario it was built for, because the model had a satisfying answer after
+two calls and stopped. A description is not a directive.
+
+**And when you add a directive to `BuildGoal`, re-check `evidence[].source`.** The goal is the last
+thing the model reads, so a long block there outcompetes the system prompt. The first version of that
+directive closed by deferring to "the rules in your instructions" and cost every evidence entry its
+attribution across three consecutive runs — `source` unset, which `investigate.ts` maps to `"llm"`, so
+the reply stayed schema-valid while claiming the model had reasoned out values it read from governed
+tools. State a requirement in the same breath as the instruction it applies to; do not point at
+another part of the prompt.
 
 **Governance is per-`%AI.ToolMgr` and held in memory — there is no setting.** So never construct a
 `%AI.ToolMgr` or call `%AI.Agent.UseToolSet` directly: both give you an ungoverned manager with no

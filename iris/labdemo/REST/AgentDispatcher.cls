@@ -707,6 +707,53 @@ ClassMethod SystemPrompt() As %String [ Private ]
     set p = p _ "To name a specific path or setting value, read it with get_host_settings. "
     set p = p _ "get_recent_errors gives you the KIND of failure and never the message text. "
 
+    // THE AUDIT TOOL, and this is the one paragraph in this prompt whose main job is a PROHIBITION.
+    //
+    // Named in PascalCase while the two names above are snake_case, and the inconsistency is
+    // deliberate rather than an oversight. `%AI.ToolMgr` derives the tool name from the ClassMethod
+    // name, so `GetRecentConfigChanges` is what `%Discover()` reports and what the model's schema
+    // holds; the snake_case names above work because the model maps them onto the real names by
+    // resemblance, which `REST.ChatDispatcher` records as "a coincidence to stop relying on" after it
+    // silently failed there. Correcting the existing two is #155's job and a contract question; there
+    // is no reason to add a third name that is known not to match.
+    set p = p _ "GetRecentConfigChanges lists recent configuration changes to this production's hosts "
+    set p = p _ "from the IRIS audit log: which setting changed on which host, from what value to what "
+    set p = p _ "value, and when. Call it for any misconfiguration-shaped fault -- a path that does not "
+    set p = p _ "exist, a port nothing answers on, a host that stopped consuming -- because a change "
+    set p = p _ "made shortly before the finding is the likeliest cause and the audit log is the only "
+    set p = p _ "place that says so. "
+
+    // THE PROHIBITION, and it needs to be sharper here than in the chat prompt for a structural
+    // reason: this agent HAS a field for prescribing a setting change. `manualRemediation.target` is
+    // `{host, setting, currentValue}`, so "restore the previous value" is not merely something the
+    // model could say -- it is a shape the reply schema invites. A recently-changed setting plus a
+    // slot for a setting fix is a strong pull toward exactly the recommendation the operator did not
+    // ask for.
+    //
+    // WHY THE OLD VALUE IS RETURNED AT ALL, given that. Withholding it would defeat the tool: "FilePath
+    // changed" is not a diagnosis, and "changed from a directory that exists to one that does not" is.
+    // So the data stays and the restraint lives here. `Tools.ChangeLog`'s class comment carries the
+    // full argument.
+    //
+    // NO STRUCTURAL GUARD, and the reason is worth stating because this class does prefer one where it
+    // exists (`DropUnapplicableAction`). A guard here would have to recognise "revert" in free prose or
+    // match a step's text against a previous value, which is string-matching a recommendation's
+    // MEANING -- it would pass "set FilePath back to /tmp/labdemo/hl7-in/" and fail on a paraphrase.
+    // A field that cannot be checked is worse than a rule that is stated.
+    set p = p _ "A recent change is EVIDENCE, never a recommendation. Report it in rootCause and "
+    set p = p _ "evidence -- name the setting, when it changed, and what it changed from and to, and "
+    set p = p _ "say it may be the cause. You must NOT recommend reverting it, must not put a revert in "
+    set p = p _ "manualRemediation.steps, and must not describe the previous value as the correct one. "
+    set p = p _ "Whoever made the change had a reason you cannot see, and the value they INTENDED may "
+    set p = p _ "be neither the old one nor the new one -- a typo in a new path is not repaired by "
+    set p = p _ "restoring the old path. State the fault and what changed; the operator decides. "
+    // SILENCE IS NOT EVIDENCE. Same sentence as the chat prompt, for the same measured reasons: IRIS
+    // purges audit data on a schedule, and a setting changed through `Ens.Config.Production.%Save()`
+    // rather than the Management Portal is never audited at all.
+    set p = p _ "An empty change list does not prove nothing was changed -- audit data is purged and "
+    set p = p _ "some changes are not audited. Read retention and auditEnabled before saying a host's "
+    set p = p _ "configuration was untouched, and never offer the absence of a change as a finding. "
+
     set p = p _ "Recommend nothing if no bounded action and no manual step fits."
     quit p
 }
@@ -755,6 +802,52 @@ ClassMethod BuildGoal(body As %DynamicObject) As %String [ Private ]
     set g = g _ " A WIDE WINDOW CONTAINS HISTORY. Check secondsAgo on each code before treating it as"
     set g = g _ " current: errors from 20 minutes ago on a host that is no longer erroring describe"
     set g = g _ " a fault that has ended, and the backlog draining behind it is a different problem."
+
+    // A THIRD MANDATORY CALL, for the reason the two above are mandatory, and it is the same failure
+    // arriving a third time. `SystemPrompt()` describes `GetRecentConfigChanges` and tells the model
+    // to "call it for any misconfiguration-shaped fault" -- which is a description, and descriptions
+    // do not get tools called. Measured on the armed missing-folder scenario, the fault this tool was
+    // built for: `toolCalls: 2`, `GetRecentErrors` and `GetHostSettings`, and a rootCause that named
+    // the non-existent path without mentioning that the path had been changed to it eight minutes
+    // earlier. The tool was registered, the prompt paragraph was in the compiled routine, and the
+    // model still had a satisfying answer after two calls and stopped.
+    //
+    // UNCONDITIONAL, rather than gated on the finding type. "Misconfiguration-shaped" is a judgement
+    // about the DIAGNOSIS and the model cannot make it before gathering evidence, which is the
+    // circularity that left the tool uncalled. The type does not partition the space either: a
+    // `dead_host` is a missing folder or a genuinely stopped host, and a `queue_buildup` following a
+    // PoolSize edit is exactly the case worth catching. The call is one bounded query returning at
+    // most 25 rows of setting names and values, so the cost of always making it is far below the cost
+    // of the one time it mattered and was skipped.
+    //
+    // WHETHER TO REPORT the change remains the model's judgement -- the user's ask was to raise it
+    // "if it fits". This directive removes the discretion about LOOKING, not about concluding, and
+    // says so, because a model told it must call a tool will otherwise find something to say about
+    // the result.
+    set g = g _ " You MUST also call GetRecentConfigChanges before concluding. A setting changed"
+    set g = g _ " shortly before a finding is the likeliest cause of it, and the audit log is the only"
+    set g = g _ " place that records one. If a change is relevant, report it in rootCause and as an"
+    set g = g _ " evidence entry naming the setting, the old and new values and when it changed; if"
+    set g = g _ " nothing relevant comes back, say nothing about it -- the absence of a change is not"
+    set g = g _ " a finding."
+
+    // ATTRIBUTION, RESTATED HERE, and it is a repair rather than a belt-and-braces addition. The
+    // directive above cost the reply its evidence attribution: the first version closed with "report
+    // it as evidence under the rules in your instructions", and across three consecutive live runs
+    // EVERY entry came back `source` unset and `tool` null -- including the two tool reads that had
+    // been correctly attributed as `mcp_tool` in the run immediately before the edit. `investigate.ts`
+    // maps an unrecognised source to `"llm"`, so the reply stayed valid and silently claimed the model
+    // had reasoned out values it had in fact read from governed tools.
+    //
+    // The mechanism is displacement: this block is the last thing the model reads and it is now the
+    // longest instruction about evidence, so a vague pointer at "your instructions" competed with the
+    // system prompt's concrete {label, detail, source, tool} schema and won. Deferring to another part
+    // of the prompt is what failed; naming the requirement in the same breath as the mandatory calls
+    // is what fixes it.
+    set g = g _ " EVERY value you obtained from a tool must be attributed: that evidence entry takes"
+    set g = g _ " source ""mcp_tool"" and tool set to the exact tool name you called. Use source"
+    set g = g _ " ""snapshot"" only for the metrics given to you above. Never leave source or tool"
+    set g = g _ " unset for something you read with a tool."
     quit g
 }
 
