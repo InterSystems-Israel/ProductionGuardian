@@ -24,6 +24,12 @@
  * which is honest about there being no forecast left to make while leaving evidence that the module
  * exists and was watching. A feature nobody can find is indistinguishable from a missing one.
  *
+ * AND IT NOW SAYS WHICH WAY THE QUEUE IS MOVING (#174). "Threshold reached" was the whole sentence for
+ * a queue climbing and for a queue draining after an approved fix — measured at 110 seconds of
+ * indistinguishable output on the live scenario, against ~20 seconds in which a real forecast exists
+ * at all. `recentDirection` (§1.5) is measured and published on every row, so the three states get
+ * three sentences. See `CROSSED_BY_DIRECTION`, including why none of them earns the tick.
+ *
  * Still silent for `disabled` and `metric_unmeasurable`: those are steady states on a
  * healthy host, and a row saying "no projection available" on every card would make the grid
  * unreadable for information nobody needs. `warming` and `insufficient_samples` render because they
@@ -41,7 +47,7 @@
  * `svg()` wrapper; the sentence beside it stays the authoritative statement (§7.3).
  */
 
-import type { HostProjectionView } from '../types/mvp2';
+import type { HostProjectionView, RecentDirection } from '../types/mvp2';
 import { IconWatching } from './icons';
 
 export interface EarlyWarningProps {
@@ -54,6 +60,29 @@ export interface EarlyWarningProps {
  * `already_crossed` is the one that earns its place by NOT being a forecast: it marks the module as
  * present and watching after the window has closed. The other two mean "ask again shortly".
  */
+/**
+ * `already_crossed`, by which way the queue is actually moving (§1.5, #174).
+ *
+ * THE SAME REASON MEANT TWO OPPOSITE THINGS and read as one sentence. Measured on the live stack: an
+ * armed `queue_buildup` fixed by enlarging the pool drained from 152 to 54 over 22 consecutive polls —
+ * 110 seconds — every one `already_crossed`, rendering identically to the climb through the same
+ * depths. An operator watching a fix work was told only that the threshold had been reached.
+ *
+ * STILL NO TICK, in any of the three. The icon is reserved for `not_rising`, whose whole content is
+ * reassurance; a crossed threshold is a live problem however it is moving, and a tick beside "coming
+ * down" would be the over-reassurance this file's header argues against — the same class as the
+ * summary tile counting a host with three criticals as OK. The tone stays `--spent` for the same
+ * reason: recovering is not resolved.
+ *
+ * A null direction falls back to the unqualified sentence, which is exactly the pre-#174 string. No
+ * claim is made when the engine makes none.
+ */
+const CROSSED_BY_DIRECTION: Record<RecentDirection, string> = {
+  rising: 'Threshold reached and still rising — see the finding below',
+  falling: 'Threshold reached — coming down now; see the finding below',
+  steady: 'Threshold reached — holding steady; see the finding below',
+};
+
 const SHOWN_REASONS: Record<string, string> = {
   warming: 'Baseline still warming — no projection yet',
   insufficient_samples: 'Not enough samples yet for a projection',
@@ -109,7 +138,16 @@ export function EarlyWarning({ projection }: EarlyWarningProps): JSX.Element | n
   const { projection: forecast, projectionUnavailable: reason } = projection;
 
   if (forecast === null) {
-    const shown = reason === null ? undefined : SHOWN_REASONS[reason];
+    /* `already_crossed` is the one reason whose sentence depends on a second field, so it is resolved
+       here rather than by widening SHOWN_REASONS into a nested map that three other reasons would
+       carry a null key for. */
+    const direction = projection.recentDirection;
+    const shown =
+      reason === 'already_crossed' && direction !== null
+        ? CROSSED_BY_DIRECTION[direction]
+        : reason === null
+          ? undefined
+          : SHOWN_REASONS[reason];
     if (shown === undefined) return null;
     /* `already_crossed` reads as spent rather than pending -- it is not waiting for anything, it is
        reporting that the thing it was watching for has happened. The other two are genuinely

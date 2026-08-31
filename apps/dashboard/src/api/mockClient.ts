@@ -305,6 +305,30 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
         const queued = host.queued;
         const threshold = 50;
         const rising = queued !== null && queued > 0 && queued < threshold;
+        /*
+         * `recentDirection` (§1.5), from THIS CLIENT'S OWN RECORDED HISTORY rather than invented.
+         *
+         * An approximation of the engine's computation and openly so: there is no 300 s window here,
+         * so the sign comes from the last two recorded `queued` points instead of a least-squares fit
+         * over the tail. The engine's value is the authority; this only has to be *consistent* — the
+         * demo must show a draining queue as `falling`, which is the whole point of #174.
+         *
+         * `null` with fewer than two points, matching the engine: one sample has no direction. And
+         * `rising` is forced whenever a projection exists, because §1.5 makes that an invariant of the
+         * shape rather than a coincidence of the data — a mock that violated it would teach the UI to
+         * handle a state the engine cannot produce.
+         */
+        const points = mockSeries.get(seriesKey(host.host, 'queued')) ?? [];
+        const previous = points.at(-2)?.value;
+        const latest = points.at(-1)?.value;
+        const measuredDirection =
+          previous === undefined || latest === undefined
+            ? null
+            : latest > previous
+              ? ('rising' as const)
+              : latest < previous
+                ? ('falling' as const)
+                : ('steady' as const);
         return {
           host: host.host,
           metric: 'queued',
@@ -312,6 +336,7 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
           measuredAt: at,
           fitSampleCount: 60,
           fitSpanSeconds: 295,
+          recentDirection: rising ? ('rising' as const) : measuredDirection,
           threshold: { value: threshold, basis: 'absoluteFloor', baselineValue: 0, findingType: 'queue_buildup' },
           projection: rising
             ? {

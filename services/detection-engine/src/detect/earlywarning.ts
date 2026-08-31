@@ -31,6 +31,16 @@ export type ProjectionUnavailableReason =
   | 'not_rising'
   | 'beyond_horizon';
 
+/**
+ * Which way the metric is moving now — contract §1.5. The SIGN of the tail fit, not its magnitude.
+ *
+ * A separate concept from `ProjectionUnavailableReason` and deliberately not folded into it: the
+ * reason answers *which state*, this answers *which way*, and a queue can be over its threshold in
+ * either direction. Publishing it as an eighth reason would have moved the precedence every consumer
+ * enumerating reasons depends on.
+ */
+export type RecentDirection = 'rising' | 'falling' | 'steady';
+
 export interface Threshold {
   value: number;
   basis: 'absoluteFloor' | 'baselineMultiplier';
@@ -55,6 +65,8 @@ export interface HostProjection {
   measuredAt: string;
   fitSampleCount: number;
   fitSpanSeconds: number;
+  /** Contract §1.5. Measured, so present on every row; null means no direction is claimed. */
+  recentDirection: RecentDirection | null;
   threshold: Threshold | null;
   projection: Projection | null;
   projectionUnavailable: ProjectionUnavailableReason | null;
@@ -301,6 +313,36 @@ export function projectHost(
       ? Math.round((last.at - first.at) / 1000)
       : 0;
 
+  /*
+   * THE TAIL FIT, COMPUTED ONCE AND USED TWICE (#174, contract §1.5).
+   *
+   * It was already computed at step 6 as a sign test and then thrown away on every other path — so a
+   * queue draining above its threshold declined as `already_crossed` while this value sat unread.
+   * Now it is measured here, published on every row, and step 6 reads it instead of re-fitting.
+   *
+   * GATED ON `minFitSamples`, and that is §1.5's load-bearing rule rather than caution. The tail is
+   * allowed to decide on as few as two samples BECAUSE the window behind it has already cleared
+   * twelve — it confirms a grounded answer rather than producing one. Published standalone on a
+   * warming host, a sign fitted through three samples would be a claim with nothing behind it, so
+   * `warming` and `insufficient_samples` rows carry null.
+   */
+  const recentSlopePerMinute =
+    fitSampleCount >= ew.minFitSamples
+      ? perMinute(
+          fitSlopePerMs(recentPortion(samples, ew.fitWindowSeconds * 1000 * RECENT_FIT_FRACTION)),
+        )
+      : null;
+  // `-0 > 0` and `-0 < 0` are both false, so a small negative that rounds to zero lands on 'steady'
+  // rather than 'falling' — which is what "rounded to the 1dp we publish" has to mean to be honest.
+  const recentDirection: RecentDirection | null =
+    recentSlopePerMinute === null
+      ? null
+      : recentSlopePerMinute > 0
+        ? 'rising'
+        : recentSlopePerMinute < 0
+          ? 'falling'
+          : 'steady';
+
   const base = {
     host,
     metric: METRIC as string,
@@ -308,6 +350,7 @@ export function projectHost(
     measuredAt,
     fitSampleCount,
     fitSpanSeconds,
+    recentDirection,
   };
 
   const decline = (
@@ -356,10 +399,11 @@ export function projectHost(
   // posture the rest of this module takes. `insufficient_samples` would be the wrong reason for
   // either — the contract defines it against the published `fitSampleCount`, which is the FULL
   // window's count and has already cleared `minFitSamples` by this point.
-  const recentSlopePerMinute = perMinute(
-    fitSlopePerMs(recentPortion(samples, ew.fitWindowSeconds * 1000 * RECENT_FIT_FRACTION)),
-  );
-  if (recentSlopePerMinute === null || recentSlopePerMinute <= 0) {
+  // Reads the value measured above rather than re-fitting: `recentDirection !== 'rising'` is exactly
+  // the old `recentSlopePerMinute === null || <= 0`, since null maps to null and a non-positive
+  // rounded slope maps to 'falling' or 'steady'. One computation, so the published direction and the
+  // gate can never disagree — two fits of the same samples is a way for them to.
+  if (recentDirection !== 'rising') {
     return decline('not_rising', threshold);
   }
 

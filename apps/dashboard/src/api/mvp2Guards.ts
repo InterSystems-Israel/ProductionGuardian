@@ -26,6 +26,7 @@ import type {
   ManualRemediationView,
   HostProjectionView,
   ProjectionDeclineReason,
+  RecentDirection,
   EvidenceSource,
   InvestigationSource,
   InvestigationState,
@@ -360,6 +361,9 @@ const DECLINE_REASONS: readonly string[] = [
   'beyond_horizon',
 ];
 
+/** §1.5's three members. A fourth arriving is unknown, and unknown means `null` — see below. */
+const RECENT_DIRECTIONS: readonly string[] = ['rising', 'falling', 'steady'];
+
 /**
  * Early Warning projections.
  *
@@ -408,6 +412,16 @@ export function parseProjections(payload: unknown): HostProjectionView[] {
         ? (rawReason as ProjectionDeclineReason)
         : null;
 
+    /* An unknown direction falls back to `null`, NOT to `steady`. §2.4's defensive-rendering rule
+       applied to a new field: `null` renders as no claim, where `steady` would assert that a queue
+       nobody can measure is holding still. Same reasoning as an unknown severity becoming `info`
+       rather than `critical` — the fallback must be the one that claims least. */
+    const rawDirection = entry['recentDirection'];
+    const recentDirection =
+      typeof rawDirection === 'string' && RECENT_DIRECTIONS.includes(rawDirection)
+        ? (rawDirection as RecentDirection)
+        : null;
+
     out.push({
       host,
       metric: str(entry['metric'], 'queued'),
@@ -415,6 +429,7 @@ export function parseProjections(payload: unknown): HostProjectionView[] {
       measuredAt: str(entry['measuredAt']),
       fitSampleCount: nullableNum(entry['fitSampleCount']) ?? 0,
       fitSpanSeconds: nullableNum(entry['fitSpanSeconds']) ?? 0,
+      recentDirection,
       threshold,
       projection,
       projectionUnavailable: reason,

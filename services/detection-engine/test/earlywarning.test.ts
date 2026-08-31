@@ -530,3 +530,128 @@ describe('a queue must be rising NOW, not merely on average', () => {
     assert.equal(p.projectionUnavailable, 'not_rising');
   });
 });
+
+/**
+ * `recentDirection` — contract §1.5, and #174.
+ *
+ * THE DEFECT THIS PINS is that `already_crossed` was returned for a queue over its threshold whether
+ * it was climbing or draining, and nothing in the payload distinguished them. Measured on the live
+ * stack: a `queue_buildup` fixed by enlarging the pool spent 22 consecutive polls — 110 seconds —
+ * draining from 152 to 54, every one reporting `already_crossed`, byte-identical to the climb through
+ * the same depths.
+ *
+ * So the two load-bearing cases are the SAME REASON with OPPOSITE directions, asserted as a pair.
+ * Testing only the draining one would pass against an implementation that hardcoded `'falling'`.
+ *
+ * The precedence is deliberately unchanged and is asserted as such: a draining queue still over its
+ * limit is still `already_crossed`, because it is still a problem.
+ */
+describe('recentDirection — which way it is moving now (§1.5)', () => {
+  /** Record an arbitrary series at the shipped poll and project at its last sample. */
+  function series(values: readonly number[], cfg = config()) {
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    let at = T0;
+    for (const v of values) {
+      store.record(HOST, 'queued', v, at);
+      at += POLL;
+    }
+    const lastAt = at - POLL;
+    return projectHost(HOST, raw(values.at(-1) ?? 0), store, cfg, lastAt);
+  }
+
+  /** Rise to `peak`, then come down by `perSample` — the shape of an approved fix taking effect. */
+  function riseThenDrain(peak: number, perSample: number, drainSamples: number): number[] {
+    const up: number[] = [];
+    for (let v = 0; v < peak; v += 5) up.push(v);
+    const down: number[] = [];
+    let v = peak;
+    for (let i = 0; i < drainSamples; i += 1) {
+      v -= perSample;
+      down.push(v);
+    }
+    return [...up, ...down];
+  }
+
+  it('a queue draining ABOVE its threshold is already_crossed and falling', () => {
+    // The regression. 150 -> 60 at 3/poll over 30 polls: the tail is unambiguously falling and the
+    // depth never drops below the threshold, so the reason cannot change.
+    const p = series(riseThenDrain(150, 3, 30));
+    assert.ok((p.currentValue ?? 0) >= 50, 'sanity: still above the threshold');
+    assert.equal(p.projectionUnavailable, 'already_crossed', 'precedence is unchanged');
+    assert.equal(p.projection, null);
+    assert.equal(p.recentDirection, 'falling');
+  });
+
+  it('a queue RISING above its threshold is already_crossed and rising — the same reason', () => {
+    /* The other half of the pair, and the reason it matters: before this field the two states above
+       and below were one indistinguishable payload. */
+    const p = series(Array.from({ length: 60 }, (_, i) => i * 3));
+    assert.ok((p.currentValue ?? 0) >= 50);
+    assert.equal(p.projectionUnavailable, 'already_crossed');
+    assert.equal(p.recentDirection, 'rising');
+  });
+
+  it('a projection is ALWAYS rising — §1.5s one invariant', () => {
+    // The projection path cannot be reached with a non-positive tail, so this is a property of the
+    // shape rather than of this fixture.
+    const p = ramp(20, 2);
+    assert.ok(p.projection !== null, 'sanity: expected a forecast');
+    assert.equal(p.recentDirection, 'rising');
+  });
+
+  it('a queue draining BELOW its threshold is not_rising and falling', () => {
+    // #142's case, which was already correct. The direction now says the same thing explicitly
+    // rather than leaving "not rising" to cover falling, flat and levelled-off alike.
+    const p = series(riseThenDrain(100, 4, 20));
+    assert.ok((p.currentValue ?? 0) < 50, 'sanity: below the threshold');
+    assert.equal(p.projectionUnavailable, 'not_rising');
+    assert.equal(p.recentDirection, 'falling');
+  });
+
+  it('a flat idle queue is steady, not falling and not null', () => {
+    /* `steady` and `falling` are different claims to an operator: one is "nothing is happening", the
+       other is "it is getting better". A flat series must not read as recovery. */
+    const p = series(Array.from({ length: 20 }, () => 0));
+    assert.equal(p.projectionUnavailable, 'not_rising');
+    assert.equal(p.recentDirection, 'steady');
+  });
+
+  it('is null below minFitSamples — no claim, rather than a sign through three samples', () => {
+    const p = series([0, 1, 2, 3, 5]);
+    assert.equal(p.projectionUnavailable, 'insufficient_samples');
+    assert.equal(p.recentDirection, null, 'a warming row claims no direction');
+  });
+
+  it('is null when the tail shares one timestamp — division by zero is not a flat line', () => {
+    const cfg = config();
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    for (let i = 0; i < 12; i += 1) store.record(HOST, 'queued', i * 2, T0 + i * POLL);
+    const lastAt = T0 + 250_000;
+    for (const v of [40, 41, 42]) store.record(HOST, 'queued', v, lastAt);
+    const p = projectHost(HOST, raw(42), store, cfg, lastAt);
+    assert.equal(p.projectionUnavailable, 'not_rising');
+    assert.equal(p.recentDirection, null);
+  });
+
+  it('the KEY is present on every row, whatever the reason', () => {
+    /* Contract §1: a missing key is a violation, a null value is not. Asserted with `in` rather than
+       by reading the value, because `undefined` and `null` both read as absent otherwise. */
+    const disabled = config({ earlyWarning: { ...config().earlyWarning, enabled: false } });
+    const rows = [
+      series([0, 1, 2], disabled),
+      series([5, 5, 5]),
+      ramp(20, 2),
+      series(riseThenDrain(150, 3, 30)),
+    ];
+    for (const p of rows) {
+      assert.ok('recentDirection' in p, `key missing for ${p.projectionUnavailable}`);
+    }
+    // And the unmeasurable case, which has no sample to fit at all.
+    const cfg = config();
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    const p = projectHost(HOST, raw(null), store, cfg, T0);
+    assert.equal(p.projectionUnavailable, 'metric_unmeasurable');
+    assert.ok('recentDirection' in p);
+    assert.equal(p.recentDirection, null);
+  });
+});

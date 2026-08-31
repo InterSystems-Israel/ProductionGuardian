@@ -239,6 +239,15 @@ export type ProjectionDeclineReason =
   | 'not_rising'
   | 'beyond_horizon';
 
+/**
+ * Which way the metric is moving now — `earlywarning-api.md` §1.5.
+ *
+ * A SEPARATE AXIS FROM THE DECLINE REASON, not another member of it: the reason says which state,
+ * this says which way, and `already_crossed` occurs in both directions. `null` means the engine
+ * claims no direction and must never be rendered as `steady`.
+ */
+export type RecentDirection = 'rising' | 'falling' | 'steady';
+
 export interface HostProjectionView {
   host: string;
   metric: string;
@@ -246,6 +255,8 @@ export interface HostProjectionView {
   measuredAt: string;
   fitSampleCount: number;
   fitSpanSeconds: number;
+  /** Measured, so present alongside `currentValue` rather than inside `projection`. §1.5. */
+  recentDirection: RecentDirection | null;
   threshold: {
     value: number | null;
     basis: string;
