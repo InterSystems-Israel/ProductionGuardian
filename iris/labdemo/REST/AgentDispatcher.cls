@@ -831,6 +831,35 @@ ClassMethod BuildGoal(body As %DynamicObject) As %String [ Private ]
     set g = g _ " nothing relevant comes back, say nothing about it -- the absence of a change is not"
     set g = g _ " a finding."
 
+    // AND IT MUST NOT SAY THE OPPOSITE, WHICH IS WHAT IT DID (#171). "Say nothing about it" above was
+    // already the instruction, and a live run on the armed missing-folder scenario returned
+    // "No recent configuration changes were found that could also contribute to this issue" -- while
+    // the FilePath edit sat in the audit log, 16 seconds old and not yet flushed. So the model both
+    // ignored a prohibition phrased as silence AND turned an empty list into a positive claim.
+    //
+    // TELLING IT NOT TO IS NOT ENOUGH ON ITS OWN, so this names the field that settles it.
+    // `retention.newest` is the newest audited change the log can see, and it is in every payload:
+    // if that is older than the finding, the log has not caught up and an empty list means "cannot
+    // tell yet", not "nothing changed". Measured on this instance -- a row written at 10:50:04 first
+    // became queryable at +36s, and a HTTPPort edit in the same session at +24s. Tens of seconds,
+    // variable, and an agent turn sits inside it. `contracts/mcp-tools.md` §3.12 carries the
+    // measurement and made this a consumer rule; this is that rule reaching the model.
+    //
+    // A PROHIBITION NEEDS A SANCTIONED ALTERNATIVE or the model invents one. Offering the "cannot yet
+    // tell" sentence is what stops it reaching for "no changes were found" to fill the same slot.
+    set g = g _ " NEVER state that no configuration change was found, or that nothing was changed."
+    set g = g _ " Audit rows take tens of seconds to become readable, so an empty changes list may"
+    set g = g _ " only mean the log has not caught up. Compare retention.newest with when this"
+    set g = g _ " finding began: if retention.newest is older, say that the audit log cannot answer"
+    set g = g _ " yet and give no verdict on configuration. Otherwise stay silent about"
+    set g = g _ " configuration entirely."
+    // `noOpSaves` exists because these rows used to reach the model AS changes, and it read
+    // `HTTPPort changed from 52773 to 52773` as evidence for a fault nothing had reconfigured. The
+    // tool now filters them, so this is the belt to that braces: a count is not a change, and a model
+    // that sees a non-zero number next to an empty list must not narrate it as one.
+    set g = g _ " noOpSaves counts saves where the value did not move. It is NOT a change: never"
+    set g = g _ " report it as one, and never treat a non-zero count as evidence of anything."
+
     // ATTRIBUTION, RESTATED HERE, and it is a repair rather than a belt-and-braces addition. The
     // directive above cost the reply its evidence attribution: the first version closed with "report
     // it as evidence under the rules in your instructions", and across three consecutive live runs

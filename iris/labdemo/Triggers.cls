@@ -819,7 +819,25 @@ ClassMethod SetSetting(pItem As %String, pTarget As %String, pName As %String, p
     // AFTER the save succeeds, so the audit log never claims a change that did not land. An audit
     // failure does NOT fail the arming: the setting really did change, and refusing to report the
     // change is a smaller wrong than refusing to make it.
-    do ..AuditSettingChange(pItem, pName, previous, pValue)
+    //
+    // AND ONLY IF THE VALUE ACTUALLY MOVED (#171). This used to be unconditional, which meant a save
+    // that changed nothing still wrote `HTTPPort:52773>>52773`. That is not a change, and it is not a
+    // hypothetical: `FirstBoot.ApplyDeploymentSettings()` writes HTTPServer and HTTPPort through this
+    // method on EVERY boot, so a normal boot left two of them in the window every investigation
+    // reads -- and `Reset()` adds more whenever it restores a setting that was already correct. A
+    // `PoolBottleneck` investigation then presented both boot-time rows as `Setting Change` evidence
+    // on a production nobody had reconfigured, which is the worst direction for this to fail in:
+    // `contracts/mcp-tools.md` §3.12 tells the consumer that a setting changed shortly before a
+    // finding is the likeliest cause of it.
+    //
+    // `'found` IS STILL A CHANGE even though `previous` is "". The setting did not exist and now does,
+    // which audits as `Setting:>>value` and is a real diagnosis -- `Tools.ChangeLog.ParseChange()`
+    // keeps an empty previous value deliberately, for exactly this. So the test is on movement, not
+    // on `previous` being non-empty. `found` is set inside the item loop above and survives it;
+    // `$get` guards the path where the loop never assigned it.
+    if '$get(found, 0) || (previous '= pValue) {
+        do ..AuditSettingChange(pItem, pName, previous, pValue)
+    }
     quit $$$OK
 }
 

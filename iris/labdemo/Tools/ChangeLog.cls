@@ -231,6 +231,7 @@ ClassMethod GetRecentConfigChanges(host As %String = "", sinceHours As %Integer 
 
     set changes = []
     set suppressed = 0
+    set noOpSaves = 0
 
     // Ordered DESC and capped by TOP: the newest changes are the ones a diagnosis turns on, and a
     // clipped scan must clip the OLD end.
@@ -269,6 +270,21 @@ ClassMethod GetRecentConfigChanges(host As %String = "", sinceHours As %Integer 
                 set suppressed = suppressed + 1
                 continue
             }
+            // A SAVE THAT MOVED NOTHING IS NOT A CHANGE (#171). Counted, not listed -- silently
+            // dropping it would repeat #165's shape, and the count is what lets a reader tell "the
+            // config was untouched" from "something was saved and nothing moved".
+            //
+            // Kept even though `Triggers.SetSetting()` no longer writes these: the rows already in the
+            // audit log do not disappear, and the Management Portal's save path is not ours. A producer
+            // fix alone would look correct on a fresh volume and wrong on every existing instance.
+            //
+            // A SEPARATE COUNTER FROM `suppressed`, which means "changed, but I may not name the
+            // setting". Merging them would lose both facts, and this one is the more misleading of the
+            // two if it reaches the model: `HTTPPort changed from 52773 to 52773` reads as a change.
+            if $list(parsed, 2) = $list(parsed, 3) {
+                set noOpSaves = noOpSaves + 1
+                continue
+            }
             if changes.%Size() >= ..#MAXCHANGES {
                 do out.%Set("truncated", 1, "boolean")
                 continue
@@ -281,6 +297,7 @@ ClassMethod GetRecentConfigChanges(host As %String = "", sinceHours As %Integer 
 
     set out.changes = changes
     set out.suppressed = suppressed
+    set out.noOpSaves = noOpSaves
     quit out
 }
 
