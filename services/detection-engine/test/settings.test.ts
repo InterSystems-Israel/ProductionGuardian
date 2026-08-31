@@ -542,3 +542,39 @@ describe('the settings endpoint over HTTP', () => {
     await new Promise<void>((done) => bare.close(() => done()));
   });
 });
+
+/**
+ * The panel's prose is read by an OPERATOR, and `SETTING_FIELDS` is the one place in this service
+ * where operator-facing copy and developer-facing copy sit in the same literal.
+ *
+ * A `help` string shipped for weeks citing "ADR 0003" (#176) — an unresolvable reference to a
+ * document the product does not surface, next to our own vocabulary for our own false-positive
+ * rate. It reached the browser through `GET /api/settings/thresholds`, so it was a served string
+ * rather than a comment.
+ *
+ * Asserted over the WHOLE array rather than the one field that was wrong, because the leak is a
+ * category and the next one will be in whichever field is added next. This is #84's family: a
+ * reference copied out of a design document goes stale or becomes meaningless in its new context,
+ * and nothing else here would notice.
+ */
+describe('user-visible copy carries no internal references', () => {
+  /* ADR citations, section marks, and issue/PR numbers. Two digits for the last one so a bare "5×"
+     or "1 → 5" in a legitimate example cannot trip it -- the example in the floor's help text is
+     the clearest thing in the panel and must stay. */
+  const INTERNAL = /ADR\s|§|#\d{2,}/;
+
+  for (const field of SETTING_FIELDS) {
+    it(`${field.key} states no ADR, section or issue number`, () => {
+      for (const [name, copy] of [
+        ['label', field.label],
+        ['help', field.help],
+        ['blastRadius', field.blastRadius],
+      ] as const) {
+        assert.ok(
+          !INTERNAL.test(copy),
+          `${field.key}.${name} cites something the operator cannot look up: ${copy}`,
+        );
+      }
+    });
+  }
+});

@@ -89,8 +89,9 @@ export const SETTING_FIELDS: readonly SettingField[] = [
     key: 'rules.queue_buildup.absoluteFloor',
     label: 'Minimum queue depth',
     help:
-      'A queue shallower than this never reports, however far above baseline it is. ADR 0003 ' +
-      'calls this the single biggest false-positive lever: 1 → 5 is 5× baseline and not a problem.',
+      'A queue shallower than this never reports, however far above baseline it is. It is the ' +
+      'main guard against noise on a quiet production, where a queue of 1 rising to 5 is 5× ' +
+      'baseline and not a problem.',
     blastRadius:
       'Lowering this widens what fires on the live production — shallow queues that are ' +
       'currently ignored will start reporting.',
