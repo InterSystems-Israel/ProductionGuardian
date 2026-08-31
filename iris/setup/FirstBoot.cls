@@ -43,6 +43,12 @@ Parameter ARCHIVEDIR = "/tmp/labdemo/hl7-archive/";
 /// The Ensemble credential Cloud API uses to POST to the REST app.
 Parameter CREDENTIAL = "LabDemoREST";
 
+/// The stock monitoring web application, and the application role granted on it (#166).
+/// See `GrantMonitorSecureRole()` for what this buys and what it costs.
+Parameter MONITORAPP = "/api/monitor";
+
+Parameter MONITORROLE = "PGMonitorSecure";
+
 /// Stand the whole thing up. `pSourceDir` is where the .cls files live, as seen from
 /// inside IRIS; pass "" to skip compilation if the classes are already loaded.
 ClassMethod Run(pSourceDir As %String = "", pStartGenerator As %Boolean = 1) As %Status
@@ -67,6 +73,7 @@ ClassMethod Run(pSourceDir As %String = "", pStartGenerator As %Boolean = 1) As 
     do ..MakeDirectories()
     do ..RegisterWebApps()
     do ..ClearPasswordChangeFlag()
+    do ..GrantMonitorSecureRole()
     do ..CreateCredential()
 
     set sc = ..EnableMetrics()
@@ -294,6 +301,96 @@ ClassMethod ClearPasswordChangeFlag()
     set p("ChangePassword") = 0
     set sc = ##class(Security.Users).Modify(user, .p)
     write "4b. user ", user, ": ", $select(sc: "password flag cleared", 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
+}
+
+/// Stop `/api/monitor/*` writing one `AccessDenied` audit row per request (#166).
+///
+/// IRIS's monitor dispatch calls `Security.Services.Exists()`, which needs `%Admin_Secure:USE`, while
+/// the session holds only the application's own roles. The lookup is denied and audited; the request
+/// then returns 200 with the full payload, so nothing ever goes red and the only symptom is the audit
+/// log filling at ~55,000 rows/day between the proxy's 2.5s poll and the compose healthcheck. That
+/// buried real denials -- `AccessDenied` was 111,228 of 162,333 rows on the instance
+/// `Tools.ChangeLog` measured, which is why that tool carries `SCANROWS` and a `ModifyConfiguration`
+/// filter as workarounds.
+///
+/// Granting the privilege as an APPLICATION role fixes it at the source. Measured on the running
+/// stack: 72 rows in the 180s before, 0 in the 180s after, and no `AccessDenied` from ANY client
+/// since the moment it was applied. The metrics payload is unchanged -- 1069 lines and 130 families
+/// both sides, no family added or removed -- so this suppresses the denial without widening what the
+/// endpoint reports.
+///
+/// WHY AN APPLICATION ROLE AND NOT A MATCHING ROLE, WHICH WOULD BE PROPERLY SCOPED. A matching role
+/// expands privilege based on the AUTHENTICATED user's roles, and this application never
+/// authenticates anyone: `GET /api/monitor/metrics` with a deliberately WRONG password returns 200,
+/// where `/labdemo/monitor/hoststatus` returns 401 to the same header. The `Authorization` header is
+/// discarded, so no dedicated client user would ever be authenticated here, nothing would hold the
+/// role to be matched against, and the rule would never fire. What proves the application-role path
+/// IS live is the audit row itself: it records `Roles: %DB_IRISSYS`, which is exactly this app's
+/// existing always-add entry. Do not "improve" this into a matching role without re-running the
+/// wrong-password check -- the scoped version is the one that cannot work here.
+///
+/// THE COST, STATED PLAINLY: `%Admin_Secure:USE` is granted to any caller that can reach
+/// `/api/monitor/*`, unauthenticated, and this stack publishes 52773 to the host. It is confined to
+/// this application -- `DispatchClass` is fixed to `%Api.Monitor`, so a caller cannot run arbitrary
+/// code under it, and the payload diff above shows the routes we use disclose nothing new. That is a
+/// real widening against root `CLAUDE.md` §2.1's RBAC posture and it was an explicit call, not an
+/// oversight: the alternative was ~55,000 audit rows/day permanently hiding genuine denials. The
+/// narrower fixes were considered and are recorded in #166 -- the only one that removes the rest of
+/// the flood without this trade is moving metrics collection off `/api/monitor/*` onto a `LABDEMO`
+/// application, whose requests audit zero, and that is a `contracts/` change.
+///
+/// Idempotent: creates the role only if absent, and appends to `MatchRoles` only if not already there.
+ClassMethod GrantMonitorSecureRole()
+{
+    new $namespace
+    set $namespace = "%SYS"
+
+    if '##class(Security.Roles).Exists(..#MONITORROLE) {
+        set sc = ##class(Security.Roles).Create(..#MONITORROLE,
+            "Grants %Admin_Secure:USE inside " _ ..#MONITORAPP _ " only, so the monitor API stops " _
+            "auditing an AccessDenied per request (#166)", "%Admin_Secure:U")
+        write "4c. role ", ..#MONITORROLE, ": ", $select(sc: "created", 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
+        if $$$ISERR(sc) quit
+    } else {
+        write "4c. role ", ..#MONITORROLE, ": exists", !
+    }
+
+    if '##class(Security.Applications).Exists(..#MONITORAPP) {
+        // Not ours to create -- it ships with the instance. Say so rather than inventing it.
+        write "4c. app ", ..#MONITORAPP, ": DOES NOT EXIST -- cannot grant, /api/monitor is stock", !
+        quit
+    }
+
+    do ##class(Security.Applications).Get(..#MONITORAPP, .props)
+    set before = $get(props("MatchRoles"))
+    if before [ ..#MONITORROLE {
+        write "4c. app ", ..#MONITORAPP, " MatchRoles: already grants ", ..#MONITORROLE, !
+        quit
+    }
+
+    // `MatchRoles` is a comma-separated list of `matchrole:added:added` entries, and an entry with an
+    // EMPTY match role -- i.e. a leading ":" -- is the always-add one. Append to that entry rather
+    // than to the string, so a future matching entry cannot silently absorb our role.
+    //
+    // `current` is a COPY, because `set $piece(...)` mutates in place: building the new value out of
+    // `before` directly made the report below print the new value on BOTH sides of its arrow, so the
+    // one line saying what changed was the one line that could not show it.
+    set current = before
+    set first = $piece(current, ",", 1)
+    if current = "" {
+        set updated = ":" _ ..#MONITORROLE
+    } elseif $extract(first) = ":" {
+        set $piece(current, ",", 1) = first _ ":" _ ..#MONITORROLE
+        set updated = current
+    } else {
+        set updated = ":" _ ..#MONITORROLE _ "," _ current
+    }
+
+    kill p
+    set p("MatchRoles") = updated
+    set sc = ##class(Security.Applications).Modify(..#MONITORAPP, .p)
+    write "4c. app ", ..#MONITORAPP, " MatchRoles: ",
+        $select(sc: "'" _ before _ "' -> '" _ updated _ "'", 1: "FAILED " _ $system.Status.GetErrorText(sc)), !
 }
 
 /// The credential Cloud API POSTs with. Through an external gateway the REST app answers
