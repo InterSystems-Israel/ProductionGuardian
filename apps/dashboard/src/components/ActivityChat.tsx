@@ -1,9 +1,15 @@
 /**
- * Activity insights chat — ask a question about interoperability activity in natural language.
+ * Production insights chat — ask a question about this production in natural language.
  *
- * The answer comes from an AI Hub agent inside IRIS that reads `Ens_Activity_Data.{Seconds,Hours,
- * Days}` through governed, audited MCP tools. This component renders what it is given and composes
- * nothing.
+ * The answer comes from an AI Hub agent inside IRIS reading four families of evidence through
+ * governed, audited MCP tools: recorded activity (`Ens_Activity_Data.{Seconds,Hours,Days}`), the
+ * event log, configuration changes from `%SYS.Audit`, and the findings Guardian is currently
+ * reporting. `Tools/Governance.cls`'s `chat` row is the authoritative membership. This component
+ * renders what it is given and composes nothing.
+ *
+ * THE NAME IS ACTIVITY-ONLY AND THE PANEL IS NOT, any more. Kept as `ActivityChat` because renaming
+ * the file would touch every importer for no behavioural gain, but the copy it renders must describe
+ * all four families — it described only activity for two families' worth of releases (#175).
  *
  * THE FOUR THINGS IT MUST NOT GET WRONG, which are `InvestigationPanel`'s three plus one:
  *
@@ -56,16 +62,25 @@ const DEFAULT_MAX_LENGTH = 600;
  *
  * "WHAT CAN YOU DO?" IS FIRST, AND IT IS THE ONE THAT COSTS NOTHING. IRIS classifies it as a
  * capability question and answers it from a fixed catalogue — no model call, no tool call — so it is
- * the cheapest chip here as well as the one that teaches an operator what the other three are
- * examples of. It leads for that reason: the reported defect was that the assistant did not behave
- * like one, and the first thing an assistant should be able to say is what it is for.
+ * the cheapest chip here as well as the one that teaches an operator what the rest are examples of.
+ * It leads for that reason: the reported defect was that the assistant did not behave like one, and
+ * the first thing an assistant should be able to say is what it is for.
+ *
+ * ONE CHIP PER CAPABILITY, which is what #175 was about. The agent reads four families of evidence
+ * (`Tools/Governance.cls`'s `chat` row: activity, event log, configuration changes, active findings)
+ * and every chip here used to be an activity question, so two of the four were undiscoverable — a
+ * capability nobody asks about is indistinguishable from one that does not exist. The findings chip
+ * is second because "is anything wrong" is the commonest question this panel is asked and the one it
+ * could not answer before MVP 3; `ChatDispatcher.SystemPrompt` puts the same tool first for the same
+ * reason. Two activity chips were dropped to make room rather than growing the list past six.
  */
 const SUGGESTIONS: readonly string[] = [
   'What can you do?',
+  'Is anything wrong with the production right now?',
+  'Are there errors in the event log, and when did they start?',
+  'Have any settings been changed recently?',
   'Which host is handling the most messages right now?',
-  'Is anything falling behind? Compare queueing time across hosts.',
   'How has throughput changed over the last few hours?',
-  'What activity history is available, and how far back does it go?',
 ];
 
 function confidenceText(confidence: number | null): string | null {
@@ -124,7 +139,7 @@ export function ActivityChat({
       <div className="pg-chat__head">
         <h2 id="pg-chat-heading" className="pg-section__title">
           <IconMessages size={16} />
-          Ask about activity
+          Ask about this production
         </h2>
         {!empty && (
           <button type="button" className="pg-button pg-button--subtle" onClick={onClear}>
@@ -134,9 +149,10 @@ export function ActivityChat({
       </div>
 
       <p className="pg-chat__intro">
-        Ask about message volume, throughput and latency over time. An AI agent inside IRIS answers
-        by reading the interoperability activity tables through governed, audited tools — it sees
-        counts, durations and configuration only, never message content or patient data.
+        Ask what Guardian is reporting right now, about message volume, throughput and latency over
+        time, about what the production logged, or about recent configuration changes. An AI agent
+        inside IRIS answers by reading those tables through governed, audited tools — it sees
+        counts, durations, severities and configuration only, never message content or patient data.
       </p>
 
       {empty && (
