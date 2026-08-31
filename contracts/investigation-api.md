@@ -382,13 +382,34 @@ spelling, same types — and §1.1 **refuses unknown keys inside `action`** (`ma
 | `action.type` | string | **Enumerated. Exactly one member for MVP 2: `set_pool_size`.** |
 | `action.host` | string | The config item to act on. Equal to `finding.host`, and `Cloud API` is the only whitelisted value (`resolve-api.md` §3). |
 | `action.size` | integer | Target pool size. **`size`, not `proposedValue`** — the name is `resolve-api.md`'s. |
-| `currentValue` | integer | Pool size now, as read by `get_pool_size`. Not the engine's guess. Feeds `precondition.poolSize` on the resolve call and the reversal target. |
+| `currentValue` | integer \| **null** | Pool size now, as read by `get_pool_size` or `get_host_settings`. Not the engine's guess — it holds no production configuration. **`null` when the agent did not report it**; a consumer must then omit the before-value rather than render a placeholder. May be below `bounds.min`, which bounds the *target* only. |
 | `bounds` | object | `{ min: integer, max: integer }`. `2`–`8` per `resolve-api.md` §3. **Advisory** — see below. |
-| `reversible` | boolean | Whether re-applying `currentValue` undoes it. |
+| `reversible` | boolean | Whether the change can be undone. **Independent of `currentValue`** — `POST /api/resolve` captures `before` from the write tool at apply time and builds its own `reversal` from it, so this stays `true` with `currentValue: null`. |
 | `requiresApproval` | boolean | **Always `true` for MVP 2.** |
 | `summary` | string | One line for the approval button's label. Authoritative, render as-is. |
 
 `additionalProperties: false` at both levels.
+
+**`currentValue` is nullable, and `summary` is what a reader actually sees.** The schema has always
+typed it `["integer", "null"]` and `samples/investigation-response.json` has always carried `null`,
+while the table above said `integer` until 2026-08-31 — so the disagreement was between this prose
+and the two machine-readable artefacts, not a behaviour change. It matters because `summary` is
+**authoritative and rendered as-is**, so the producer must not use it to report an absent value:
+
+```
+currentValue: 4      ->  "increase Cloud API pool 4 -> 8"
+currentValue: null   ->  "increase Cloud API pool to 8"
+```
+
+Never a placeholder. A `?` in that string reaches an approval control for a live production write
+(#178).
+
+**Where the before-value is used, and where it is not.** It is advisory context for the human
+approving the action, and it is the value to send as `precondition.poolSize` on the resolve call *if
+a consumer chooses to send one* — that field is optional, and a consumer with `currentValue: null`
+must simply omit it rather than guess. It is **not** the reversal target: `resolve-api.md`'s
+`reversal` is built from the `before` the write tool itself reports at apply time, which is the only
+reading that is correct if the pool changed between the investigation and the approval.
 
 ### 3.3a `manualRemediation` — a fix that is not ours to apply
 
