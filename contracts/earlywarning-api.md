@@ -57,6 +57,12 @@ export interface HostProjection {
   fitSampleCount: number;
   /** Seconds from the first to the last sample in the fit window. 0 when fitSampleCount < 2. */
   fitSpanSeconds: number;
+  /**
+   * Which way the metric is moving RIGHT NOW: the sign of the tail fit (§2.2.1's most
+   * recent 40%). MEASURED, not forecast — it describes the recent past, never the
+   * future. null when the tail cannot be fitted. See §1.5.
+   */
+  recentDirection: RecentDirection | null;
   /** The threshold being projected toward, or null when there isn't one. See §1.3. */
   threshold: Threshold | null;
   /** The forecast. null whenever we decline to forecast — see §2. */
@@ -99,6 +105,8 @@ export interface Projection {
   message: string;
 }
 
+export type RecentDirection = 'rising' | 'falling' | 'steady';
+
 export type ProjectionUnavailableReason =
   | 'disabled'
   | 'metric_unmeasurable'
@@ -109,7 +117,7 @@ export type ProjectionUnavailableReason =
   | 'beyond_horizon';
 ```
 
-Every key is always **present**. `currentValue`, `threshold`, `projection` and
+Every key is always **present**. `currentValue`, `recentDirection`, `threshold`, `projection` and
 `projectionUnavailable` may be `null`; the rest are always numbers or strings. A missing key is a
 contract violation, a `null` value is not — same rule as `healthscan-api.md` §1.
 
@@ -212,6 +220,65 @@ projection, and **not** adjacent to measured values in the same visual group. Do
 is not stable, and an animated countdown would be animating our poll loop rather than the queue.
 Re-render from the served number on each poll and let it jump.
 
+### 1.5 `recentDirection` — which way it is moving now, and why it is a sign rather than a slope
+
+`recentDirection` is the **sign of the tail fit**: the same most-recent-40% fit §2.2.1 already runs,
+reported rather than only tested.
+
+| Value | Means |
+|---|---|
+| `rising` | tail slope, rounded to the published 1dp, is **> 0** |
+| `falling` | rounded tail slope is **< 0** |
+| `steady` | rounded tail slope is **0** — including a small negative that rounds to zero |
+| `null` | no direction is claimed: the fit window holds fewer than `minFitSamples` (12), or the tail itself has fewer than two samples, or all of them share one timestamp |
+
+**`null` below `minFitSamples` is the load-bearing part of that table**, and it follows §2.2.1's own
+reasoning rather than being a separate rule. The tail is allowed to decide on as few as two samples
+*because* the window behind it has already cleared twelve — it is confirming a grounded answer, not
+producing one. Published standalone on a warming host, a sign fitted through three samples would be
+a claim with nothing behind it. So `warming` and `insufficient_samples` rows always carry `null`
+here, and a consumer gets a direction exactly when there is a fit worth signing.
+
+**A SIGN, NOT A SECOND SLOPE, and that is §2.2.1's own decision rather than a new one.** That section
+already states that the tail fit "is a sign test confirming an answer the window already grounded in
+`minFitSamples`" and that its slope is deliberately never published. Publishing a magnitude here
+would put two rates in one payload with no way for a reader to know which one `message` was built
+from. So the tail keeps answering exactly one question — *which way* — and this field is that answer.
+
+**MEASURED, so §1.4 does not apply to it.** It is computed from samples that have already happened,
+which makes it the same kind of value as `currentValue` and `fitSampleCount`, not the same kind as
+`slope` or `secondsToThreshold`. It carries no hedge and needs no projection framing. It says nothing
+whatever about the future: a queue can be `falling` and still cross its threshold a minute later.
+
+**Why it exists (#174).** `already_crossed` is returned for a queue over its threshold whether it is
+climbing or draining (§2.2 step 5, and that precedence is unchanged). Measured on the live stack: an
+armed `queue_buildup` then fixed by enlarging the pool spent **22 consecutive polls — 110 seconds —
+draining monotonically from 152 to 54, every one reporting `already_crossed`**, indistinguishable
+from the climb through the same depths. That is longer than the ~20 s in which a projection with an
+ETA exists at all, so it is the state the panel spends most of its life in. The engine measured the
+direction the whole time and published nothing that let a reader tell.
+
+**The one invariant worth testing:** when `projection` is non-null, `recentDirection` is **always**
+`'rising'` — the projection path cannot be reached with a non-positive tail (§2.2.1). The converse
+does **not** hold: `rising` with `projection: null` is normal and means over the threshold already,
+beyond the horizon, or the defensive decline at the end of §2.2.1.
+
+**It LAGS a turn, by design, and a consumer must not read it as instantaneous.** The tail is a
+120 s least-squares fit, so the sign changes only once enough of the tail has turned — not on the
+first sample that moves the other way. Measured on the live stack: a queue peaked at 151 and began
+draining immediately; `recentDirection` reported `rising` for a further **~35 seconds** and 46
+messages of real drain before flipping to `falling`.
+
+That is the intended trade and the same one §2.2.1 already makes for the gate — the 40% tail is
+chosen so "one bursty poll cannot flip its sign". A field that reacted within a poll would flap on
+every jitter, and a flapping direction beside a critical finding is worse than a slow one. So it
+answers "which way has this been going" rather than "which way did it move just now", and **a
+consumer must not build a "recovered" claim on it** — only a "coming down" one.
+
+**Rendering requirement for Dev C:** where a reason is rendered for a crossed threshold, the
+direction must distinguish recovering from still-rising. `null` is not "steady" — it means unknown,
+and must read as no claim rather than as reassurance.
+
 ---
 
 ## 2. When there is no projection
@@ -228,7 +295,7 @@ Never invent a number here; there is a reason code for every case instead.
 | `metric_unmeasurable` | `currentValue` is `null`. The metric is not measurable for this host, which is not zero (healthscan Q13) | `null` | `—` |
 | `warming` | No rolling baseline yet, so **no threshold exists to project toward**. Fewer than `minBaselineSamples` (12) in the 1800 s baseline window | `null` | `—`, plus the warming affordance |
 | `insufficient_samples` | Baseline is warm, but the 300 s fit window holds fewer than **12** samples — a newly appeared host, or a gap in polling | non-null | `—` |
-| `already_crossed` | `currentValue >= threshold.value`. There is no time remaining to forecast; the `queue_buildup` finding is the thing to render | non-null | defer to the finding |
+| `already_crossed` | `currentValue >= threshold.value`. There is no time remaining to forecast; the `queue_buildup` finding is the thing to render | non-null | defer to the finding, **and read `recentDirection`** — a crossed queue that is `falling` is recovering, and must not read the same as one that is `rising` (§1.5) |
 | `not_rising` | **Either** fit is `<= 0` after rounding to 1 decimal — the 300 s window, **or its most recent 40%**. Flat, draining, levelled off, or turned over — nothing is approaching anything. See §2.2.1 | non-null | nothing, or a neutral "steady" |
 | `beyond_horizon` | Rising, but the projected crossing is more than **1800 s** away | non-null | nothing |
 
@@ -275,12 +342,20 @@ and not merely the available one: a draining queue is not rising. It stays at st
 `already_crossed`, so a queue draining while still **above** its threshold keeps reporting
 `already_crossed` — draining-but-over-limit is still a problem.
 
+**That remains true, and it was not the whole answer (#174).** Keeping `already_crossed` for a
+draining queue is right — a queue over its limit is a problem however it is moving — but the reason
+code alone left a consumer unable to tell a recovery from a runaway, and both rendered identically
+for the 110 seconds a real cool-down takes. The fix is `recentDirection` (§1.5), which publishes the
+sign this section already computes. **Still no eighth reason and still no precedence change**: the
+answer to *which reason* is unchanged, and what is added is the answer to *which way*.
+
 Two consequences worth stating, because a consumer cannot see them from the reason alone:
 
-- **`slope` is never published for the tail.** The tail fit is a sign test confirming an answer the
-  window already grounded in `minFitSamples`; only the window slope is published. So a positive
-  published `slope` with `projection: null` cannot occur — the decline happens before any projection
-  is built.
+- **`slope` is never published for the tail** — the *magnitude*, that is. The tail fit is a sign test
+  confirming an answer the window already grounded in `minFitSamples`; only the window slope is
+  published as a rate. So a positive published `slope` with `projection: null` cannot occur — the
+  decline happens before any projection is built. Its **sign** is published, as `recentDirection`
+  (§1.5), which is a different claim: `rising` is not a rate and cannot be used as one.
 - **An unfittable tail declines too**, and still as `not_rising`: fewer than two samples has no
   slope, and a tail sharing one timestamp is division by zero. `insufficient_samples` would be the
   wrong reason, since the contract defines that against the published `fitSampleCount` — the full
@@ -372,6 +447,7 @@ absolute floor of 50 is the live arm.
     "measuredAt": "2026-08-18T10:14:32Z",
     "fitSampleCount": 60,
     "fitSpanSeconds": 295,
+    "recentDirection": "rising",
     "threshold": {
       "value": 50,
       "basis": "absoluteFloor",
@@ -396,6 +472,7 @@ absolute floor of 50 is the live arm.
     "measuredAt": "2026-08-18T10:14:32Z",
     "fitSampleCount": 60,
     "fitSpanSeconds": 295,
+    "recentDirection": "steady",
     "threshold": {
       "value": 50,
       "basis": "absoluteFloor",
@@ -412,6 +489,7 @@ absolute floor of 50 is the live arm.
     "measuredAt": "2026-08-18T10:14:32Z",
     "fitSampleCount": 60,
     "fitSpanSeconds": 295,
+    "recentDirection": "steady",
     "threshold": {
       "value": 50,
       "basis": "absoluteFloor",
@@ -444,6 +522,7 @@ published; nothing else is.
     "measuredAt": "2026-08-18T10:09:07Z",
     "fitSampleCount": 5,
     "fitSpanSeconds": 20,
+    "recentDirection": null,
     "threshold": null,
     "projection": null,
     "projectionUnavailable": "warming"
@@ -455,6 +534,7 @@ published; nothing else is.
     "measuredAt": "2026-08-18T10:09:07Z",
     "fitSampleCount": 5,
     "fitSpanSeconds": 20,
+    "recentDirection": null,
     "threshold": null,
     "projection": null,
     "projectionUnavailable": "warming"
@@ -466,6 +546,7 @@ published; nothing else is.
     "measuredAt": "2026-08-18T10:09:07Z",
     "fitSampleCount": 5,
     "fitSpanSeconds": 20,
+    "recentDirection": null,
     "threshold": null,
     "projection": null,
     "projectionUnavailable": "warming"
@@ -491,6 +572,7 @@ Five samples at a 5000 ms poll is a 20 s span, and the queue *is* rising in this
     "measuredAt": "2026-08-18T10:22:12Z",
     "fitSampleCount": 60,
     "fitSpanSeconds": 295,
+    "recentDirection": "rising",
     "threshold": {
       "value": 50,
       "basis": "absoluteFloor",
@@ -507,6 +589,27 @@ No `secondsToThreshold: 0`, and no negative one. The threshold is behind us; the
 the `queue_buildup` finding on `/api/healthscan/findings`, which states what is actually true.
 Note `baselineValue` has climbed from 0.4 to 6.1 — that is the self-inflating rolling mean of
 §1.3, and at `6.1 * 5.0 = 30.5` the floor is still the live arm.
+
+**The same reason, the other direction.** Once the fix is applied and the queue starts coming down,
+`projectionUnavailable` stays `already_crossed` for as long as depth is over the threshold — the
+precedence is unchanged (§2.2 step 5) and draining-but-over-limit is still a problem. Only
+`recentDirection` distinguishes the two states:
+
+```
+… "currentValue": 56, "recentDirection": "falling",
+  "projection": null, "projectionUnavailable": "already_crossed"
+```
+
+Shown as a delta rather than a second full payload because the only measured fields that differ are
+those; `fitSampleCount` and `fitSpanSeconds` were not captured on the run this comes from, and
+inventing them would put two unmeasured numbers into the bytes Dev C mocks against.
+
+**Measured, 2026-08-31**, on the containerised stack: an armed `queue_buildup` fixed by enlarging the
+pool 1 → 4 drained monotonically from **152 to 54 over 22 consecutive polls (110 s)**, every one
+reporting `already_crossed`. It flipped to `not_rising` one poll after dropping under 50, at 46.
+Before `recentDirection` existed, those 22 polls were byte-identical to the climb through the same
+depths — which is #174, and it is why the field is on every row rather than only where a forecast
+exists.
 
 ---
 
@@ -590,7 +693,7 @@ samples.
 
 | Missing | Consequence | What closes it |
 |---|---|---|
-| `earlywarning.schema.json` | Nothing in `contracts/` validates this shape; the `contracts` CI job does not know this endpoint exists | A schema with a named `EarlyWarningResponse` definition, plus accept/reject cases in `validate.mjs` — including rejects for `projection` and `projectionUnavailable` both non-null, and for a `secondsToThreshold` outside `projection` |
+| `earlywarning.schema.json` | Nothing in `contracts/` validates this shape; the `contracts` CI job does not know this endpoint exists | A schema with a named `EarlyWarningResponse` definition, plus accept/reject cases in `validate.mjs` — including rejects for `projection` and `projectionUnavailable` both non-null, for a `secondsToThreshold` outside `projection`, for a `recentDirection` outside the three members, and for a non-`rising` `recentDirection` on an entry that carries a `projection` (§1.5's invariant) |
 | `earlywarning.d.ts` | Dev C transcribes from the TS block in §1 instead of importing | Lift §1 verbatim into a `.d.ts`, hand-maintained against the schema |
 | `samples/earlywarning-response.json` | The §4 examples are the shared bytes, in Markdown rather than in `samples/` | Commit §4.1 as a sample, **captured from a live run** rather than kept as the hand-written numbers it is today |
 
