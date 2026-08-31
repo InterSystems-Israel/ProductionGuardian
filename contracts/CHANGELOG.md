@@ -4,6 +4,75 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-08-31 — Early Warning publishes `recentDirection`, so a recovering queue stops reading like a runaway one
+
+**`earlywarning-api.md` only.** Additive: one nullable field on `HostProjection`, plus a
+`RecentDirection` type. **No reason added, no precedence moved**, no existing field changes type or
+meaning. A consumer that ignores it behaves exactly as before.
+
+#174, reported by @tanifgit from a live run.
+
+### The defect, and why the reason code could not carry it
+
+`already_crossed` is returned for a queue over its threshold whether it is climbing or draining
+(§2.2 step 5). That precedence is deliberate and it is **kept**: a queue over its limit is a problem
+however it is moving. What it could not do is let a consumer tell a recovery from a runaway, and both
+rendered as the same sentence.
+
+Measured on the containerised stack: an armed `queue_buildup` fixed by enlarging the pool 1 → 4 spent
+**22 consecutive polls — 110 seconds — draining monotonically from 152 to 54, every one reporting
+`already_crossed`**, byte-identical to the climb through the same depths. It flipped to `not_rising`
+one poll after dropping under 50. For scale, a projection with an ETA exists for roughly **20
+seconds** on that scenario, so the indistinguishable state is the one the panel spends most of its
+life in.
+
+### Why a sign and not an eighth reason
+
+An eighth reason (`crossed_but_recovering`) would move the precedence and force every consumer that
+enumerates reasons to learn a key — `mvp2Guards.ts` and `mockClient.ts` both do. The engine was
+already **measuring** the answer: §2.2.1 fits the tail of the window and uses it as a sign test. So
+the fix publishes that sign rather than inventing a state.
+
+**The magnitude stays unpublished**, which is also §2.2.1's existing decision rather than a new one.
+Two rates in one payload would leave a reader unable to tell which one `message` was built from, so
+the tail keeps answering exactly one question — which way — and `recentDirection` is that answer.
+
+### `null` is "no claim", and it is not only for an unfittable tail
+
+`warming` and `insufficient_samples` rows always carry `null`. §2.2.1 lets the tail decide on as few
+as two samples *because* the window behind it has cleared `minFitSamples`; published standalone on a
+warming host, a sign fitted through three samples would be a claim with nothing behind it. So a
+direction appears exactly when there is a fit worth signing.
+
+### It lags a turn, and that is stated rather than discovered
+
+The tail is a 120 s fit, so the sign changes once enough of the tail has turned rather than on the
+first sample that moves. Measured: a queue peaked at 151 and began draining immediately, and the
+field reported `rising` for a further **~35 s and 46 messages of real drain** before flipping.
+
+That is §2.2.1's existing trade — the 40% tail exists so "one bursty poll cannot flip its sign" — and
+a flapping direction beside a critical finding would be worse than a slow one. §1.5 states the
+measurement and the consequence: the field answers "which way has this been going", so a consumer may
+build a *coming down* claim on it and must not build a *recovered* one. Written down because the
+buffering caveat on `mcp-tools.md` §3.12 was the same shape of known-but-unstated latency, and
+arguing it away is what stopped the next reader checking (#171).
+
+### Consumer impact
+
+**None required**, and one opportunity. Nothing that validates today stops validating — there is no
+`earlywarning.schema.json` at all (§7), so this endpoint has never been CI-validated in either
+direction. Dev C's rendering requirement is new but additive: where a reason is rendered for a
+crossed threshold, `falling` must not read the same as `rising`, and `null` must read as unknown
+rather than as reassurance.
+
+§4's examples gain the field. The three warming rows get `null`; the projection rows get `"rising"`,
+which §1.5's invariant *requires* rather than assumes. §7 already records that these values are
+constructed rather than captured. The one exception is the new draining delta in §4.3, whose values
+are measured — shown as a delta precisely so that `fitSampleCount` and `fitSpanSeconds`, which were
+not captured on that run, are not invented into the bytes Dev C mocks against.
+
+---
+
 ## 2026-08-31 — `recommendedAction.currentValue` is documented as nullable, and `reversible` stops being defined against it
 
 **`investigation-api.md` §3.3 only. No schema change, no sample change, no field added or removed.**
