@@ -292,13 +292,48 @@ function parseAgentReply(
     // the one under investigation is a reasoning failure, and forwarding it would hand a human an
     // approve button for something they did not ask about.
     if (type === 'set_pool_size' && host === finding.host && sizeOk) {
+      /*
+       * THE POOL SIZE NOW, and the agent is the only party in this exchange that read it (#178).
+       *
+       * `currentPoolSize` is the authoritative slot and wins when a caller supplies one, but no
+       * caller does: `index.ts` passes null on purpose, because this service holds no production
+       * config and `Host` carries no pool size. So before this the field was null on EVERY
+       * investigation and the summary rendered `pool ? -> 8` on the one string a human reads before
+       * approving a write to a live production.
+       *
+       * Taken from the reply because the agent HAS the value: `get_pool_size` and
+       * `get_host_settings` are both mandatory calls in `BuildGoal`, and a live run attributed
+       * `Current Pool Size | mcp_tool | GetHostSettings | 4 workers`. It is a transcription by a
+       * model rather than a read by this service, which is why it is validated and why the
+       * authoritative slot keeps precedence rather than being replaced.
+       *
+       * NOT VALIDATED AGAINST `BOUNDS`, deliberately. Those bound the TARGET of a write (2..8); the
+       * value here describes what the production is already set to, and LABDEMO ships `Cloud API` at
+       * PoolSize 1 -- below `BOUNDS.min`. Rejecting it would discard the true value in the shipped
+       * configuration, so the test is only that it is a positive integer.
+       */
+      const claimed = inner['currentValue'] ?? ra['currentValue'];
+      const claimedOk =
+        typeof claimed === 'number' && Number.isInteger(claimed) && claimed >= 1;
+      const current = currentPoolSize ?? (claimedOk ? (claimed as number) : null);
       action = {
         action: { type: 'set_pool_size', host: finding.host, size: size as number },
-        currentValue: currentPoolSize,
+        currentValue: current,
         bounds: { ...BOUNDS },
+        // TRUE EVEN WHEN `currentValue` IS NULL, and that is not an oversight. Reversibility does
+        // not depend on this field: `resolve()` captures `before` from the write tool's own reply
+        // and builds `reversal` from it, so the undo target comes from the instance at apply time
+        // rather than from this number. `investigation-api.md` §3.3 defines the flag against
+        // `currentValue`, which is narrower than how the reversal is actually obtained.
         reversible: true,
         requiresApproval: true,
-        summary: `increase ${finding.host} pool ${currentPoolSize ?? '?'} -> ${size as number}`,
+        // NO `?` PLACEHOLDER. An unknown before-value is omitted rather than printed: §3.3 makes
+        // this string authoritative and tells the consumer to render it as-is, so a placeholder here
+        // becomes a question mark on an approve button. "to 8" states exactly what is known.
+        summary:
+          current === null
+            ? `increase ${finding.host} pool to ${size as number}`
+            : `increase ${finding.host} pool ${current} -> ${size as number}`,
       };
     }
   }
