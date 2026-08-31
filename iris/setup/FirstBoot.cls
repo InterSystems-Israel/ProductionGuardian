@@ -340,7 +340,27 @@ ClassMethod ClearPasswordChangeFlag()
 /// application, whose requests audit zero, and that is a `contracts/` change.
 ///
 /// Idempotent: creates the role only if absent, and appends to `MatchRoles` only if not already there.
+///
+/// CANNOT FAIL THE BOOT, and that is deliberate rather than defensive habit. This runs at step 4c,
+/// BEFORE `StartProduction()`, so an exception here would leave the production unstarted -- the
+/// stack would come up with no hosts, over an audit-log fix. `GovernanceSetup()` already made this
+/// exact call for the same reason ("a stack that refuses to come up because an MVP 2 role could not
+/// be created is worse than one that comes up and says so") and solved it by running after the
+/// production starts. This one belongs beside the other web-application setup, so it takes the
+/// other route: catch, report, continue. The worst outcome is the audit noise coming back, which is
+/// visible in the boot log and harmless to Health Scan.
 ClassMethod GrantMonitorSecureRole()
+{
+    try {
+        do ..GrantMonitorSecureRoleInner()
+    } catch e {
+        write "4c. FAILED with ", e.DisplayString(), " -- audit noise (#166) will persist, boot continues", !
+    }
+}
+
+/// The body of `GrantMonitorSecureRole()`. Private, and separate only so the caller above can be a
+/// bare try/catch -- `new $namespace` and an early `quit` do not compose with one in the same method.
+ClassMethod GrantMonitorSecureRoleInner() [ Private ]
 {
     new $namespace
     set $namespace = "%SYS"
