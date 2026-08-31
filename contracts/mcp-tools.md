@@ -1448,10 +1448,14 @@ value, and when — read from `%SYS.Audit`. The one question no other tool in th
 **Input**: `host` (optional — omit for every host of this production), `sinceHours` (optional, default
 `168`, `1..720`).
 
-**Output**: `host`, `sinceHours`, `since`, `now`, `changes[]`, `suppressed`, `truncated`, `sanitised`,
-`auditEnabled`, `retention`.
+**Output**: `host`, `sinceHours`, `since`, `now`, `changes[]`, `suppressed`, `noOpSaves`, `truncated`,
+`sanitised`, `auditEnabled`, `retention`.
 
 `changes[]`: `host`, `setting`, `previousValue`, `newValue`, `changedAt`. Newest first.
+
+**A row where `previousValue` equals `newValue` is not a change and is never listed** — it is counted in
+`noOpSaves`. See "A save that moved nothing" below; this is the one shape of row the tool refuses on
+content rather than on the allowlist.
 
 #### The reporting rule is part of the contract, not a prompt detail
 
@@ -1501,6 +1505,27 @@ This is the tool's central caveat and the reason three fields exist that a naive
 - **`suppressed`** — a **count** of changes whose setting name is not allowlisted, never their names.
   Published so "nothing changed" and "something changed that I may not name" are distinguishable
   answers; conflating them is how an agent concludes a host was untouched.
+- **`noOpSaves`** — a **count** of rows where `previousValue` equals `newValue`. A separate number from
+  `suppressed` because it is a different fact: that one says "something changed and I may not name it",
+  this one says "something was saved and nothing moved".
+
+#### A save that moved nothing is not a change, and reporting one is worse than dropping it
+
+`previousValue == newValue` rows are **counted, not listed**. They are produced by ordinary operation,
+not by misuse: `FirstBoot.ApplyDeploymentSettings()` writes `HTTPServer` and `HTTPPort` through
+`Triggers.SetSetting()` on **every boot**, and `Triggers.Reset()` restores settings that are often
+already correct. Until #171, `SetSetting()` audited unconditionally, so a normal boot left two rows in
+the window every investigation reads.
+
+That is a false positive in the one direction this tool is most dangerous. §3.12's own framing tells a
+consumer that "a setting changed shortly before a finding is the likeliest cause of it" — so an agent
+handed `HTTPPort changed from 52773 to 52773` timestamped near a restart has been pointed at a
+non-cause with the tool's full authority behind it. Observed in a `PoolBottleneck` investigation, which
+presented both boot-time no-ops as `Setting Change` evidence on a production nobody had reconfigured.
+
+Fixed at both ends: `Triggers.SetSetting()` no longer audits a save that moved nothing, and this tool
+filters the shape anyway — for the rows already in the log, and for the Management Portal, which this
+project does not control.
 
 **Not every setting change is audited.** `Ens.Config.Production.%Save()` writes no audit row — only the
 Management Portal's own save path does. Measured by arming `Triggers.MissingFolder()` and finding the
@@ -1512,8 +1537,23 @@ setting through `%Save()` is invisible here.
 them — measured: a trigger armed, this tool called from the next line of the same session reported
 `changes: []` with `retention.newest` 101 seconds stale, and the identical call a minute later returned
 the row stamped at the earlier time. So **a caller must not assert a change exists immediately after
-making one.** An agent turn spends seconds per tool call, so no consumer of this contract is affected in
-practice; a test that arms and asserts in one breath is.
+making one.**
+
+**This paragraph used to close by saying no consumer was affected in practice, on the reasoning that an
+agent turn spends seconds per tool call. That was wrong, and it is the whole of #171.** The hazard was
+identified here and then reasoned away, which is worse than not having noticed it: an investigation of
+the `MissingFolder` scenario called the tool **16 seconds** after the `FilePath` edit, got `changes: []`,
+and reported *"no recent configuration changes were found"* — a fabricated negative, on the very
+scenario this tool was built for. Re-measured by arming the trigger and polling for the specific new
+timestamp: the row became visible at **+36 s**, while a `HTTPPort` edit in the same session was visible
+at **+24 s**. So the lag is tens of seconds and variable, and an agent turn is comfortably inside it.
+
+**The consequence for consumers is a rule, not a caveat: an empty `changes` list must never be reported
+as "nothing was changed".** `retention.newest` is what distinguishes the two cases and it is already in
+every payload — if it is older than the condition being diagnosed, the log has not caught up and the
+correct statement is that the audit log cannot answer yet. A consumer that reports absence without
+checking `retention.newest` against the finding's own timestamp is reporting the buffer, not the
+production.
 
 #### The data boundary — `Username` is never read
 
@@ -1539,7 +1579,7 @@ diagnostic weight, while naming a person invites an agent to assign blame it can
       "previousValue": "52773", "newValue": "52771",
       "changedAt": "2026-08-29T16:45:03Z" }
   ],
-  "suppressed": 0, "truncated": false, "sanitised": true, "auditEnabled": true,
+  "suppressed": 0, "noOpSaves": 2, "truncated": false, "sanitised": true, "auditEnabled": true,
   "retention": { "rows": 82, "oldest": "2026-08-11T07:22:41Z", "newest": "2026-08-30T09:02:14Z",
     "note": "IRIS purges audit data on a schedule, and a setting changed through code rather than the Management Portal may not be audited at all -- an empty result is not proof that nothing changed" }
 }
