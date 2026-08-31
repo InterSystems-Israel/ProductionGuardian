@@ -189,17 +189,45 @@ services:
       test:
         - CMD-SHELL
         - wget -qO- http://localhost:52773/api/monitor/metrics | grep -q 'production="ProductionGuardian.LabDemo.Production"'
-      # 60 x 5s = 5 minutes, which is HEADROOM rather than a measured requirement. Every cold
-      # run measured on this image reaches healthy in ~60s, because LABDEMO ships
-      # interop-enabled and the slow `EnableNamespace` branch never executes here. An earlier
-      # version of this comment justified the budget by "covers a cold EnableNamespace
+      # TWO CADENCES, BECAUSE THIS PROBE IS NOT FREE (#166). Every request to /api/monitor/*
+      # makes IRIS write one `AccessDenied` audit row -- `Security.Services.Exists()` is called
+      # while the request identity is still UnknownUser, which lacks %Admin_Secure:USE. The
+      # request still returns 200 with the full payload, so nothing here ever went red; the cost
+      # is 17,280 audit rows/day from this healthcheck alone, on top of the proxy's 34,560.
+      #
+      # Measured, not assumed: 20 requests to /api/monitor/metrics produced exactly 20 rows,
+      # anonymous and authenticated alike, while 10 to /labdemo/monitor/hoststatus produced
+      # none. So credentials are not the lever and this cadence is.
+      #
+      # A healthcheck keeps probing forever, not just until healthy, which is what makes a 5s
+      # interval expensive for a signal only `depends_on` consumes -- and it pulls the whole
+      # 60 KB metrics payload to grep one label.
+      #
+      # STARTUP DETECTION IS UNCHANGED. `start_interval` probes every 5s until the first
+      # success, so dependents still gate on our production at 5s granularity; `interval` only
+      # governs steady state, cutting this source by 6x to 2,880 rows/day. Needs Docker 25+
+      # (this stack: 29.7.2 / Compose v5.4.0).
+      #
+      # 5 minutes is HEADROOM rather than a measured requirement, and it now buys more than it
+      # did: every cold run measured on this image reaches healthy in ~60s, because LABDEMO
+      # ships interop-enabled and the slow `EnableNamespace` branch never executes here. An
+      # earlier version of this comment justified the budget by "covers a cold EnableNamespace
       # (minutes)", which describes a path that does not run on this image (@tanifgit, #78) --
       # the honest justification is that 5 minutes costs nothing when the normal case is 60s,
       # and an image without the namespace baked in WOULD take the slow path.
-      start_period: 0s
-      interval: 5s
+      #
+      # `retries` DROPS FROM 60 TO 3, AND THAT IS NOT A REDUCTION IN TOLERANCE. It used to carry
+      # the whole startup budget, because `start_period: 0s` meant a probe failing while IRIS
+      # was still booting counted against it -- 60 x 5s was that same 5 minutes, spelled as
+      # retries. `start_period` now covers startup properly (failures inside it neither count
+      # nor mark the container unhealthy), so retries is free to mean what it should: how long a
+      # HEALTHY instance may stay broken before we say so, here 3 x 30s. Total tolerance on a
+      # pathological cold boot goes UP, from 300s to 390s.
+      start_period: 300s
+      start_interval: 5s
+      interval: 30s
       timeout: 10s
-      retries: 60
+      retries: 3
 
   # ─── 3. metrics proxy ───────────────────────────────────────────────────────────────
   metrics-proxy:
