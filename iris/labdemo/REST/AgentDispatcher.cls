@@ -582,7 +582,7 @@ ClassMethod SystemPrompt() As %String [ Private ]
     set p = p _ "evidence (array of {label, detail, source, tool} where source is ""mcp_tool"" for a value you read with a tool "
     set p = p _ "or ""snapshot"" for one given to you, and tool is the tool name or null), "
     set p = p _ "confidence (number 0-1, your own judgement), "
-    set p = p _ "recommendedAction ({action: {type, host, size}}) or null, "
+    set p = p _ "recommendedAction ({action: {type, host, size}, currentValue}) or null, "
     set p = p _ "manualRemediation ({summary, steps, target}) or null. "
     // The bounds are READ FROM THE TOOL rather than restated, because a prompt that disagrees with
     // the guard produces a recommendation the guard then refuses -- which is what happened. The
@@ -684,6 +684,24 @@ ClassMethod SystemPrompt() As %String [ Private ]
     // than in format, because that is the distinction the model has to get right: one is a change we
     // may make, the other is a change only a person may make. A prompt that described them as "a
     // structured fix or a written fix" would invite both, or the wrong one.
+    // THE BEFORE-VALUE, AND THIS SIDE IS THE ONLY ONE THAT CAN SUPPLY IT (#178). The engine holds no
+    // production configuration -- `investigate.ts` is passed null for it deliberately -- so with the
+    // field unasked-for the approval label rendered `increase Cloud API pool ? -> 8`, a question mark
+    // on the one string a human reads before authorising a write to a live production.
+    //
+    // ASKED FOR AS A SEPARATE KEY rather than inside `action`, because `action` travels VERBATIM to
+    // `POST /api/resolve` (`investigation-api.md` §3.3) and the write tool's argument list is
+    // `{host, size}`. An extra member inside it would either be forwarded to a tool that does not
+    // take it or have to be stripped on the way -- so it sits beside the action, which is where the
+    // contract already puts it.
+    //
+    // NOT A NEW READ: `get_pool_size` and `get_host_settings` are both mandatory in `BuildGoal`
+    // already, so the value is in the transcript by the time this is answered. The model is told to
+    // report what it read rather than to compute it, because the one thing worse than an absent
+    // before-value is a plausible invented one next to an approve button.
+    set p = p _ "recommendedAction.currentValue is the pool size the host is set to RIGHT NOW, as an "
+    set p = p _ "integer, taken from what get_pool_size or get_host_settings returned for it. Do not "
+    set p = p _ "calculate it and do not guess it: if you did not read it, use null. "
     set p = p _ "Use recommendedAction ONLY for a bounded action from that list. "
     set p = p _ "Use manualRemediation when the fix is real but outside what this system may do -- "
     set p = p _ "for example a directory that must be created on the host, or a setting an operator "
