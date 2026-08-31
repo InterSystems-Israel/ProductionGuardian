@@ -189,45 +189,45 @@ services:
       test:
         - CMD-SHELL
         - wget -qO- http://localhost:52773/api/monitor/metrics | grep -q 'production="ProductionGuardian.LabDemo.Production"'
-      # TWO CADENCES, BECAUSE THIS PROBE IS NOT FREE (#166). Every request to /api/monitor/*
-      # makes IRIS write one `AccessDenied` audit row -- `Security.Services.Exists()` is called
-      # while the request identity is still UnknownUser, which lacks %Admin_Secure:USE. The
-      # request still returns 200 with the full payload, so nothing here ever went red; the cost
-      # is 17,280 audit rows/day from this healthcheck alone, on top of the proxy's 34,560.
+      # THIS PROBE USED TO COST AN AUDIT ROW PER REQUEST, AND NO LONGER DOES (#166). Every request
+      # to /api/monitor/* made IRIS write one `AccessDenied` row: `Security.Services.Exists()` is
+      # called while the session holds only the application's roles, and it needs
+      # %Admin_Secure:USE. The request still returned 200 with the full payload, so nothing here
+      # ever went red -- the symptom was the audit log filling at ~55,000 rows/day, this probe
+      # contributing 17,280 of them.
       #
-      # Measured, not assumed: 20 requests to /api/monitor/metrics produced exactly 20 rows,
-      # anonymous and authenticated alike, while 10 to /labdemo/monitor/hoststatus produced
-      # none. So credentials are not the lever and this cadence is.
+      # FIXED AT THE APPLICATION, NOT HERE. `Setup.FirstBoot.GrantMonitorSecureRole()` grants the
+      # privilege as an application role on /api/monitor, so the denial is gone for EVERY caller
+      # of that app -- this probe included, since `wget .../api/monitor/metrics` is one of them.
+      # Verified: zero AccessDenied rows from any client across a 420s window containing ~14
+      # probes, and the newest row from this probe predates the grant.
       #
-      # A healthcheck keeps probing forever, not just until healthy, which is what makes a 5s
-      # interval expensive for a signal only `depends_on` consumes -- and it pulls the whole
-      # 60 KB metrics payload to grep one label.
+      # SO THE CADENCE BELOW IS NOT AN AUDIT CONTROL, AND MUST NOT BE JUSTIFIED AS ONE. I briefly
+      # made it one -- 30s steady state with `start_interval: 5s` for startup (#167) -- which was
+      # correct while each request still cost a row, and became pointless the moment the cause was
+      # fixed. Reverted, because `start_interval` needs Docker 25+ and Compose REJECTS an
+      # unrecognised healthcheck field outright rather than ignoring it:
       #
-      # STARTUP DETECTION IS UNCHANGED. `start_interval` probes every 5s until the first
-      # success, so dependents still gate on our production at 5s granularity; `interval` only
-      # governs steady state, cutting this source by 6x to 2,880 rows/day. Needs Docker 25+
-      # (this stack: 29.7.2 / Compose v5.4.0).
+      #   validating docker-compose.yml: services.iris.healthcheck
+      #   additional properties 'start_interval' not allowed
       #
-      # 5 minutes is HEADROOM rather than a measured requirement, and it now buys more than it
-      # did: every cold run measured on this image reaches healthy in ~60s, because LABDEMO
-      # ships interop-enabled and the slow `EnableNamespace` branch never executes here. An
-      # earlier version of this comment justified the budget by "covers a cold EnableNamespace
+      # That fails `compose up` entirely on an older Docker, and names the field, so it reads as a
+      # typo rather than a version requirement -- the same failure shape as #79's
+      # NGINX_ENTRYPOINT_LOCAL_RESOLVERS. The only thing the 30s interval still bought was not
+      # fetching 60 KB every 5s, which had never been a problem. A portability risk on a
+      # colleague's machine is not worth a bandwidth saving nobody asked for.
+      #
+      # 60 x 5s = 5 minutes, which is HEADROOM rather than a measured requirement. Every cold
+      # run measured on this image reaches healthy in ~60s, because LABDEMO ships
+      # interop-enabled and the slow `EnableNamespace` branch never executes here. An earlier
+      # version of this comment justified the budget by "covers a cold EnableNamespace
       # (minutes)", which describes a path that does not run on this image (@tanifgit, #78) --
       # the honest justification is that 5 minutes costs nothing when the normal case is 60s,
       # and an image without the namespace baked in WOULD take the slow path.
-      #
-      # `retries` DROPS FROM 60 TO 3, AND THAT IS NOT A REDUCTION IN TOLERANCE. It used to carry
-      # the whole startup budget, because `start_period: 0s` meant a probe failing while IRIS
-      # was still booting counted against it -- 60 x 5s was that same 5 minutes, spelled as
-      # retries. `start_period` now covers startup properly (failures inside it neither count
-      # nor mark the container unhealthy), so retries is free to mean what it should: how long a
-      # HEALTHY instance may stay broken before we say so, here 3 x 30s. Total tolerance on a
-      # pathological cold boot goes UP, from 300s to 390s.
-      start_period: 300s
-      start_interval: 5s
-      interval: 30s
+      start_period: 0s
+      interval: 5s
       timeout: 10s
-      retries: 3
+      retries: 60
 
   # ─── 3. metrics proxy ───────────────────────────────────────────────────────────────
   metrics-proxy:
