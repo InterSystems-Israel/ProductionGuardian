@@ -565,11 +565,20 @@ ClassMethod SmallTalkAnswer(kind As %String, question As %String) As %DynamicObj
 /// is the same one, arriving from the other direction -- `ErrorSummary` is fixed so a log row cannot
 /// leak through it, and this is fixed so a model cannot invent a capability the system does not have.
 ///
-/// THE CAPABILITY TEXT IS GROUNDED IN THE FIVE TOOLS THIS AGENT IS REGISTERED FOR -- `Tools.Activity`'s
-/// three and `Tools.EventLog`'s two -- and says nothing beyond them. It names what CANNOT be answered
-/// as well, because the two most likely follow-ups are both out of reach: the current instantaneous
-/// state (this agent has the recorded-history tools only -- see `Governance.ACTIVITYTOOLS`) and
-/// anything about message content (no tool will return it).
+/// THE CAPABILITY TEXT IS GROUNDED IN THE TOOLS THIS AGENT IS REGISTERED FOR -- the four families on
+/// `Governance`'s `"chat"` row, which is the authoritative membership -- and says nothing beyond them.
+/// It names what CANNOT be answered as well, because the two most likely follow-ups are both out of
+/// reach: a host's live instantaneous metrics (this agent has no `READTOOLS`) and anything about
+/// message content (no tool will return it).
+///
+/// THE FAMILY COUNT IS NOT WRITTEN AS A NUMBER HERE, deliberately. This comment said "THE FIVE TOOLS
+/// -- `Tools.Activity`'s three and `Tools.EventLog`'s two" while the agent had also been given
+/// `CHANGELOGTOOLS` and `FINDINGTOOLS`, and the reply text below was stale in exactly the same way:
+/// two capabilities worked and nothing described them (#175). A counted list in prose above an
+/// enumeration is #84's shape, and `iris/CLAUDE.md` §7 stopped restating the tool count for the same
+/// reason. **Adding a family means editing the reply text below**, and the chip list in
+/// `ActivityChat.tsx` -- a capability nobody is told about is indistinguishable from one that is
+/// missing, which is the inverse of #164's registered-but-never-called failure and costs the same.
 /// Deliberately no host names: root `CLAUDE.md` §6 makes `Production.cls`'s item set the authority and
 /// a copied list here is what went stale when `FHIR Transform` was removed. The example questions are
 /// about SHAPE for the same reason the panel's suggestion chips are.
@@ -586,35 +595,45 @@ ClassMethod SmallTalkAnswer(kind As %String, question As %String) As %DynamicObj
 ClassMethod SmallTalkText(kind As %String) As %String [ Private ]
 {
     if kind = "greeting" {
-        quit "Hello. I can answer questions about this production's recorded interoperability "
-            _ "activity -- message volume, throughput, and processing and queueing times over a "
-            _ "period you choose -- and about what the production itself logged over that period, "
-            _ "including errors and warnings. Ask me something and I will read the tables for it."
+        quit "Hello. I can tell you what Production Guardian is reporting about this production "
+            _ "right now, and answer questions about its recorded interoperability activity -- "
+            _ "message volume, throughput, and processing and queueing times over a period you "
+            _ "choose -- about what the production itself logged, including errors and warnings, "
+            _ "and about configuration changes to its hosts. Ask me something and I will read the "
+            _ "tables for it."
     }
     if kind = "thanks" {
-        quit "You're welcome. Ask again whenever you want another look at the activity or the "
-            _ "event log."
+        quit "You're welcome. Ask again whenever you want another look at the findings, the "
+            _ "activity, the event log or what has been changed."
     }
     if kind = "farewell" {
-        quit "Goodbye. The activity history and the event log stay here whenever you want to come "
-            _ "back to them."
+        quit "Goodbye. The findings, the activity history, the event log and the change history "
+            _ "stay here whenever you want to come back to them."
     }
     if kind = "capability" {
-        quit "I answer questions about this production's recorded activity and its event log, by "
-            _ "reading the IRIS tables through governed, audited tools. On activity, three things: "
-            _ "which hosts have recorded activity and how far back the history goes; how one host's "
-            _ "throughput and latency have moved over time, bucket by bucket; and how all the hosts "
-            _ "compare over one window, ranked by volume. So ""which host is busiest"", ""is anything "
-            _ "falling behind on queueing time"" and ""how has throughput changed today"" are all "
-            _ "answerable, at ten-second, hourly or daily resolution. On the event log, two more: how "
-            _ "many entries each host wrote at each severity over a window, with the error codes that "
-            _ "appeared and what kind of fault each one is; and how that volume moved over time, so "
-            _ """are there errors"", ""what is failing"" and ""when did it start"" are answerable too. "
-            _ "Entries the production wrote about itself -- starts, stops and failures to start -- are "
-            _ "included, and they are the ones no host-by-host view shows. Two things I cannot do: I "
-            _ "see recorded history rather than the current instantaneous state of a host, and I never "
-            _ "see message content or patient data -- so from the log you get counts, severities, "
-            _ "error codes and the class that logged them, never the logged text itself."
+        quit "I answer questions about this production from four kinds of evidence, all read "
+            _ "through governed, audited tools. First, what Production Guardian is reporting right "
+            _ "now: every open finding with its host, type, severity, the value that triggered it "
+            _ "and the baseline it was compared against -- so ""is anything wrong"" is answered from "
+            _ "the findings themselves rather than inferred from throughput. On recorded activity, "
+            _ "three things: which hosts have recorded activity and how far back the history goes; "
+            _ "how one host's throughput and latency have moved over time, bucket by bucket; and how "
+            _ "all the hosts compare over one window, ranked by volume. So ""which host is busiest"", "
+            _ """is anything falling behind on queueing time"" and ""how has throughput changed "
+            _ "today"" are all answerable, at ten-second, hourly or daily resolution. On the event "
+            _ "log, two more: how many entries each host wrote at each severity over a window, with "
+            _ "the error codes that appeared and what kind of fault each one is; and how that volume "
+            _ "moved over time, so ""are there errors"", ""what is failing"" and ""when did it "
+            _ "start"" are answerable too. Entries the production wrote about itself -- starts, stops "
+            _ "and failures to start -- are included, and they are the ones no host-by-host view "
+            _ "shows. And on configuration: which setting changed on which host, from what value to "
+            _ "what value and when, from the IRIS audit log -- so ""has anything been changed"" is "
+            _ "answerable, though I will not tell you to revert a change, because whoever made it "
+            _ "had a reason I cannot see. Two things I cannot do: I do not see a host's live "
+            _ "instantaneous metrics -- its queue depth or throughput at this second -- only "
+            _ "recorded history and the findings above; and I never see message content or patient "
+            _ "data, so from the log you get counts, severities, error codes and the class that "
+            _ "logged them, never the logged text itself."
     }
     // NO DEFAULT SENTENCE. Every kind `SmallTalkKind` can return is handled above, and "" here would
     // fail `chat.ts`'s `answer` check and surface as `unavailable` -- which is the correct outcome for
