@@ -4,6 +4,54 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-08-31 — `get_recent_config_changes` gains `noOpSaves`, and the buffering caveat stops excusing itself
+
+**`mcp-tools.md` §3.12 only.** Additive: one output field, `noOpSaves`, an integer count. No input
+changes, no existing field changes type or meaning, and `changes[]` keeps its shape — a consumer that
+ignores the new field sees strictly fewer bogus entries, never fewer real ones. Two prose sections are
+rewritten, one of them a correction rather than an addition.
+
+Both halves of #171, which @tanifgit found by comparing three live investigations.
+
+### The correction, which matters more than the field
+
+§3.12 already documented that `%SYS.Audit` rows are not readable the instant they are written. It then
+closed with *"An agent turn spends seconds per tool call, so no consumer of this contract is affected in
+practice; a test that arms and asserts in one breath is."*
+
+**That was wrong.** An investigation of the `MissingFolder` scenario called the tool 16 seconds after the
+`FilePath` edit, received `changes: []`, and reported *"no recent configuration changes were found"* — a
+fabricated negative on the flagship scenario this tool was built for. Re-measured: the row appeared at
+**+36 s**, and a `HTTPPort` edit in the same session appeared at **+24 s**. Tens of seconds, variable,
+and an agent turn sits inside it.
+
+A hazard that is identified and then argued away is worse than one nobody spotted, because the argument
+is what stops the next reader from checking. The paragraph now states the measurement and turns it into
+a consumer rule: **an empty `changes` list must never be reported as "nothing was changed"**, and
+`retention.newest` — already in every payload since MVP 3 — is what separates "no change" from "the log
+has not caught up". No new field was needed for that; the signal was there and nothing read it.
+
+### `noOpSaves`
+
+A count of rows whose `previousValue` equals `newValue`. Those rows are no longer listed in `changes[]`.
+
+They were never operator error. `FirstBoot.ApplyDeploymentSettings()` writes `HTTPServer` and `HTTPPort`
+through `Triggers.SetSetting()` on **every boot**, and `SetSetting()` audited unconditionally, so a
+normal boot left two `X changed from Y to Y` rows in the window every investigation reads. A
+`PoolBottleneck` investigation duly presented both as `Setting Change` evidence on a production nobody
+had reconfigured.
+
+Counted rather than silently dropped, for the reason `suppressed` and `truncated` are counted: a number
+a consumer can read beats a number it cannot. It is a **separate** field from `suppressed`, which means
+"something changed that I may not name" — a different fact from "something was saved and nothing moved",
+and merging them would lose both.
+
+**Why this is a filter and not only a producer fix.** `Triggers.SetSetting()` stops writing them, which
+handles everything this project controls going forward. The tool filters anyway, because the rows already
+in the audit log do not disappear and the Management Portal's own save path is not ours to change.
+
+---
+
 ## 2026-08-30 — two tools: what was CHANGED, and what Guardian is REPORTING
 
 **`mcp-tools.md` §1, §3.12, §3.13, §5.3's role table, and §6.** Additive: twelve tools become
