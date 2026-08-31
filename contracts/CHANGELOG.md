@@ -4,6 +4,57 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-08-31 — `recommendedAction.currentValue` is documented as nullable, and `reversible` stops being defined against it
+
+**`investigation-api.md` §3.3 only. No schema change, no sample change, no field added or removed.**
+This entry corrects PROSE that disagreed with the two machine-readable artefacts it is supposed to
+describe. Implementation half of #178 is separate and changes no contract.
+
+### The disagreement
+
+| Artefact | Said |
+|---|---|
+| `investigation-api.md` §3.3 table | `currentValue` \| **`integer`** |
+| `investigation.schema.json` | `{ "type": ["integer", "null"] }` |
+| `samples/investigation-response.json` | `"currentValue": null` |
+
+So the prose was the outlier, and it was the outlier in the direction that hides a defect: a
+consumer reading the table would build for a value that is always present, and the schema and the
+sample everyone mocks against both permit — and the sample *encodes* — the case that actually
+shipped. Nothing failed, which is the point. `null` was served on **every** investigation and the
+approval label read `increase Cloud API pool ? -> 8`.
+
+A ratified sample carrying the defective value is worse than a gap in the prose, because
+mock-first is what this repo relies on to make "works against the mock" predict "works against the
+real thing" (root `CLAUDE.md` §4). Here it predicted it exactly, and both were wrong.
+
+### What the prose now says
+
+- `currentValue` is `integer | null`, with **when** it is null (the agent did not report it) and what
+  a consumer must do about it (omit the before-value, never render a placeholder). The two `summary`
+  forms are spelled out, because §3.3 makes that string authoritative and rendered as-is.
+- It may be **below `bounds.min`**. `bounds` constrains the *target* of a write, `2..8`; LABDEMO ships
+  `Cloud API` at PoolSize 1, so a reader who validated the current value against the bounds would
+  reject the true value in the shipped configuration.
+- **`reversible` is no longer defined against `currentValue`.** It read *"whether re-applying
+  `currentValue` undoes it"*, which made a `true` flag beside a `null` value look like a contradiction.
+  It is not: `resolve-api.md`'s `reversal` is built from the `before` the **write tool** reports at
+  apply time. That is also the only correct source, because the pool may have changed between the
+  investigation and the approval — so the narrower definition was wrong even when the value was
+  present.
+- The claim that it *"feeds `precondition.poolSize` and the reversal target"* is replaced by an
+  accurate account: `precondition` is optional and a consumer holding `null` must omit it rather
+  than guess.
+
+### Consumer impact
+
+**None required.** No key changes type in the schema, so nothing that validates today stops
+validating, and a consumer already handling `null` — which the schema and the sample have always
+demanded — needs no change. A consumer that trusted the *prose* and assumed a non-null integer was
+already broken against the shipped payload; that is what #178 found.
+
+---
+
 ## 2026-08-31 — `get_recent_config_changes` gains `noOpSaves`, and the buffering caveat stops excusing itself
 
 **`mcp-tools.md` §3.12 only.** Additive: one output field, `noOpSaves`, an integer count. No input
