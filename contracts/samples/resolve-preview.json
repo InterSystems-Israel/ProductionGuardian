@@ -1,0 +1,36 @@
+{
+  "resolveId": "res-Cloud-API-1788278400001",
+  "requestId": null,
+  "mode": "dry_run",
+  "requestedAt": "2026-09-01T16:00:00Z",
+  "outcome": "previewed",
+  "action": {
+    "type": "set_pool_size",
+    "host": "Cloud API",
+    "size": 4
+  },
+  "before": {
+    "poolSize": 1
+  },
+  "after": {
+    "poolSize": 4
+  },
+  "reversal": {
+    "host": "Cloud API",
+    "size": 1,
+    "capturedFrom": "live"
+  },
+  "refusal": null,
+  "failure": null,
+  "confirmation": null,
+  "audit": {
+    "auditId": "pg-audit-595",
+    "actor": "SuperUser",
+    "role": "%All",
+    "requestedBy": "contracts/resolve.schema.json capture",
+    "tool": "SetPoolSize",
+    "recordedAt": "2026-09-01T16:00:00Z",
+    "source": "live"
+  },
+  "completedAt": "2026-09-01T16:00:00Z"
+}

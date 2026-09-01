@@ -4,6 +4,94 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — `resolve.schema.json` + three captured samples: Smart Resolve is machine-checked for the first time
+
+**No shape changes. This adds the missing artefact, not a new field.** `POST /api/resolve` was the
+only MVP 2 endpoint nothing validated — the reason five field-level divergences between
+`resolve-api.md` and the shipped path had to be found by reading the two side by side (#202) rather
+than by CI. Every other contract here has a schema and a captured sample; this one had prose, and
+prose does not fail when it stops being true.
+
+### What landed
+
+| File | What it is |
+|---|---|
+| `resolve.schema.json` | draft-07, `ResolveResponse` plus `PoolShape` / `Reversal` / `Refusal` / `Failure` / `Confirmation` / `Audit`. `additionalProperties: false` throughout |
+| `samples/resolve-response.json` | a live `apply` that moved `Cloud API` 1 → 4 |
+| `samples/resolve-preview.json` | a live `dry_run` |
+| `samples/resolve-refusal.json` | a live `refused` / `out_of_bounds` |
+| `validate.mjs` | 3 samples, 1 accept, 6 must-reject cases wired in |
+
+`action` is a cross-schema `$ref` into `investigation.schema.json#/definitions/ResolveAction` rather
+than a second transcription of it, so the object a consumer approves and the object the server reports
+applying cannot drift apart. `ajv.addSchema` order matters for that and is commented where it matters.
+
+### Three samples, not one, and all three are captures
+
+The shape is outcome-dependent: `confirmation` is an object only on `applied`, `refusal` only on
+`refused`, and `before` / `after` / `reversal` are all null on a refusal. One sample would leave both
+branches a consumer actually has to handle uncovered.
+
+All three come from `POST http://localhost:3002/api/resolve` against the live stack, with only
+`resolveId`, `auditId` and the timestamps pinned — the rule `investigation-response.json` established:
+a hand-written sample proves the schema accepts what its author imagined, a captured one proves it
+accepts what the system emits.
+
+Two details in them are deliberate rather than sloppy:
+
+- **`requestedBy` is left as the capture's own label** (`"contracts/resolve.schema.json capture"`)
+  rather than rewritten to `dashboard`. That is §8's point about the field made visible: it is
+  advisory, caller-supplied, and recorded **next to** the server-resolved `actor`, not in place of it.
+  A sample that laundered it into a plausible value would teach the opposite.
+- **`role: "%All"` in all three is not a placeholder, it is #104.** The dedicated RBAC role that
+  root `CLAUDE.md` §2.1 lists as part of the scope boundary is not the role the demo instance
+  actually runs as, and a sample is where that is hardest to keep quiet.
+
+The preview and the refusal mutate nothing. The `applied` capture did move `Cloud API` from PoolSize 1
+to 4 on the demo instance, and it was restored to 1 afterwards — **not** through `/api/resolve`, which
+bounds at `2..8` and refuses 1 as `out_of_bounds`, but through `Triggers.SetPoolSize`.
+
+### The six rejections are safety properties, not type errors
+
+Four are defects that reached `main` or shapes the schema exists to forbid:
+
+- **`confirmation` on anything that did not apply** — a preview and a `no_change`. The panel renders
+  "will clear within N seconds" from `confirmation !== null && !directEvidence`, so a response that
+  wrote nothing while carrying a `confirmation` promises a clearance for a write that never happened.
+  Expressed as an `if/then`: `outcome !== "applied"` ⇒ `confirmation: null`.
+- **`mode: "dry_run"` with `outcome: "applied"`** — the preview wrote. The second `if/then`.
+- **`audit` absent** — the 2026-08-19 defect, where every response claimed §8 compliance while
+  carrying no attribution at all.
+- **`refusal` as `{code, detail}`** — the field-name drift caught by a human in review on #92 rather
+  than by a test, which is the whole argument for this entry existing.
+- **an undocumented top-level field** — why `additionalProperties: false` is on every object here.
+
+The valid base those five mutate is itself asserted valid, because a base the schema already refused
+would make all six pass while testing nothing.
+
+### Deliberately permissive at exactly two points
+
+**`resolve-api.md` §4 (`after` on a preview) and §5 (`confirmation.directEvidence` / `clearsWhen`) are
+open decisions on #202.** This schema is permissive at exactly those two points **and says so on the
+fields** — `TIGHTEN THIS ONCE §5 IS DECIDED` is in the `description`, where a reader of the schema will
+find it. So it holds the decided shape without quietly settling the undecided one, which is what
+"write the schema first" would otherwise do: whichever form the capture happened to have would become
+the contract by accident, and the decision would be made by a sample rather than by a person.
+
+`refusal.reason` is a `string` and **not** an enum for the same class of reason, spelled out in
+`resolve.ts`: an unrecognised refusal reason must still reach the UI. A schema that rejected a new
+reason would turn "the tool refused for a reason we have not seen" into "the response is malformed".
+
+### Consumers
+
+None change. `resolve-api.md`'s header is updated — it said "no machine-readable artefact yet" — and
+**where that document and the schema disagree about a shape the schema constrains, the schema now
+wins**, the same reversal `investigation-api.md` made after #201. `contracts/README.md` gains the rows.
+`resolve.d.ts` is still genuinely absent, as `investigation.d.ts` is; the engine
+(`src/detect/resolve.ts`) and the dashboard (`src/types/mvp2.ts`) each keep their own transcription.
+
+---
+
 ## 2026-09-01 — `investigation-api.md` §2.4: the scope gate now exists, keyed on type, and refuses `system_alert` separately
 
 **A behaviour change, not a wording one, and it closes the hole the entry below filed as #206.**

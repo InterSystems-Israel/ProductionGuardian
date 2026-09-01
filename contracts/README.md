@@ -22,7 +22,8 @@ yet" for the twelve days after it was captured (#201).
 | `earlywarning-api.md` | Dev B | Dev B (dashboard) |
 | `investigation-api.md`, `investigation.schema.json` | Dev B | Dev B (dashboard) |
 | `samples/investigation-response.json` — a **live** `gpt-4o-mini` capture | Dev B | Dev B (dashboard) |
-| `resolve-api.md` | Dev B | Dev B (dashboard) |
+| `resolve-api.md`, `resolve.schema.json` | Dev B | Dev B (dashboard) |
+| `samples/resolve-response.json`, `resolve-preview.json`, `resolve-refusal.json` — three **live** captures | Dev B | Dev B (dashboard) |
 | `mcp-tools.md` | Dev A | Dev B |
 
 **The dashboard consumer is Dev B, not Dev C** — Dev C left on 2026-08-20 and `apps/dashboard/**`
@@ -32,10 +33,16 @@ as recording who owns it now. It does mean the engine↔dashboard rows have the 
 sides, which is the seam the root file's mock-first rule addresses directly: nothing forces a
 contract to be real when one author owns both ends of it.
 
-Two gaps in that block, both noted rather than left to be discovered: **`investigation.d.ts` does not
-exist**, so unlike Health Scan there is no TypeScript transcription for a consumer to import — the
-engine and the dashboard each hand-maintain one. And **`resolve-api.md` has no schema and no sample**,
-so `POST /api/resolve` is the one MVP 2 endpoint nothing validates (#202).
+One gap left in that block, noted rather than left to be discovered: **neither `investigation.d.ts`
+nor `resolve.d.ts` exists**, so unlike Health Scan there is no TypeScript transcription for a consumer
+to import — the engine and the dashboard each hand-maintain one for both shapes.
+
+`resolve.schema.json` and the three captures closed the other gap on 2026-09-01 (#202): `POST
+/api/resolve` was the one MVP 2 endpoint nothing validated, which is why five field-level divergences
+in `resolve-api.md` had to be found by reading rather than by CI. Two points in that schema are
+**deliberately permissive** — `resolve-api.md` §4's `after` on a preview and §5's `confirmation`
+fields are open decisions, and the fields say so in their `description` — so for those two the prose
+is still the only statement of intent, and there isn't one yet.
 
 `samples/alerts.json` and `samples/proxy-response.json` were planned in `CONTRIBUTING.md` §1 and do
 not exist. Both are derivable without inventing anything — a real alerts capture is at
@@ -104,12 +111,18 @@ cd contracts && npm install && npm run validate
 
 It checks four things, and the middle two are what make the first mean anything:
 
-- each JSON sample against **one named definition** (`HostsResponse` / `FindingsResponse`)
+- each JSON sample against **one named definition** (`HostsResponse`, `FindingsResponse`,
+  `InvestigationResponse`, `ResolveResponse`)
 - structural cases that must **pass** — `[]`, sub-second timestamps from any language, and the real
   proxy payloads including their `null`s
 - cases that must **fail** — a retired `Warning` status, an unknown finding type, a hosts array
   served in the findings position, an alerts response in the metrics position, and the engine's
-  current `name`/`messagesErrored` host shape
+  current `name`/`messagesErrored` host shape. For the two MVP 2 shapes these are safety properties
+  rather than only type errors: a `manualRemediation` carrying an approvable `action`, an
+  `appliedBy: "system"` (autonomous remediation, which root `CLAUDE.md` §2.1 forbids), a `dry_run`
+  reporting `outcome: "applied"`, and a `confirmation` on a response that applied nothing — the UI
+  renders "will clear within N seconds" from that object, so a preview carrying one promises a
+  clearance for a write that never happened
 - **claims about `samples/metrics-dump.txt`**, which is Prometheus text and cannot be schema-checked
   at all. Regexes over the label shapes `proxy-api.md` quotes, two of them asserting a label is
   **absent** — `iris_interop_queued` and `iris_interop_messages_errored` carry no `host` label, and

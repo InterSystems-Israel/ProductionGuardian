@@ -31,6 +31,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_ID = 'https://production-guardian/contracts/healthscan.schema.json';
 const PROXY_SCHEMA_ID = 'https://production-guardian/contracts/proxy.schema.json';
 const INVESTIGATION_SCHEMA_ID = 'https://production-guardian/contracts/investigation.schema.json';
+const RESOLVE_SCHEMA_ID = 'https://production-guardian/contracts/resolve.schema.json';
 
 /** Each sample is validated against ONE named definition, never "either". */
 const CASES = [
@@ -103,6 +104,124 @@ const INVESTIGATION_MUST_REJECT = [
     name: "action.type 'restart_host' — one action type in MVP 2, enumerated so a second is a decision",
     definition: 'ResolveAction',
     data: { type: 'restart_host', host: 'Cloud API', size: 4 },
+  },
+];
+
+/**
+ * The Smart Resolve response, which had no schema and no sample until #202 — the one MVP 2 contract
+ * nothing machine-checked, and the reason five things in it drifted unnoticed.
+ *
+ * THREE samples rather than one, because the shape is outcome-dependent and one capture cannot
+ * exercise it: `confirmation` is an object only on `applied`, `refusal` only on `refused`, and
+ * `before`/`after`/`reversal` are null on a refusal. A single sample would leave the two branches a
+ * consumer actually has to handle uncovered.
+ *
+ * ALL THREE ARE CAPTURED from `POST http://localhost:3002/api/resolve` against the live stack, with
+ * only `resolveId`, `auditId` and the timestamps pinned — same rule as `investigation-response.json`.
+ * `requestedBy` is left as the capture's own label rather than rewritten to `dashboard`, which is
+ * §8's point about the field made visible: it is advisory, caller-supplied, and recorded NEXT TO the
+ * server-resolved `actor` rather than in place of it.
+ *
+ * The preview and the refusal mutate nothing. The `applied` capture did move `Cloud API` from
+ * PoolSize 1 to 4 on the demo instance, and it was restored afterwards — `role: "%All"` in all three
+ * is not a placeholder, it is #104.
+ */
+const RESOLVE_CASES = [
+  { file: 'samples/resolve-response.json', definition: 'ResolveResponse' },
+  { file: 'samples/resolve-preview.json', definition: 'ResolveResponse' },
+  { file: 'samples/resolve-refusal.json', definition: 'ResolveResponse' },
+];
+
+/** A valid `applied` response, mutated per case below so each rejection isolates one field. */
+const RESOLVE_BASE = {
+  resolveId: 'res-Cloud-API-1788278400000',
+  requestId: null,
+  mode: 'apply',
+  requestedAt: '2026-09-01T16:00:00Z',
+  outcome: 'applied',
+  action: { type: 'set_pool_size', host: 'Cloud API', size: 4 },
+  before: { poolSize: 1 },
+  after: { poolSize: 4 },
+  reversal: { host: 'Cloud API', size: 1, capturedFrom: 'live' },
+  refusal: null,
+  failure: null,
+  confirmation: {
+    status: 'pending',
+    findingId: 'f-3001',
+    observeVia: 'GET /api/healthscan/findings',
+    expectedWithinSeconds: 120,
+    directEvidence: false,
+  },
+  audit: {
+    auditId: 'pg-audit-596',
+    actor: 'SuperUser',
+    role: '%All',
+    requestedBy: 'dashboard',
+    tool: 'SetPoolSize',
+    recordedAt: '2026-09-01T16:00:00Z',
+    source: 'live',
+  },
+  completedAt: '2026-09-01T16:00:00Z',
+};
+
+/**
+ * `RESOLVE_BASE` itself, asserted valid. Every rejection below is `RESOLVE_BASE` with one field
+ * changed, so a base the schema already refuses would make all six pass while testing nothing.
+ */
+const RESOLVE_MUST_ACCEPT = [
+  { name: 'the unmutated applied base the rejections are derived from', definition: 'ResolveResponse', data: RESOLVE_BASE },
+];
+
+/**
+ * Resolve responses that must FAIL. Every one is a defect that reached `main`, or a safety property
+ * that only exists because the shape forbids the alternative.
+ */
+const RESOLVE_MUST_REJECT = [
+  {
+    name: 'confirmation on a preview, as `status: "not_applicable"` — a dry run promising a clearance',
+    definition: 'ResolveResponse',
+    data: {
+      ...RESOLVE_BASE,
+      mode: 'dry_run',
+      outcome: 'previewed',
+      confirmation: { ...RESOLVE_BASE.confirmation, status: 'not_applicable' },
+    },
+  },
+  {
+    name: 'confirmation on `no_change` — nothing moved, so there is nothing to observe clearing',
+    definition: 'ResolveResponse',
+    data: { ...RESOLVE_BASE, outcome: 'no_change' },
+  },
+  {
+    name: 'a dry_run reporting outcome `applied` — the preview wrote',
+    definition: 'ResolveResponse',
+    data: { ...RESOLVE_BASE, mode: 'dry_run' },
+  },
+  {
+    name: 'audit absent — every response claimed §8 compliance while carrying no attribution (2026-08-19)',
+    definition: 'ResolveResponse',
+    data: (() => {
+      const { audit, ...rest } = RESOLVE_BASE;
+      return rest;
+    })(),
+  },
+  {
+    name: 'refusal as {code, detail} — the field-name drift caught in review on #92, not by a test',
+    definition: 'ResolveResponse',
+    data: {
+      ...RESOLVE_BASE,
+      outcome: 'refused',
+      before: null,
+      after: null,
+      reversal: null,
+      confirmation: null,
+      refusal: { code: 'out_of_bounds', detail: 'size must be an integer between 2 and 8' },
+    },
+  },
+  {
+    name: 'an undocumented top-level field — the whole reason this file has additionalProperties: false',
+    definition: 'ResolveResponse',
+    data: { ...RESOLVE_BASE, resizedAction: { requested: 2, applied: 4 } },
   },
 ];
 
@@ -568,6 +687,9 @@ addFormats(ajv);
 ajv.addSchema(JSON.parse(readFileSync(join(here, 'healthscan.schema.json'), 'utf8')));
 ajv.addSchema(JSON.parse(readFileSync(join(here, 'proxy.schema.json'), 'utf8')));
 ajv.addSchema(JSON.parse(readFileSync(join(here, 'investigation.schema.json'), 'utf8')));
+// AFTER investigation.schema.json, which it $refs for `action` rather than transcribing ResolveAction
+// a second time. ajv resolves the cross-schema $ref out of this same instance, so the order matters.
+ajv.addSchema(JSON.parse(readFileSync(join(here, 'resolve.schema.json'), 'utf8')));
 
 const validatorFor = (definition) => {
   const validate = ajv.getSchema(`${SCHEMA_ID}#/definitions/${definition}`);
@@ -584,6 +706,12 @@ const proxyValidatorFor = (definition) => {
 const investigationValidatorFor = (definition) => {
   const validate = ajv.getSchema(`${INVESTIGATION_SCHEMA_ID}#/definitions/${definition}`);
   if (validate === undefined) throw new Error(`no such investigation definition: ${definition}`);
+  return validate;
+};
+
+const resolveValidatorFor = (definition) => {
+  const validate = ajv.getSchema(`${RESOLVE_SCHEMA_ID}#/definitions/${definition}`);
+  if (validate === undefined) throw new Error(`no such resolve definition: ${definition}`);
   return validate;
 };
 
@@ -620,6 +748,25 @@ for (const { name, definition, data } of INVESTIGATION_MUST_REJECT) {
   report(!validate(data), `rejects: ${name}`);
 }
 
+for (const { file, definition } of RESOLVE_CASES) {
+  const validate = resolveValidatorFor(definition);
+  const data = JSON.parse(readFileSync(join(here, file), 'utf8'));
+  report(validate(data), `${file} validates as ${definition}`);
+  if (validate.errors) console.log(JSON.stringify(validate.errors, null, 2));
+}
+
+for (const { name, definition, data } of RESOLVE_MUST_ACCEPT) {
+  const validate = resolveValidatorFor(definition);
+  const ok = validate(data);
+  report(ok, `accepts: ${name}`);
+  if (!ok) console.log(`      ${ajv.errorsText(validate.errors)}`);
+}
+
+for (const { name, definition, data } of RESOLVE_MUST_REJECT) {
+  const validate = resolveValidatorFor(definition);
+  report(!validate(data), `rejects: ${name}`);
+}
+
 for (const { name, definition, data } of MUST_REJECT) {
   const validate = validatorFor(definition);
   report(!validate(data), `rejects: ${name}`);
@@ -644,8 +791,10 @@ for (const { name, re } of CAPTURE_CLAIMS) {
 
 console.log(
   failures === 0
-    ? `\nall checks passed (${CASES.length + INVESTIGATION_CASES.length} samples, ${MUST_ACCEPT.length + PROXY_MUST_ACCEPT.length} accept, `
-      + `${MUST_REJECT.length + PROXY_MUST_REJECT.length + INVESTIGATION_MUST_REJECT.length} reject, ${CAPTURE_CLAIMS.length} capture claims)`
+    ? `\nall checks passed (${CASES.length + INVESTIGATION_CASES.length + RESOLVE_CASES.length} samples, `
+      + `${MUST_ACCEPT.length + PROXY_MUST_ACCEPT.length + RESOLVE_MUST_ACCEPT.length} accept, `
+      + `${MUST_REJECT.length + PROXY_MUST_REJECT.length + INVESTIGATION_MUST_REJECT.length + RESOLVE_MUST_REJECT.length} reject, `
+      + `${CAPTURE_CLAIMS.length} capture claims)`
     : `\n${failures} check(s) failed`,
 );
 process.exit(failures === 0 ? 0 : 1);
