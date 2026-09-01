@@ -293,3 +293,25 @@ export const IconArchitecture: PathIcon = (props) =>
     </>,
     props,
   );
+
+/* ── Theme ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Sun — shown while the dark theme is on, because the button offers the switch
+ * back. THE CENTRE IS FILLED, unlike `IconSettings`, which is a hollow circle
+ * with the same six-spoke perimeter: at 15px those two silhouettes are otherwise
+ * near-identical, and §7.3's rule that shape carries the meaning applies to
+ * chrome as much as to severity.
+ */
+export const IconSun: PathIcon = (props) =>
+  svg(
+    <>
+      <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />
+      <path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.2 5.2l2.1 2.1M16.7 16.7l2.1 2.1M5.2 18.8l2.1-2.1M16.7 7.3l2.1-2.1" />
+    </>,
+    props,
+  );
+
+/** Crescent — shown while the light theme is on. Unmistakable at any size. */
+export const IconMoon: PathIcon = (props) =>
+  svg(<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z" />, props);

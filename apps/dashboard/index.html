@@ -11,6 +11,36 @@
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 4 6.5v9.8c0 7.3 5 12.1 12 13.7 7-1.6 12-6.4 12-13.7V6.5L16 2Z' fill='%231B2A4A'/%3E%3Cpath d='M16 7.5 9.5 10v6.3c0 4.6 3 7.7 6.5 8.8V7.5Z' fill='%2300A887'/%3E%3C/svg%3E"
     />
     <title>Production Guardian — Health Scan</title>
+    <!-- Sets the theme BEFORE first paint. It cannot live in `src/lib/theme.ts`,
+         which is where the real definitions are: `main.tsx` is a module and
+         therefore deferred, so applying the attribute from React means a flash of
+         the light page background on every reload in dark mode. A blocking inline
+         script is the only thing that runs early enough.
+
+         IN <head> AND NOT AT THE END OF <body>, which is where it is easier to
+         justify putting it. `vite-plugin-singlefile` inlines the whole bundle and
+         the whole stylesheet into <head> (§6), so a script after `#root` sits
+         ~2.5 MB into the document and after the empty root div — the one place the
+         parser could yield and paint the body background first. Being deferred,
+         the inlined module still runs after this either way.
+
+         So the storage key and the attribute name are duplicated between here and
+         `src/lib/theme.ts`, deliberately, and the two must change together. This
+         copy only ever READS: a value stored by a pre-paint script would be
+         indistinguishable from a choice the operator made. -->
+    <script>
+      try {
+        var stored = localStorage.getItem('pg.theme.v1');
+        var dark =
+          stored === 'dark' ||
+          (stored !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      } catch (cause) {
+        /* localStorage throws in private-mode Safari and under `file://`, which is
+           how the static fallback build is opened. Light is the correct default,
+           and `useTheme` re-resolves from the media query once React mounts. */
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

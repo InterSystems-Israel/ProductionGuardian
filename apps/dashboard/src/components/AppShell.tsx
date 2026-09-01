@@ -47,6 +47,7 @@ import {
   IconShield,
   type IconProps,
 } from './icons';
+import { ThemeToggle } from './ThemeToggle';
 import { TriggerRail } from './TriggerRail';
 
 /** Which top-level view is on screen. */
@@ -226,6 +227,11 @@ export function AppShell({
         </h1>
         <div className="pg-header__actions">
           {headerActions}
+          {/* Rendered here rather than passed in through `headerActions`, which carries what the
+              DATA is — the mode pill, the scenario step, when it last updated. The theme is a
+              property of the display and belongs to the shell that owns the chrome, so `App` does
+              not need to know it exists. */}
+          <ThemeToggle />
           {/* A real link, not a button with an onClick: it navigates to another application, so it
               must be middle-clickable and copyable like any other link. `rel="noreferrer"` alongside
               `noopener` because the portal is a different origin. */}

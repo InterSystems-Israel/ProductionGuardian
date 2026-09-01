@@ -435,6 +435,28 @@ Match the brochure and deck, not the concept-demo HTML's generic dark theme. Pal
 
 Note that `--pg-critical` / `--pg-warning` / `--pg-ok` are **darkened** from the brochure's brighter marketing tones so that severity text clears WCAG AA on white. Severity must be legible on a projector at the back of a room.
 
+**The block above is a copy and it has drifted — `tokens.css` is the authority.** It predates the
+layout tokens, the three tokens dark mode needed, and the dark theme itself; treat it as the palette's
+intent, not its contents, and read the file for the values. It is not re-copied here for the same
+reason §8 refuses to restate the latency figures.
+
+**`tokens.css` now has TWO blocks: `:root` and `:root[data-theme='dark']`. A new color or shadow token
+must be added to both** — a token defined only in `:root` silently keeps its light value on a dark
+page, which is the one failure mode this arrangement has, and it does not fail loudly. Geometry, type
+and layout tokens are theme-independent and stay in `:root` alone.
+
+Dark mode is a **token override and nothing else** — see the rationale comment above the dark block,
+which is where the reasoning lives (why there is no `@media (prefers-color-scheme: dark)` here, why
+severity is re-derived rather than reused, and why `--pg-text-strong`, `--pg-rail-hover` and
+`--pg-button-primary-border` exist at all). The rule it implies for component CSS: **a primitive used
+as both ink and a background cannot be themed**, so if you find yourself setting `color:` to a token
+that something else uses as a `background:`, split it into two semantic tokens first.
+
+`src/lib/theme.ts` resolves the theme (stored choice, then the system preference) and is the only place
+that reads `prefers-color-scheme`. The pre-paint script in `index.html` duplicates its storage key
+deliberately — a module script is deferred and would flash the light background — and the two must
+change together.
+
 ### 7.2 Layout
 
 Follow the brochure mockup: a **dark navy left nav rail** (Health Connect context: Home, Dashboard, Productions, Alerts, Messages, Jobs, Settings — only *Dashboard* is active and functional; the rest are inert visual context, and should look inert, not clickable-and-broken), a **white content area** on `--pg-surface-alt`, and a header carrying the shield mark, "Production Guardian — Health Scan", the live/demo pill, last-updated time, and the mode toggle.
