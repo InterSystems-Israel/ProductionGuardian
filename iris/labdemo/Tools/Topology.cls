@@ -49,10 +49,19 @@
 /// `Ens.InterfaceMaps.Utils` offers three ways in. This uses the SQL query, and the other two were
 /// tried and rejected on evidence:
 ///
-///   - `FindAllPaths()` returns each path as ONE STRING delimited by raw control characters --
-///     measured as $c(12), $c(11) and $c(1) at byte offsets in a 122-character path. An undocumented
-///     internal encoding, and #161 is open in this repo about exactly what raw control characters do
-///     to a source file. The SQL query is that same data already parsed into named columns.
+///   - `FindAllPaths()` IS AN INTERNAL METHOD, and says so itself: its dictionary description opens
+///     "Internal method for finding all of the routes through the active production". It returns a
+///     `%Status` and hands the paths back BYREF as `$listbuild` lists --
+///     `$lb(Service,Processes,Rules,DTLs,Operations)`, per that same description. The SQL query is the
+///     same data already parsed into named columns, and is what the portal's own list is built on.
+///
+///     AN EARLIER VERSION OF THIS COMMENT SAID IT RETURNED A CONTROL-CHARACTER-DELIMITED STRING IN AN
+///     UNDOCUMENTED ENCODING. That was wrong (@Ari-Glikman, #186). The $c(12), $c(11) and $c(1) bytes
+///     measured at offsets in the value are `$list` length and type HEADERS, not delimiters: verified
+///     live, `$listvalid` is 1, five elements, `$listget` reads each. Corrected in place rather than
+///     quietly dropped, because that rationale would have told the next reader the richer surface --
+///     it also yields `pCategoryItems` and a `pDeDup` flag -- was undecodable, when its layout is in
+///     the class dictionary. "Internal method" is the firmer reason and needs no decoding claim.
 ///   - `FindSequentialPath()` takes a JSON "spec" whose shape is not documented anywhere reachable.
 ///     Passing it a path string from `FindAllPaths` returns `ERROR #5035 ... 'Parsing error'`. Guessing
 ///     at an undocumented request shape would be a version-fragile dependency on an internal.
@@ -157,12 +166,6 @@ ClassMethod GetInterfacePath(host As %String = "") As %DynamicObject
         }
 
         while rs.%Next() {
-            set total = total + 1
-            if paths.%Size() >= ..#MAXPATHS {
-                set truncated = 1
-                continue
-            }
-
             set svc = $zstrip(rs.Service, "<>W")
             set op = $zstrip(rs.Operation, "<>W")
             set procs = ..SplitList(rs.Processes)
@@ -194,13 +197,18 @@ ClassMethod GetInterfacePath(host As %String = "") As %DynamicObject
                     }
                 }
                 if at < 0 {
-                    // This path does not involve the host asked about. Not returned: the map for one
-                    // host is the paths it sits on, and every other path is noise a model would have
-                    // to filter itself.
+                    // This path does not involve the host asked about. Not returned, and -- since the
+                    // counter now sits below this -- NOT COUNTED and unable to set `truncated`. Both
+                    // were bugs (@Ari-Glikman, #186): counting above the filter made `pathCount`
+                    // production-wide while `pathsReturned` was host-scoped, so a host on 3 of 60 paths
+                    // published `pathCount: 60, pathsReturned: 3, truncated: false` -- and the only
+                    // reading available to a model is "57 paths were withheld from me", which is #165's
+                    // clipped-versus-small confusion in a subtler form. Invisible on LABDEMO, where one
+                    // path and one matching host collapse all three numbers to 1.
                     continue
                 }
                 set out.known = 1
-                set position = $case(at, 0: "service", (hops.%Size() - 1): "operation", : "process")
+                set position = ..PositionOf(host, svc, op, procs)
                 // NEAREST FIRST in both directions -- walking outwards from the host rather than
                 // along the path, which is the order the docstring promises.
                 for i = at - 1:-1:0 {
@@ -217,6 +225,19 @@ ClassMethod GetInterfacePath(host As %String = "") As %DynamicObject
                         do downstream.%Push(name)
                     }
                 }
+            }
+
+            // COUNTED HERE, once the row is known to belong to the answer -- see the `at < 0` note.
+            // `pathCount` is therefore "paths this host sits on", which is what §3.14 defines it
+            // against, and it counts paths the cap withheld so the two numbers can honestly differ.
+            set total = total + 1
+            if paths.%Size() >= ..#MAXPATHS {
+                set truncated = 1
+                // ONLY `paths` IS CAPPED. `upstream` and `downstream` were filled above, for every
+                // matching row, deliberately: they are the answer to "who feeds this host", and
+                // clipping them to honour a display cap on the path list would make the primary answer
+                // wrong to protect the secondary one.
+                continue
             }
 
             set entry = { "service": (svc), "processes": (procs), "operation": (op),
@@ -246,6 +267,39 @@ ClassMethod GetInterfacePath(host As %String = "") As %DynamicObject
     quit out
 }
 
+/// Which role the host plays on one path. Private.
+///
+/// COMPARED AGAINST THE COLUMNS, never inferred from a hop index (@Ari-Glikman, #186). The first
+/// version read `$case(at, 0: "service", last: "operation", : "process")`, and `svc` is only pushed onto
+/// `hops` when the `Service` column is non-empty -- so on any row with an empty service, hop 0 is a
+/// process or an operation and the host was reported as a `service`.
+///
+/// Worth fixing unconditionally rather than after proving the query can emit such a row, which LABDEMO
+/// cannot: `position` is a claim about the host's ROLE that a model repeats in evidence, making it the
+/// one field here that can be confidently WRONG rather than merely absent. Comparing the three columns
+/// costs the same few lines and cannot drift with how `hops` is built.
+ClassMethod PositionOf(host As %String, svc As %String, op As %String, procs As %DynamicArray) As %String [ Private ]
+{
+    if (svc '= "") && (host = svc) {
+        return "service"
+    }
+    if (op '= "") && (host = op) {
+        return "operation"
+    }
+    set it = procs.%GetIterator()
+    while it.%GetNext(.key, .value) {
+        if value = host {
+            // RETURN, not QUIT: inside a WHILE block `quit` exits the loop and would fall through to
+            // the empty answer below.
+            return "process"
+        }
+    }
+    // Reachable only if the caller matched `host` against `hops` and none of the three columns agrees,
+    // which would mean the two disagree about what the path contains. "" omits the field, which is
+    // honest; a guessed role is not.
+    return ""
+}
+
 /// The payload's own explanation of what it does and does not assert. Private.
 ///
 /// Written into the payload rather than left to the prompt, for `Tools.ChangeLog`'s reason: a model
@@ -272,11 +326,15 @@ ClassMethod Note(host As %String, known As %Boolean, returned As %Integer, trunc
 
 /// Split one column of the interface-map row into its members. Private.
 ///
-/// DEFENSIVE BECAUSE THE SEPARATOR IS UNVERIFIED. See the class comment: LABDEMO has one business
-/// process, so no path here has two, and the query's row-building source is not shipped. What IS
-/// established is that the underlying path encoding uses control characters -- measured as $c(1),
-/// $c(11) and $c(12) -- so those are split on, and a comma-space is split on as well because that is
-/// how the portal renders a list.
+/// DEFENSIVE BECAUSE THE SEPARATOR IS UNVERIFIED, AND IT STILL IS. See the class comment: LABDEMO has
+/// one business process, so no path here has two, and the query's row-building source is genuinely not
+/// shipped (`Ens.InterfaceMaps.Utils.1.INT` does not exist on the instance).
+///
+/// The `$list` correction above does NOT settle this, which is worth stating because it looks as though
+/// it might: element 2 of that list is the plain string `Lab Router`, not a nested list, so a chain of
+/// two processes is still a joined value with an unknown separator (@Ari-Glikman, #186, who checked the
+/// same thing). Control characters are split on because a `$list` header byte reaching a column value
+/// would be one, and a comma-space as well because that is how the portal renders a list.
 ///
 /// Splitting on a bare comma would be worse than not splitting: a config item name may contain one,
 /// and cutting a host name in half would put a host that does not exist into `upstream`. A separator
