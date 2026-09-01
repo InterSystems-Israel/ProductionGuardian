@@ -24,6 +24,7 @@ yet" for the twelve days after it was captured (#201).
 | `samples/investigation-response.json` — a **live** `gpt-4o-mini` capture | Dev B | Dev B (dashboard) |
 | `resolve-api.md`, `resolve.schema.json` | Dev B | Dev B (dashboard) |
 | `samples/resolve-response.json`, `resolve-preview.json`, `resolve-refusal.json` — three **live** captures | Dev B | Dev B (dashboard) |
+| `samples/resolve-request.json` — the **live** request that produced the refusal capture | Dev B | Dev B (dashboard) |
 | `mcp-tools.md` | Dev A | Dev B |
 
 **The dashboard consumer is Dev B, not Dev C** — Dev C left on 2026-08-20 and `apps/dashboard/**`
@@ -33,7 +34,7 @@ as recording who owns it now. It does mean the engine↔dashboard rows have the 
 sides, which is the seam the root file's mock-first rule addresses directly: nothing forces a
 contract to be real when one author owns both ends of it.
 
-Two gaps left in that block, noted rather than left to be discovered:
+Three gaps left in that block, noted rather than left to be discovered:
 
 - **neither `investigation.d.ts` nor `resolve.d.ts` exists**, so unlike Health Scan there is no
   TypeScript transcription for a consumer to import — the engine and the dashboard each hand-maintain
@@ -42,6 +43,12 @@ Two gaps left in that block, noted rather than left to be discovered:
   state, and since #205 the validator prints it as `0 annotated` on every run rather than leaving it to
   be noticed. The three worked payloads in its §4 are unchecked by anything but reading — which is
   exactly the position `investigation-api.md` was in for the twelve days of #201
+- **`investigation-api.md` §2.2 has no `InvestigationRequest` definition** (#211). §2.2 states
+  `additionalProperties: false` at *every* level for the object the engine sends the agent, and nothing
+  enforces it — which is why §2.2 drifted in both directions (five fields specified and never sent,
+  three sent and never specified) while §4 stayed honest. `resolve.schema.json` gained its
+  `ResolveRequest` on 2026-09-01; this is the same job for the other endpoint, and it is the half of
+  #211 that keeps #211 fixed
 
 `resolve.schema.json` and the three captures closed the other gap on 2026-09-01 (#202): `POST
 /api/resolve` was the one MVP 2 endpoint nothing validated, which is why five field-level divergences
@@ -118,7 +125,7 @@ cd contracts && npm install && npm run validate
 It checks five things, and the middle two are what make the first mean anything:
 
 - each JSON sample against **one named definition** (`HostsResponse`, `FindingsResponse`,
-  `InvestigationResponse`, `ResolveResponse`)
+  `InvestigationResponse`, `ResolveResponse`, `ResolveRequest`)
 - structural cases that must **pass** — `[]`, sub-second timestamps from any language, and the real
   proxy payloads including their `null`s
 - cases that must **fail** — a retired `Warning` status, an unknown finding type, a hosts array

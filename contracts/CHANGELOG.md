@@ -4,6 +4,108 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — `ResolveRequest`: the request half of `POST /api/resolve` is checkable, and §1.1 turns out to require three things nothing sends
+
+**One new definition, one new captured sample, one existing sample corrected.** No response shape changed.
+
+The entry below added a pass that validates the JSON fences in the prose. It left the four **request**
+payloads in `resolve-api.md` unannotated for a stated reason: no request schema existed to name. This
+closes that, and it is the follow-up that entry named.
+
+### What landed
+
+| File | What changed |
+|---|---|
+| `resolve.schema.json` | new `ResolveRequest` definition; `title` and top-level `description` corrected |
+| `samples/resolve-request.json` | **new** — a live, §1.1-complete `apply` |
+| `samples/resolve-refusal.json` | `requestId: null` → `"rq-contracts-capture-01"`, re-captured as a matched pair |
+| `resolve-api.md` | the four request fences annotated (§1.1, §11.1, §11.2, §11.4) |
+| `validate.mjs` | 1 sample, 3 accepts, 8 rejects |
+
+`action` is the **same cross-schema `$ref`** the response already uses —
+`investigation.schema.json#/definitions/ResolveAction`. §1.2's rule is that `action` is a field-for-field
+copy of the investigation's structured `recommendedAction`, transcribed and never parsed. One definition
+for what the agent recommends, what the caller approves, and what the server reports applying is how that
+rule gets enforced instead of asserted three times.
+
+### The title said "the request half is already covered". It wasn't
+
+The original `description` on this schema read *"The request half is already covered:
+`investigation.schema.json#/definitions/ResolveAction` is the `action` object and `validate.mjs` carries
+must-reject cases for it."* True of `action`, and of nothing else in §1.1 — `mode`, `requestId`, `origin`,
+`precondition`, `requestedBy` were all uncovered. Corrected in place, and recorded here because it is a
+good specimen: a partial check reading as a complete one is the failure mode this whole directory's
+process exists to prevent, and it happened in the sentence describing the check.
+
+### §1.1's asymmetry is now enforced in both directions
+
+> Unknown top-level fields are **ignored**, not rejected. Unknown fields *inside* `action` are
+> **refused** (`malformed_request`).
+
+So `ResolveRequest` is `additionalProperties: true` at the root and inherits `false` inside `action`. That
+looks like an oversight, so there is a **must-accept** case for an unknown top-level key
+(`approvedInTabId`) alongside the must-reject for an unknown key inside `action`. Without the accept case,
+someone tightens the root in good faith and breaks a caller §1.1 promised would work.
+
+### It found the requirement nothing enforces → #222
+
+§1.1 marks `requestId`, `origin` and `origin.findingId` required **for `apply`**. `parseResolveRequest()`
+enforces none of the three, and `apps/dashboard/src/api/liveClient.ts:230` sends
+`{mode, action, origin, requestedBy}` — **no `requestId`, from any call site in the repo**.
+
+So the replay key #220 needs a store for is not being sent either. That is both halves of §6 mechanism 3
+missing, and §6's own sentence is the cost: *"One approval, one audit event."*
+
+The schema encodes **§1.1, not the parser** — a request schema constrains callers, so a lenient server is
+permissive rather than divergent, and encoding the leniency would have deleted the requirement instead of
+recording that it is unenforced:
+
+```json
+"allOf": [{
+  "if":   { "properties": { "mode": { "const": "apply" } }, "required": ["mode"] },
+  "then": { "required": ["requestId", "origin"],
+            "properties": { "origin": { "required": ["findingId"] } } }
+}]
+```
+
+Three of the eight must-reject cases hold exactly that. **#222** carries the fix, its ordering (the
+dashboard has to send a `requestId` before the parser may demand one, or the shipped Approve button
+breaks), and why it is blocked on #220's A/B decision rather than started.
+
+### One sample corrected, one knowingly left wrong
+
+All three captured responses carried `requestId: null`, **two of them on an `apply`** — so the samples
+collectively taught the opposite of what §1.1 requires, and a consumer mocking against them would build a
+UI handling a state the contract says cannot occur. That is the same defect the "Why the samples matter"
+section names about a laundered `requestedBy`, pointing the other way.
+
+- `samples/resolve-refusal.json` was **re-captured from a §1.1-compliant request**, and
+  `samples/resolve-request.json` is that request. `size: 9` is refused by the governed tool before any
+  write, so the pair cost one audit row and moved nothing. Only `requestId` differs from the previous
+  bytes; ids and timestamps stay pinned to the same values, so the diff is one line.
+- `samples/resolve-response.json` — the `applied` capture — is **still a non-compliant apply** with
+  `requestId: null`. Re-capturing it needs a real `set_pool_size` write plus a revert through
+  `Triggers.SetPoolSize` (the governed tool's `2..8` bound cannot restore `PoolSize 1`), and a live
+  production write to fix a sample is the wrong trade. Left as-is, recorded in #222 step 3, to be done
+  when a live apply is happening anyway.
+
+### Consumers
+
+**None.** The dashboard's request already satisfies everything except `requestId`, and nothing validates
+its outgoing body against this schema — `ResolveRequest` is enforced over `samples/` and the prose, not in
+the request path. The one behaviour change this implies is #222's, and #222 is filed rather than started.
+
+`cd contracts && npm run validate` now reports `7 samples, 19 accept, 40 reject, 7 capture claims, 18
+prose fences`, with `resolve-api.md` at `8 annotated, 7 unannotated`.
+
+The 7 that remain there are not annotatable and are not meant to be: five are single-key fragments
+(`"reversal": {...}`, `"refusal": {...}`, `"failure": {...}`, `"confirmation": {...}`, `"audit": {...}`)
+which are not JSON documents at all, and two are deliberately partial response objects showing "the
+load-bearing parts". Wrapping them in braces to make a linter reach them would change how the document
+reads to serve the tool.
+
+---
+
 ## 2026-09-01 — the JSON payloads *inside* the contract prose are validated now, and the first run found two more divergences
 
 **No shape changes to any schema except one optional field, and that field is a bug report.** `samples/`

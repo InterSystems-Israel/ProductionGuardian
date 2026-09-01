@@ -1,0 +1,17 @@
+{
+  "requestId": "rq-contracts-capture-01",
+  "mode": "apply",
+  "action": {
+    "type": "set_pool_size",
+    "host": "Cloud API",
+    "size": 9
+  },
+  "origin": {
+    "findingId": "f-1042",
+    "investigationId": "inv-queue_buildup:Cloud API-1755691200000"
+  },
+  "precondition": {
+    "poolSize": 1
+  },
+  "requestedBy": "contracts/resolve.schema.json capture"
+}

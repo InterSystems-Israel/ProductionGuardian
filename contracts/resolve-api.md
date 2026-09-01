@@ -62,7 +62,7 @@ they are the same family of thing.
 
 ### 1.1 Request
 
-```json
+```json validate=resolve.schema.json#/definitions/ResolveRequest
 {
   "requestId": "rq-6f2c1e",
   "mode": "apply",
@@ -973,7 +973,7 @@ payloads until `samples/` files land.
 
 Request:
 
-```json
+```json validate=resolve.schema.json#/definitions/ResolveRequest
 {
   "mode": "dry_run",
   "action": { "type": "set_pool_size", "host": "Cloud API", "size": 4 },
@@ -1020,7 +1020,7 @@ and `action.size`.
 
 Request:
 
-```json
+```json validate=resolve.schema.json#/definitions/ResolveRequest
 {
   "requestId": "rq-6f2c1e",
   "mode": "apply",
@@ -1098,7 +1098,7 @@ refusal.
 
 Request (`size: 40`):
 
-```json
+```json validate=resolve.schema.json#/definitions/ResolveRequest
 {
   "requestId": "rq-6f2c22",
   "mode": "apply",
