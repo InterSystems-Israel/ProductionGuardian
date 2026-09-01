@@ -90,6 +90,13 @@
 /// #165 is open against exactly the opposite choice -- a tool that capped silently and published a
 /// count of the capped list, so a consumer could not tell a small production from a clipped one.
 ///
+/// **THE COUNTING AND TRUNCATION BRANCHES CANNOT BE REACHED ON LABDEMO, SO CHECK THEM BY READING.**
+/// Three defects here in review were all in that dead zone -- a production-wide `pathCount`, a
+/// `truncated` a non-matching row could set, and a note reading "50 of 50" -- because one path and one
+/// matching host collapse `pathCount`, `pathsReturned` and `total` to 1, and 50 paths are unreachable.
+/// Every one of them would have published a confident wrong number to a model. Anything touching the
+/// row loop wants a >50-path production in your head, since there is not one to run against.
+///
 /// CONFIGURATION ONLY, so §6's data boundary is not at risk here in the way it is for
 /// `GetRecentErrors`: every value is a config item name, a rule class name or a DTL class name. No
 /// message content, no PHI, nothing read from `Ens_Util.Log`. Rule and transform CLASS names are
@@ -263,7 +270,7 @@ ClassMethod GetInterfacePath(host As %String = "") As %DynamicObject
         set out.downstream = downstream
         do out.%Set("known", out.known, "boolean")
     }
-    set out.note = ..Note(host, out.known, paths.%Size(), truncated)
+    set out.note = ..Note(host, out.known, paths.%Size(), truncated, total)
     quit out
 }
 
@@ -306,7 +313,7 @@ ClassMethod PositionOf(host As %String, svc As %String, op As %String, procs As 
 /// reads the thing it was handed. The three sentences that matter are the ORDER of the arrays, that a
 /// wiring map is not a statement about current traffic, and -- when the host is not in the map -- that
 /// this is not evidence the host is fine.
-ClassMethod Note(host As %String, known As %Boolean, returned As %Integer, truncated As %Boolean) As %String [ Private ]
+ClassMethod Note(host As %String, known As %Boolean, returned As %Integer, truncated As %Boolean, total As %Integer) As %String [ Private ]
 {
     if (host '= "") && 'known {
         quit host _ " does not appear in any path of this production's interface map. That may mean "
@@ -318,8 +325,13 @@ ClassMethod Note(host As %String, known As %Boolean, returned As %Integer, trunc
         _ "configuration, not what is flowing through it now -- a host being upstream does not mean "
         _ "it is currently sending anything."
     if truncated {
-        set note = note _ " The path list is TRUNCATED at " _ returned _ " of " _ ..#MAXPATHS
-            _ "; pathCount is the true total."
+        // `total`, NOT `#MAXPATHS` (@Ari-Glikman, #186). `truncated` is only set once `paths` has
+        // reached the cap, so `returned` is always exactly `#MAXPATHS` here -- the sentence read
+        // "TRUNCATED at 50 of 50", a complete-looking ratio in the same breath as the word TRUNCATED,
+        // and the one number that informs the reader was the one not passed in. The prose is what the
+        // model consumes, so this is not the cosmetic defect the same sentence would be on a dashboard.
+        set note = note _ " The path list is TRUNCATED at " _ returned _ " of " _ total
+            _ " paths this host sits on; pathCount carries the true total."
     }
     quit note
 }
