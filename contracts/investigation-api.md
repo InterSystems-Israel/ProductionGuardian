@@ -124,6 +124,7 @@ The engine builds this from its own in-memory state. It is a closed allowlist:
   "trend": {
     "metric": "queued",
     "slope": 124.2,
+    "recentSlope": 124.2,
     "slopeUnit": "items/minute",
     "recentDirection": "rising",
     "thresholdValue": 50,
@@ -177,11 +178,40 @@ The baseline fields are not decoration. For this scenario the load-bearing one i
 without baselines would force the agent to assert that number instead of comparing it.
 
 **`inboundRatePerSec` is derived and must be labelled as such wherever it is shown.** No metric
-measures arrival rate at a host's queue. The engine computes `messagesPerSec + trend.slope/60` —
+measures arrival rate at a host's queue. The engine computes `messagesPerSec + trend.recentSlope/60` —
 completions plus the rate the queue is growing. It is `null` when either term is unavailable,
 **including whenever `trend` is `null`**, rather than falling back to `messagesPerSec` and reading as
 "inflow equals throughput", which is precisely the conclusion the finding contradicts. This is the
 same defect class as the coerced `lastActivity` in #58: a computed value presented as a measurement.
+
+It is **clamped at `0`** rather than reported negative. The two terms are measured over different
+spans, so a queue collapsing faster than the tail's completions were counted can put the sum below
+zero. "Negative messages arriving" is not a reading to hand a model, and `null` would claim there was
+no fit, which would be false.
+
+**It is `recentSlope`, not `slope` — amended 2026-09-01, and this paragraph said `slope` until then.**
+The window fit is the wrong span for a rate *now*. Minutes into a drain it still leans up, so the
+estimate lands **above** the raw completion rate on the one state where completions are already an
+overstatement.
+
+Measured on the live drain-through transient: `set_pool_size 1 → 4` applied, `recentDirection`
+reporting `falling`, and `messagesPerSec` reading `4` because four workers are clearing a backlog.
+
+| Arrival rate from | Value | Agent's recommendation |
+|---|---|---|
+| `messagesPerSec` alone | 4 | `set_pool_size 4 → 8` |
+| `messagesPerSec + slope/60`, queue 94 | 4.57 | `set_pool_size 4 → 6` |
+| `messagesPerSec + recentSlope/60`, queue 108 | **3.82** | **none** |
+
+The two derived rows are separate runs a few polls apart, not the same sample — the transient is short.
+What decides the outcome is which side of `messagesPerSec` each lands on: the window fit puts arrivals
+*above* throughput while the queue is emptying, and the tail fit puts them below. A consumer that keys
+on that comparison gets the right answer from one and the wrong answer from the other.
+
+So the amendment is not a refinement of the original formula — the original formula did not fix the
+case, it moved the number in the wrong direction. The flagship rise, where the two spans agree, is the
+only scenario that ever exercised it. That is what the original spec had no way to notice: the field was
+ratified before either scenario existed to measure it against.
 
 It sits in `snapshot` rather than `trend` because it is a rate *now*, not a forecast — but it is the
 one field in `snapshot` that is not measured, so it is the one field in `snapshot` that carries a
@@ -211,27 +241,38 @@ is a description of a slope now, not a prediction of a crossing.
 |---|---|---|
 | `metric` | string | `HostProjection.metric`. Only `queued` in MVP 2. Open string. |
 | `slope` | number | Same fit and same units as `Projection.slope` — OLS over the trailing 300 s. **May be zero or negative here**, unlike in `earlywarning-api.md`, because a queue that is draining is a fact the agent should see rather than a forecast to withhold. |
-| `slopeUnit` | string | Spelled out, e.g. `items/minute`. Carried so the agent never has to infer the unit. |
+| `recentSlope` | number | The **magnitude** whose sign is `recentDirection` — OLS over the trailing 120 s (the 40 % tail of the fit window, `earlywarning-api.md` §1.5). Same unit as `slope`, and signed for the same reason. Non-null whenever `trend` is non-null. **Added 2026-09-01**; `snapshot.inboundRatePerSec` is derived from it, and the agent is asked to state its sizing arithmetic, so a hidden term would be one it omits or invents. |
+| `slopeUnit` | string | Spelled out, e.g. `items/minute`. Applies to **both** slopes. Carried so the agent never has to infer the unit. |
 | `recentDirection` | string \| **null** | `rising` \| `falling` \| `steady`, from `earlywarning-api.md` §1.5 — the **sign** of the tail fit, measured. `null` when no direction is claimed. **This is the field that says a queue is draining**; see below for why `slope` does not, and for the two conditions §1.5 attaches to it. |
 | `thresholdValue` | number | `Threshold.value` — `max(baseline * 5.0, 50)`. For this scenario the `absoluteFloor` arm of 50 wins, because Cloud API's queue baseline is near zero. |
 | `thresholdCrossed` | boolean | `queued >= thresholdValue`. **Normally `true`** on an investigated finding. Present so the agent never has to infer it from a null ETA. |
 | `secondsToThreshold` | integer \| null | Whole seconds, `> 0`. **`null` whenever `thresholdCrossed` is `true`**, which is the usual case — there is no crossing left to forecast. Never `0`, never negative. |
 
-**`recentDirection` exists because `slope` does not deliver what the row above promises.** `slope` is
-specified here as "may be zero or negative ... because a queue that is draining is a fact the agent
-should see", and the §4 example carries a non-null slope beside `thresholdCrossed: true`. The engine
-does not produce that: it reads `slope` from Early Warning's `projection`, which is `null` for
-`already_crossed` — i.e. for **every** condition this endpoint is ever called about. So the draining
-fact this contract promises has never reached an agent, and the measured consequence was a
-recommendation to enlarge a pool on a queue falling from 261 to 181, because nothing in the input said
-"falling" (#177).
+**`recentDirection` exists because `slope` did not deliver what the row above promises, and the three
+fields are now one story.** `slope` is specified here as "may be zero or negative ... because a queue
+that is draining is a fact the agent should see", and the §4 example carries a non-null slope beside
+`thresholdCrossed: true`. The engine did not produce that: it read `slope` from Early Warning's
+`projection`, which is `null` for `already_crossed` — i.e. for **every** condition this endpoint is
+ever called about. So the draining fact this contract promises reached no agent for the whole of MVP 2,
+and the measured consequence was a recommendation to enlarge a pool on a queue falling from 261 to 181,
+because nothing in the input said "falling" (#177).
 
-`recentDirection` is the part of that fixable without reopening `earlywarning-api.md` §1.4, which
+`recentDirection` was the part of that fixable without reopening `earlywarning-api.md` §1.4, which
 forbids publishing a bare slope beside a withheld forecast. A **direction is not a rate**, so it
 carries no forecast to mislabel — the same argument that lets `kind: 'projection'` stay absent below.
-**The `slope` deviation is not fixed by this change and is tracked separately**: honouring it needs the
-window slope published or refitted, which is that contract's decision rather than this one's. Until
-then, read `recentDirection` and treat a `null` `slope` on a crossed threshold as expected.
+
+**`slope` was then delivered as specified in #187**, by hoisting Early Warning's existing window fit
+above its precedence chain and reading it from an internal field the endpoint's whitelist strips. No
+amendment was needed: §1.4 governs `/api/earlywarning` and this section governs the agent, which is
+the two-contracts-two-consumers split this file already argues for. `recentSlope` was added the same
+way on 2026-09-01. **So all three are now populated on every investigation**, and the paragraph that
+used to tell you to expect a `null` `slope` on a crossed threshold no longer applies.
+
+They are not redundant, and the sizing arithmetic depends on picking the right one: `slope` is the
+five-minute window, `recentSlope` the two-minute tail. A queue that rose for eight minutes and has been
+draining for two has a **positive** `slope` and a **negative** `recentSlope`, which is the state the
+agent most needs to distinguish and the one a single number flattens. Use `slope` for "how did this
+build", `recentSlope` for "what is happening now".
 
 **`recentDirection` ARRIVES WITH §1.5's TWO CONDITIONS, and they bind harder here than there.** That
 section attaches both to the field, and this contract's consumer is a model — the one already measured

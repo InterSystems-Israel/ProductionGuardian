@@ -89,6 +89,35 @@ export interface HostProjection {
    * the published rate and the agent's rate would come to disagree — #174's argument for the tail.
    */
   windowSlopePerMinute: number | null;
+  /**
+   * The TAIL fit's slope in `SLOPE_UNIT` — the magnitude whose sign is `recentDirection`.
+   *
+   * **INTERNAL, on the same terms as `windowSlopePerMinute`**, and stripped by the same whitelist for
+   * the same §1.4 reason. Only the sign has ever left this module.
+   *
+   * It is carried because `snapshot.inboundRatePerSec` is derived from it (#188): arrival rate is
+   * completions plus the rate the backlog is growing, and "is growing" has to mean *now*. The window
+   * fit cannot answer that. Measured on the live drain-through transient — `set_pool_size 1 -> 4`
+   * applied, `recentDirection` reporting `falling`, `messagesPerSec` reading 4 because four workers
+   * are clearing a backlog:
+   *
+   *     messagesPerSec alone                 4      -> the model recommended 4 -> 8
+   *     via windowSlopePerMinute (queue 94)  4.57   -> the model recommended 4 -> 6
+   *     via recentSlopePerMinute (queue 108) 3.82   -> the model recommended nothing
+   *
+   * A queue that is emptying must not report arrivals ABOVE its throughput, and the window fit does.
+   * It is right for an ETA, which asks how the whole rise behaves; it is wrong for "what is arriving",
+   * which is a question about the last two minutes. Same distinction #174 drew, applied to a magnitude.
+   * (The two derived rows are separate runs a few polls apart — the transient is short. What decides
+   * the outcome is which side of `messagesPerSec` each lands on.)
+   *
+   * Gated on `minFitSamples` identically to the window fit, but NOT null under identical conditions:
+   * the tail refits over the trailing 120 s, so a poll gap can leave fewer than two samples in it
+   * while the window still holds twelve. This is then null and so is `recentDirection`, which is its
+   * sign. `buildTrend` declines the whole trend object in that case rather than serving a window slope
+   * beside two nulls — see the third arm of its gate.
+   */
+  recentSlopePerMinute: number | null;
 }
 
 /**
@@ -102,7 +131,7 @@ export interface HostProjection {
  */
 export function publishedProjection(
   p: HostProjection,
-): Omit<HostProjection, 'windowSlopePerMinute'> {
+): Omit<HostProjection, 'windowSlopePerMinute' | 'recentSlopePerMinute'> {
   return {
     host: p.host,
     metric: p.metric,
@@ -423,6 +452,7 @@ export function projectHost(
     fitSpanSeconds,
     recentDirection,
     windowSlopePerMinute,
+    recentSlopePerMinute,
   };
 
   const decline = (
