@@ -125,6 +125,7 @@ The engine builds this from its own in-memory state. It is a closed allowlist:
     "metric": "queued",
     "slope": 124.2,
     "slopeUnit": "items/minute",
+    "recentDirection": "rising",
     "thresholdValue": 50,
     "thresholdCrossed": true,
     "secondsToThreshold": null
@@ -211,9 +212,26 @@ is a description of a slope now, not a prediction of a crossing.
 | `metric` | string | `HostProjection.metric`. Only `queued` in MVP 2. Open string. |
 | `slope` | number | Same fit and same units as `Projection.slope` — OLS over the trailing 300 s. **May be zero or negative here**, unlike in `earlywarning-api.md`, because a queue that is draining is a fact the agent should see rather than a forecast to withhold. |
 | `slopeUnit` | string | Spelled out, e.g. `items/minute`. Carried so the agent never has to infer the unit. |
+| `recentDirection` | string \| **null** | `rising` \| `falling` \| `steady`, from `earlywarning-api.md` §1.5 — the **sign** of the tail fit, measured. `null` when no direction is claimed. **This is the field that says a queue is draining**; see below for why `slope` does not. |
 | `thresholdValue` | number | `Threshold.value` — `max(baseline * 5.0, 50)`. For this scenario the `absoluteFloor` arm of 50 wins, because Cloud API's queue baseline is near zero. |
 | `thresholdCrossed` | boolean | `queued >= thresholdValue`. **Normally `true`** on an investigated finding. Present so the agent never has to infer it from a null ETA. |
 | `secondsToThreshold` | integer \| null | Whole seconds, `> 0`. **`null` whenever `thresholdCrossed` is `true`**, which is the usual case — there is no crossing left to forecast. Never `0`, never negative. |
+
+**`recentDirection` exists because `slope` does not deliver what the row above promises.** `slope` is
+specified here as "may be zero or negative ... because a queue that is draining is a fact the agent
+should see", and the §4 example carries a non-null slope beside `thresholdCrossed: true`. The engine
+does not produce that: it reads `slope` from Early Warning's `projection`, which is `null` for
+`already_crossed` — i.e. for **every** condition this endpoint is ever called about. So the draining
+fact this contract promises has never reached an agent, and the measured consequence was a
+recommendation to enlarge a pool on a queue falling from 261 to 181, because nothing in the input said
+"falling" (#177).
+
+`recentDirection` is the part of that fixable without reopening `earlywarning-api.md` §1.4, which
+forbids publishing a bare slope beside a withheld forecast. A **direction is not a rate**, so it
+carries no forecast to mislabel — the same argument that lets `kind: 'projection'` stay absent below.
+**The `slope` deviation is not fixed by this change and is tracked separately**: honouring it needs the
+window slope published or refitted, which is that contract's decision rather than this one's. Until
+then, read `recentDirection` and treat a `null` `slope` on a crossed threshold as expected.
 
 `trend` is `null` when there is no usable fit at all — a warming baseline, or fewer than 12 samples
 in the fit window. `null` rather than a zero slope, because "not fitted" and "flat" are different
