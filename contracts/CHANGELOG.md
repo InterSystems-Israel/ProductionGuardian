@@ -4,6 +4,37 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — `evidence[].tool` is provenance text, and this file stopped teaching a name that was never callable
+
+**No field, type or shape changes.** `investigation-api.md` §3.2's four sample values move from
+snake_case to the runtime form (`get_pool_size` → `GetPoolSize`, `get_host_status` → `GetHostStatus`),
+the `tool` row stops calling itself an "MCP tool name", and a paragraph plus a clause on Q5 say what the
+field is: **free-form provenance, not an enum.**
+
+`mcp-tools.md` §1 recorded in #153 that its own snake_case section titles **have never been callable** —
+`%AI.Tool` derives a tool's name from the ClassMethod that implements it. `investigation-api.md` was not
+touched then, so the two contracts disagreed on exactly the field a consumer implements `evidence[]`
+against, and the wrong one was the file being copied from. `samples/investigation-response.json` has
+carried `GetHostStatus` / `GetPoolSize` from a live capture all along, so the samples and the prose
+disagreed inside this contract too.
+
+### Three rules, and the third is the one with a cost
+
+Render it, do not parse it. Tolerate a provider prefix — `functions.GetEventLogSummary` has been
+observed, OpenAI-style namespacing echoed back by the model into its own JSON. And **never validate
+`tool` against a name list or drop a bullet whose name is unrecognised**: a tool is added to
+`mcp-tools.md` far more often than this file is reread, and discarding the bullet turns measured
+evidence into absent evidence in front of the human approving a write. `mvp2Guards.ts` parses the field
+with `nullableStr` and validates nothing, which is correct; the paragraph is what keeps it that way.
+
+**On Q5 rather than Q8**, which is where #155 suggested it. Q8 answers "what is a nullable field" and
+`evidence[].tool` is already listed there as nullable — which is true and is a different fact. Q5 is the
+question a consumer asks *while writing the renderer*.
+
+#155.
+
+---
+
 ## 2026-09-01 — `get_event_log_trend` documents `reason`, and one value of it means "the host may not exist"
 
 **No field, type or shape changes** — `reason` has been returnable from this tool since it shipped and
