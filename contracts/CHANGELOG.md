@@ -4,6 +4,102 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — `mcp-tools.md` §3.6: the `set_pool_size` output table described a tool that never shipped — six of nine fields did not exist
+
+**#218 items 2 and 3. Documentation only — `Tools/Resolve.cls` is unchanged, and it was never the
+thing that was wrong.** Item 1 of that issue is a safety decision on a live write path and is
+deliberately **not** settled here; see the last section.
+
+§3.6 is the contract for **the only code in this repo that writes to a live production**. Its Output
+table specified nine fields. The tool emits ten, and they overlap in three.
+
+| | Fields |
+|---|---|
+| Documented, **never emitted** | `production`, `previousSize`, `appliedSize`, `applied`, `updateProduction`, `sampledAt` |
+| Emitted, **never documented** | `tool`, `mode`, `outcome`, `before`, `after`, `refusal`, `failure` |
+| Both, **different shape** | `reversal` — documented `{tool, host, size}`, emitted `{host, size, capturedFrom}` |
+
+### The tool was right and the document was stale
+
+`outcome` / `before` / `after` / `refusal{reason, message, checkedBy}` is `resolve-api.md`'s
+vocabulary, and the engine passes this reply through to `POST /api/resolve` largely unchanged — a path
+schema-checked since #217. So the tool grew to serve the endpoint contract directly and §3.6 kept
+describing its Day-1 shape. The table now documents what ships, plus the two things the old table had
+no way to say: **which fields are `null` on a refusal and why** (`before: null` because every refusal
+returns before the read), and that **`outcome` is the discriminator** — `applied`, `no_change`,
+`previewed`, `refused`, `failed`, of which only the first is what `applied: true` used to mean.
+
+`outcome` replacing `applied` is a real improvement worth recording rather than silently absorbing: a
+boolean that is always `true` on success cannot express `no_change`, which is neither success nor
+error and is reached by clicking Approve twice.
+
+### Three of the deleted fields were load-bearing in prose, and that is how it survived
+
+The drift was not confined to a table. Three paragraphs argued *from* fields that do not exist:
+
+- §3.6's own justification that `applied` "is present rather than implied because the audit record and
+  `resolve-api.md`'s `outcome` both key off it" — describing a field that had been replaced **by**
+  `outcome`
+- guard 4, "`previousSize` and `reversal` are in the response so the caller can undo" → now
+  `before.poolSize`
+- guard 1's stopped-production argument, which read back `appliedSize` → now `after.poolSize`
+- **§5.5's audit requirement** — the demo's final step, *who acted, what changed, when* — required the
+  record to carry `previousSize` and `appliedSize`. An audit requirement written in terms of
+  non-existent fields is one nobody can check
+
+Nothing outside this file referenced any of the six, verified by grep across `.md`, `.ts`, `.tsx`,
+`.cls`, `.json` and `.mjs`. That is the reassuring half — no consumer was built on them — and also the
+diagnosis: **they were documentary from the day they were written, so no compile and no test could
+ever have failed.** (`sampledAt` occurs in the engine only on the *proxy* path, a different contract.)
+
+One thing the new table deliberately does **not** claim: whether the audit row carries a time of its
+own. A first draft justified dropping `sampledAt` partly on that, and §5.5 does not say — so the
+justification now rests only on the checkable half, that nothing read it.
+
+### The reversal example replayed a size the tool refuses
+
+`:895` captioned an example *"which is why the tool's lower bound is `1`"* and showed
+`{"host": "Cloud API", "size": 1}` applying. `MINSIZE = 2` has shipped since the tools landed, and
+**§3.6 itself retracts that bound 65 lines above the example** (#100, 2026-08-20) — #100 corrected the
+bounds table and the prose around it and left the example below untouched.
+
+Replaced with the **refusal, captured live on 2026-09-01**, because the refusal is the more useful
+artefact: it is what a caller actually gets, and it is the demonstration that **`reversal` is a record
+of the prior value, not a body to POST back** — which is what `resolve-api.md` §4.1 already says.
+Two further live refusals were added alongside it (`not_whitelisted_host`, and `size: 99` showing
+`refusal.bounds`), for one reason: `host` and `requestedSize` are echoes of **what was asked, never
+what was validated**, and only a refusal makes that visible.
+
+These are the **first captured tool replies in this contract**, and they cost nothing to take: all
+three refuse at a guard before the production is opened, so capturing them mutated nothing.
+
+### What is NOT decided here
+
+§3.6 states *"There is no `dryRun` parameter, deliberately"* and argues that one would weaken "a dry
+run cannot mutate" from *the tool was not called* to *the tool was called with a flag that made it not
+write*. **The shipped tool has one, and the whole chain passes it.** The contract predicted its own
+violation.
+
+That paragraph is **left standing**, with a banner above it recording the conflict and pointing at
+#218 item 1. Two reasons. It is an *argument*, not a description — deleting it would destroy the
+reasoning that makes the decision legible. And the choice between restoring the property it names and
+ratifying what shipped trades one safety property for another on a live write path, which is not a
+documentation call.
+
+So the Output table documents `mode` and `previewed` as **shipped, explicitly not ratified**, and says
+so in the `mode` row. Recording an open conflict is not resolving it — the same treatment
+`earlywarning.schema.json`'s §4 disagreements got in #219.
+
+### The structural point, unchanged from #218
+
+`mcp-tools.md` has **no schema and no captured sample, for thirteen tools**, which is why three
+divergences in one section had to be found by reading. `validate.mjs`'s file list excludes it
+deliberately and its comment already names this issue. The fix is a capture harness for the tool
+replies — one reply per tool from `/labdemo/agent/*` — not a line in that array. These three captures
+are the first instance of that pattern and are worth generalising.
+
+---
+
 ## 2026-09-01 — `InvestigationRequest`: the half of `investigation-api.md` that nothing checked, and the three fields it never admitted it was sending
 
 **Three new definitions, three fields added to a table, one type widened, one fence annotated.**

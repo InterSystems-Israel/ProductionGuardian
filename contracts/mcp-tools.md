@@ -762,6 +762,15 @@ Set the configured pool size of one host and apply it to the running production.
 | `host` | string | **required** | Must be `Cloud API`. Whitelist of one. |
 | `size` | integer | **required** | `2..8` inclusive — see bounds below. |
 
+> **The paragraph below is false about the shipped tool, and reconciling it is an open decision —
+> #218 item 1.** `Tools.Resolve.SetPoolSize(host, size, dryRun)` has a third parameter, and the whole
+> chain passes it: the engine posts `dryRun`, `AgentDispatcher.cls` reads it and forwards it, and the
+> tool returns `outcome: "previewed"` before the write. The argument below is left standing rather
+> than edited because **it is the argument, not a description** — it predicted exactly what happened,
+> and the choice between restoring the property it names and ratifying what shipped is a trade
+> between two safety properties on a live write path. #218 records both options. The Output table
+> below documents `mode` and `previewed` as *shipped*, which is not the same as ratified.
+
 **There is no `dryRun` parameter, deliberately.** This tool always writes. Preview is
 `get_pool_size`, a *read* tool. That is a reconciliation with `resolve-api.md` §2, which guarantees
 structurally that a `dry_run` cannot mutate: the engine's dry-run path calls `get_pool_size` and the
@@ -770,23 +779,46 @@ checks, and **never invokes `set_pool_size` at all**, so no code path exists tha
 was called with a flag that made it not write", and would add a non-writing branch to the one tool
 whose entire justification is that it writes. **One tool, one job.**
 
-**Output**
+**Output** — corrected on 2026-09-01 (#218 item 2) to the shape the tool actually returns.
 
 | Field | Type | Notes |
 |---|---|---|
-| `host` | string | Echoed. |
-| `production` | string | The production actually changed. |
-| `previousSize` | integer | The value before the call. **This is what makes the action reversible.** |
-| `requestedSize` | integer | Echoed. |
-| `appliedSize` | integer | Read back from the saved config after the write, not assumed from `requestedSize`. |
-| `applied` | boolean | Always `true` on a successful return; a call that did not apply is an error (§4), not a result with `false`. |
-| `updateProduction` | string | `ok`, or the failure reason from `Ens.Director.UpdateProduction()`. |
-| `reversal` | object | `{"tool": "set_pool_size", "host": ..., "size": <previousSize>}` — the exact call that undoes this one. |
-| `sampledAt` | string | ISO 8601 UTC. |
+| `tool` | string | Always `set_pool_size`. Self-identifying, so a reply quoted into an audit row or a findings payload still says what produced it. |
+| `host` | string | Echoed — **the requested host, not a validated one.** A `not_whitelisted_host` refusal echoes what was asked for, which is the point: the refusal has to be able to name it. |
+| `requestedSize` | integer | Echoed, same caveat — an out-of-bounds refusal carries the out-of-bounds number. |
+| `mode` | string | `apply` or `dry_run`. See the `dryRun` note above — **this field is part of the open question, not a ratified one.** |
+| `outcome` | string | `applied`, `no_change`, `previewed`, `refused`, `failed`. **The discriminator: read this before any other field.** |
+| `before` | object \| null | `{"poolSize": <n>}` — the measured prior value. **`null` on every refusal**, because every refusal returns before the read. This is the field that makes the action reversible. |
+| `after` | object \| null | `{"poolSize": <n>}`. On `applied` it is **re-read from the saved config**, never echoed from `requestedSize` — that is what makes a partial failure distinguishable from success. On `previewed` it is what *would* result. On `no_change` it equals `before`. |
+| `reversal` | object \| null | `{"host", "size", "capturedFrom"}` — a **record of the prior value, not a callable body.** `capturedFrom` is always `"live"`. |
+| `refusal` | object \| null | `{"reason", "message", "checkedBy"}`, plus `bounds: {min, max}` on `out_of_bounds`. Non-null **only** when `outcome` is `refused`. `checkedBy` is always `"iris"` — a fact rather than a label, since this object can only be built inside the tool. |
+| `failure` | object | Present **only** on `outcome: "failed"`: `{"stage": "save" \| "update", "message"}`, plus `liveStateVerified: false` when the stage is `update`. |
 
-`applied` is present rather than implied because the audit record and `resolve-api.md`'s `outcome`
-both key off it, and a field that is always `true` on success is cheap insurance against a future
-partial-apply mode being added without a discriminator.
+**Nine fields were documented here until 2026-09-01 and six of them never existed** —
+`production`, `previousSize`, `appliedSize`, `applied`, `updateProduction`, `sampledAt` — while seven
+emitted ones were undocumented and `reversal` was specified with a different shape. The section, not
+the tool, was the stale artefact: `outcome` / `before` / `after` / `refusal` is `resolve-api.md`'s
+vocabulary, and the engine passes this reply through to `POST /api/resolve` largely unchanged. The
+tool grew to serve the endpoint contract directly and this table kept describing its Day-1 shape.
+
+Two of the deleted rows were **load-bearing in prose elsewhere in this section**, which is how the
+drift survived: the paragraph arguing `applied` exists "because the audit record and
+`resolve-api.md`'s `outcome` both key off it" was describing a field that had been replaced *by*
+`outcome`, and guard 4 below cited `previousSize` — now `before.poolSize`. Both are corrected in
+place. A field can be cited by name in three paragraphs and still not exist, when nothing validates.
+
+**`outcome` replaced `applied` for a reason worth keeping.** A boolean that is always `true` on
+success can only distinguish success from an exception; `no_change`, `previewed` and `refused` are
+none of those three and all of them are correct returns. `no_change` in particular — the requested
+state is already true — is the one case where doing nothing is right, and a demo reaches it by
+clicking Approve twice.
+
+**There is no timestamp.** `sampledAt` was documented and is not emitted — and nothing was reading
+it: the name occurs nowhere on the resolve path in the engine or the dashboard (only on the *proxy*
+path, `proxy/client.ts`, a different contract). `POST /api/resolve` stamps its own reply. Recorded
+rather than added, because adding a field to satisfy a stale table is how the reverse drift starts.
+Whether the audit row carries a time of its own is **not** asserted here: §5.5 does not say, and this
+section is not the place to guess about the audit schema.
 
 **Wraps** the write path `iris/labdemo/Triggers.cls` already proves in this production:
 `Ens.Config.Production.%OpenId(...)` → locate the `Ens.Config.Item` by name → set `PoolSize` →
@@ -804,9 +836,9 @@ partial-apply mode being added without a discriminator.
    production that is not Running as a *warning*, not a refusal — "a stopped production accepts
    config edits that take effect on start, which is confusing rather than wrong". That is right for
    a trigger that arms a condition for later, and wrong here: against a stopped production `%Save()`
-   succeeds, `UpdateProduction()` changes no running job, `appliedSize` reads back the saved value,
-   and the response says applied — while nothing drains, because nothing is running. True field by
-   field and false as a whole. **State `1` (Running) is required.** Recorded because someone will
+   succeeds, `UpdateProduction()` changes no running job, `after.poolSize` reads back the saved
+   value, and `outcome` says `applied` — while nothing drains, because nothing is running. True field
+   by field and false as a whole. **State `1` (Running) is required.** Recorded because someone will
    read `Triggers.cls`, see a warning, and "align" the tool with the proven path; the proven path is
    proven for a different job. Matches `resolve-api.md`'s `production_not_running` refusal.
 2. **Refuse if the config item is not found.** Track that the *item* was found, not just that a loop
@@ -817,9 +849,12 @@ partial-apply mode being added without a discriminator.
 3. **Bounds.** `host` must be `Cloud API`; `size` must be an integer in `2..8`. Anything else is an
    error, not a clamp — clamping `40` to `8` would apply a change nobody approved, report it as
    applied, and be indistinguishable in the audit log from someone deliberately choosing `8`.
-4. **Reversibility is returned, not remembered.** `previousSize` and `reversal` are in the response
-   so the caller can undo without the tool holding state. A stateful undo would be a second thing to
-   get wrong.
+4. **Reversibility is returned, not remembered.** `before.poolSize` and `reversal` are in the
+   response so the caller can undo without the tool holding state. A stateful undo would be a second
+   thing to get wrong. (This read `previousSize` until 2026-09-01 — a field this section documented
+   and the tool never emitted; #218 item 2.) **Note what "reversible" means here and what it does
+   not:** the response is sufficient to *describe* the undo, but the undo itself is not a call to
+   this tool — see the reversal example below.
 5. **Step 3 is a PROPERTY, not a setting.** `PoolSize` is a property of `Ens.Config.Item`
    (`PoolSize As %Library.Integer`, verified against `%Dictionary.CompiledProperty` on the running
    instance), so the tool assigns `item.PoolSize` directly. It must **not** go through the `Settings`
@@ -870,7 +905,8 @@ governed" invites the reading that approval lives in the tool, and it does not. 
 enforces is *authorization, bounds, target, and reversibility*. Four of the five safety properties;
 the fifth is somebody else's.
 
-**Worked example — applied.**
+**Worked example — applied.** The scenario's call: `Cloud API` at the shipped `PoolSize 1`, enlarged
+to `4`.
 
 ```jsonc
 // -> set_pool_size
@@ -880,19 +916,23 @@ the fifth is somebody else's.
 ```jsonc
 // <-
 {
+  "tool": "set_pool_size",
   "host": "Cloud API",
-  "production": "ProductionGuardian.LabDemo.Production",
-  "previousSize": 1,
   "requestedSize": 4,
-  "appliedSize": 4,
-  "applied": true,
-  "updateProduction": "ok",
-  "reversal": { "tool": "set_pool_size", "host": "Cloud API", "size": 1 },
-  "sampledAt": "2026-08-18T08:16:02.117Z"
+  "mode": "apply",
+  "outcome": "applied",
+  "before": { "poolSize": 1 },
+  "after": { "poolSize": 4 },
+  "reversal": { "host": "Cloud API", "size": 1, "capturedFrom": "live" },
+  "refusal": null
 }
 ```
 
-**Worked example — the reversal**, which is why the tool's lower bound is `1`:
+`after` is **re-read from the saved config**, so it can disagree with `requestedSize`. If it ever
+does, that is the one field that says so.
+
+**Worked example — replaying the reversal, which the tool refuses.** This is captured from the live
+instance on 2026-09-01, not composed:
 
 ```jsonc
 // -> set_pool_size   (the `reversal` object from the response above, replayed)
@@ -902,21 +942,69 @@ the fifth is somebody else's.
 ```jsonc
 // <-
 {
+  "tool": "set_pool_size",
   "host": "Cloud API",
-  "production": "ProductionGuardian.LabDemo.Production",
-  "previousSize": 4,
   "requestedSize": 1,
-  "appliedSize": 1,
-  "applied": true,
-  "updateProduction": "ok",
-  "reversal": { "tool": "set_pool_size", "host": "Cloud API", "size": 4 },
-  "sampledAt": "2026-08-18T08:22:10.004Z"
+  "mode": "apply",
+  "outcome": "refused",
+  "before": null,
+  "after": null,
+  "reversal": null,
+  "refusal": {
+    "reason": "out_of_bounds",
+    "message": "size must be an integer between 2 and 8",
+    "checkedBy": "iris",
+    "bounds": { "min": 2, "max": 8 }
+  }
 }
 ```
 
+**This example used to show that call applying, captioned "which is why the tool's lower bound is
+`1`" — a bound this same section retracted 65 lines above it** (#100, 2026-08-20). `MINSIZE = 2` has
+shipped since the tools landed, so the example contradicted both the tool and its own section, and
+#100's edit corrected the bounds table and the prose around it while leaving the example below
+untouched. Kept as a refusal rather than deleted, because the refusal is the more useful fact: it is
+the shape a caller actually gets, and it is *the* demonstration that **`reversal` is a record of the
+prior value, not a body to POST back.**
+
+Note what `before: null` and `reversal: null` say: the refusal happened at the bounds guard, before
+the production was opened. **A refusal is not a call that did nothing — it is a call that never
+reached the thing it would have done.**
+
+Restoring `PoolSize 1` is an operator action through `Triggers.Reset()`, which is not LLM-callable —
+`resolve-api.md` §4.1 and the bounds discussion above both say so, and this example is now consistent
+with them.
+
+**Two refusals whose whole content is the requested value being echoed back**, also captured live on
+2026-09-01, because the echo is the part that surprises: `host` and `requestedSize` are what was
+*asked*, never what was validated.
+
+```jsonc
+// -> { "host": "EMR Source", "size": 4 }        // a real host, not the whitelisted one
+{ "tool": "set_pool_size", "host": "EMR Source", "requestedSize": 4, "mode": "apply",
+  "outcome": "refused", "before": null, "after": null, "reversal": null,
+  "refusal": { "reason": "not_whitelisted_host",
+               "message": "this tool may only change 'Cloud API'", "checkedBy": "iris" } }
+```
+
+```jsonc
+// -> { "host": "Cloud API", "size": 99 }        // no `bounds` echo would mean a UI hardcoding 2..8
+{ "tool": "set_pool_size", "host": "Cloud API", "requestedSize": 99, "mode": "apply",
+  "outcome": "refused", "before": null, "after": null, "reversal": null,
+  "refusal": { "reason": "out_of_bounds",
+               "message": "size must be an integer between 2 and 8", "checkedBy": "iris",
+               "bounds": { "min": 2, "max": 8 } } }
+```
+
+`bounds` travels on the refusal so a UI can state the range without keeping a copy — the #84
+stale-number pattern, closed at the source.
+
 **Worked example — denied.** The same apply call from a caller holding `PG_Read` but not
 `PG_Resolve`. There is **no result object at all**: the runtime refuses before `%Invoke` runs
-(§5.2), so this is an error response and not a `set_pool_size` payload with `applied: false`.
+(§5.2), so this is an error response and **not a `set_pool_size` payload with `outcome: "refused"`.**
+That distinction is easy to lose now that the tool has a `refused` outcome of its own: `refused` means
+*the tool ran and its own guard said no*, and `checkedBy: "iris"` is how the reply proves it. A
+`tool_access_denied` error means the tool never ran at all.
 
 ```jsonc
 // -> set_pool_size
@@ -2158,8 +2246,12 @@ hook sits in the execution path (§5.2) — plus the policy's own row for the on
 cannot see.
 
 The audit record must be sufficient to answer *who acted, what changed, when* — the demo's final
-step. For `set_pool_size` that means the caller identity, the tool name, the arguments including
-`previousSize` and `appliedSize` from the result, the duration, and the status.
+step. For `set_pool_size` that means the caller identity, the tool name, the arguments, `before.poolSize`
+and `after.poolSize` from the result, the duration, and the status. **This named `previousSize` and
+`appliedSize` until 2026-09-01** — two of the six fields §3.6 documented and the tool never emitted
+(#218 item 2). Worth noting where the stale names surfaced: an audit requirement written in terms of
+fields that do not exist is one that cannot be checked, and *this* is the sentence the demo's final
+step is read against.
 
 **Audit records are subject to §6 as well.** `%LogExecution` receives the full `result` object, and
 for `get_recent_errors` that result is already sanitised — which is a second reason the sanitisation
