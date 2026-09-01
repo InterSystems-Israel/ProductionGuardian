@@ -421,7 +421,22 @@ ClassMethod GetEventLogTrend(host As %String = "", resolution As %String = "hour
     if (host '= "") && (host '= ..#PRODUCTIONSCOPE) {
         set crs = ##class(%SQL.Statement).%ExecDirect(,
             "SELECT COUNT(*) N FROM Ens_Util.Log WHERE %EXACT(ConfigName) = ?", host)
-        if (crs.%SQLCODE >= 0) && crs.%Next() && (crs.%Get("N") = 0) {
+        // A FAILED EXISTENCE CHECK MUST NOT SKIP THE GUARD SILENTLY, which is what one `&&` chain did:
+        // `%SQLCODE < 0` made the whole condition false, execution fell through, and the method
+        // returned a complete set of zero-filled buckets -- the exact payload the paragraph above
+        // exists to prevent, with nothing anywhere saying the check had not run (#156). Every other
+        // query site in this class tests `%SQLCODE < 0` on its own; this was the one that folded it
+        // into a success test.
+        //
+        // `reason` and not `error`, because the trend itself is still perfectly readable -- the caller
+        // just cannot be told whether the host is real. That is §4's distinction between "could not
+        // measure" and "call failed", and `reason` is the field this class already uses for it.
+        //
+        // `'crs.%Next()` is folded in here for `Retention()`'s reason: a `COUNT(*)` returns exactly one
+        // row, so no row at all is a failure wearing a success's SQLCODE.
+        if (crs.%SQLCODE < 0) || 'crs.%Next() {
+            set out.reason = "host existence unverified (SQLCODE " _ crs.%SQLCODE _ ")"
+        } elseif crs.%Get("N") = 0 {
             // NAMES THE TOOL AS THE RUNTIME NAMES IT, which is the METHOD name and not the contract's
             // section title. Measured: `%Discover()` on these classes returns `GetEventLogSummary`,
             // `CompareHostActivity`, `GetRecentErrors` -- PascalCase, no snake_case anywhere -- and
