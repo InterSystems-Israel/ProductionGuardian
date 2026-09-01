@@ -1779,10 +1779,16 @@ map instead of a metric.
 
 #### Truncation is reported, never silent
 
-`#MAXPATHS` is 50. `pathsReturned` is what came back, `pathCount` is the true total, and `truncated`
-says whether they differ. Stated because the opposite choice is an open defect elsewhere in this
-contract (#165): a tool that capped silently and published a count of the *capped* list, leaving a
-consumer unable to tell a small production from a clipped one.
+`#MAXPATHS` is 50. `pathsReturned` is what came back, `pathCount` is the true total **of paths this
+host sits on** — including any the cap withheld — and `truncated` says whether they differ. Stated
+because the opposite choice is an open defect elsewhere in this contract (#165): a tool that capped
+silently and published a count of the *capped* list, leaving a consumer unable to tell a small
+production from a clipped one.
+
+**Both counts are scoped to the host asked about**, never to the production. Spelled out because "the
+true total" alone reads just as naturally as production-wide, and that is the reading the first
+implementation shipped (@Ari-Glikman, #186); LABDEMO cannot catch it, because one path collapses both
+readings to `1`.
 
 #### Two things measured, and one that is not
 
