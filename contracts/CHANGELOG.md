@@ -4,6 +4,60 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — `resolve-api.md`: `audit.tool` is `SetPoolSize`, a preview runs the write tool, and `confirmation` is nullable
+
+**One shape change, and it is the document catching up with five shipped implementations.**
+`confirmation` becomes `object | null` — non-null **iff** `outcome` is `applied`. The `status` value
+`not_applicable` is **removed**; it was never emitted by anything.
+
+Three corrections, all found by diffing this document field by field against a live
+`POST /api/resolve` dry-run and against `Audit.Entry`. The other two divergences that diff turned up
+are **not** in this change — they are open decisions in #202, because in both the document's argument
+is the better one and a shipped UI depends on the current behaviour.
+
+### `audit.tool` — §8
+
+`SetPoolSize`, PascalCase, **on a dry-run as well as an apply**. `%EXACT(Tool)` over the whole audit
+table returns `SetPoolSize` and nothing else for this family; `get_pool_size` has never appeared in it
+and, per `mcp-tools.md` §1, was never a callable name — the same defect #155 corrected in
+`investigation-api.md`, one file over.
+
+**`tool` is not the same string as `action.type`.** `action.type` is this contract's wire enum and is
+correctly `set_pool_size`; `tool` is what the runtime stores. The two looking alike is how this drifted,
+so the field row now says so and repeats the existing rule: render it, never compare it to a literal.
+
+### The dry-run non-mutation guarantee — §2
+
+The paragraph claimed the preview path calls a separate read tool and "never calls `set_pool_size`",
+and called non-invocation "a stronger statement than 'it is invoked with a flag that makes it not
+write'". The shipped path is the second thing: the engine POSTs `{host, size, dryRun}` to the one write
+tool, which is why a preview audits as `SetPoolSize` with `{"dryRun":1,…}`.
+
+**The guarantee held throughout** — `Tools/Resolve.cls` runs every guard and then returns before
+`%Save()`, which is as structural as a second tool. But a safety claim that names the wrong mechanism
+cannot be checked by the person it is written for: they go looking for a read tool and find that the
+privileged one ran. §8 now also warns that counting writes needs `Arguments`, not just `Tool`.
+
+### `confirmation: null` — §3, §7, and three §11 samples
+
+The engine, the dashboard's guard and types, both mocks and two tests have shipped `null` since MVP 2.
+The document was the only holdout, so the document moved — and `null` is the safer of the two forms,
+because `InvestigationPanel.tsx` renders its clearance countdown from `confirmation !== null`, so a
+`not_applicable` object would make a preview promise a clearance that is never coming.
+
+### Why all three were invisible
+
+**`resolve-api.md` is the only MVP 2 contract with no schema and no sample** — no `resolve.schema.json`,
+no `samples/resolve-*.json`, so CI's `contracts — samples vs schema` job cannot see it. Its own preamble
+has promised those artefacts as "a follow-up PR" since Day 1. Meanwhile `resolve.test.ts` asserted
+`audit.tool === 'get_pool_size'` **citing §8's table**, and the two mocks fabricated the same name — so
+the contract, the mock and the test all agreed with each other and none of them agreed with the runtime.
+Committing the schema and a captured sample is tracked in #202 and is the durable half of this fix.
+
+#202.
+
+---
+
 ## 2026-09-01 — `evidence[].tool` is provenance text, and this file stopped teaching a name that was never callable
 
 **No field, type or shape changes.** `investigation-api.md` §3.2's four sample values move from

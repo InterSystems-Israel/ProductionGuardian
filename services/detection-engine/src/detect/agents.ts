@@ -97,7 +97,7 @@ export function mockAgent(): InvestigateDeps['callAgent'] {
           label: `${host} pool size`,
           detail: `${host} PoolSize = ${poolSize ?? 1}`,
           source: 'mcp_tool',
-          tool: 'get_pool_size',
+          tool: 'GetPoolSize',
         },
         {
           label: 'Queue depth',
@@ -111,7 +111,7 @@ export function mockAgent(): InvestigateDeps['callAgent'] {
           label: 'Downstream latency',
           detail: `average processing time ${snapshot['avgProcessingTime'] ?? '~1'}s per message`,
           source: 'mcp_tool',
-          tool: 'get_processing_time',
+          tool: 'GetProcessingTime',
         },
         {
           label: 'Queue slope',
@@ -204,7 +204,10 @@ export function mockResolveTool(initialPoolSize = 1): ResolveDeps['callTool'] {
       auditId: `mock-audit-${auditSeq}`,
       actor: 'mock',
       role: 'Guardian_Resolve',
-      tool: dryRun ? 'get_pool_size' : 'set_pool_size',
+      // The runtime's name, and the SAME on a preview: `liveResolveTool` POSTs `{host, size, dryRun}`
+      // to the one write tool, so a dry-run audits as `SetPoolSize` too (#202, measured). Branching
+      // on `dryRun` here fabricated a `get_pool_size` that was never a callable name.
+      tool: 'SetPoolSize',
       recordedAt: '2026-08-19T00:00:00Z',
       source: 'mock',
     };
@@ -269,19 +272,19 @@ export function mockMissingFolderAgent(): InvestigateDeps['callAgent'] {
           label: 'Host status',
           detail: `${host} is in Error`,
           source: 'mcp_tool',
-          tool: 'get_host_status',
+          tool: 'GetHostStatus',
         },
         {
           label: 'Recent errors',
           detail: '#5021 — a configured directory or file path does not exist',
           source: 'mcp_tool',
-          tool: 'get_recent_errors',
+          tool: 'GetRecentErrors',
         },
         {
           label: 'Configured path',
           detail: `FilePath = ${configuredPath}`,
           source: 'mcp_tool',
-          tool: 'get_host_settings',
+          tool: 'GetHostSettings',
         },
       ],
       confidence: 0.95,
