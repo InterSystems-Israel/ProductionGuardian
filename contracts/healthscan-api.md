@@ -15,7 +15,7 @@ bytes* Dev C mocks against.
 
 Current state of every interoperability host in the monitored production.
 
-```json
+```json validate=healthscan.schema.json#/definitions/HostsResponse
 [
   {
     "host": "Lab Router",
@@ -56,7 +56,7 @@ filtered out. For LABDEMO that means exactly three: EMR Source, Lab Router, Clou
 
 Currently-active findings. One entry per ongoing condition, not per occurrence.
 
-```json
+```json validate=healthscan.schema.json#/definitions/FindingsResponse
 [
   {
     "id": "f-1042",

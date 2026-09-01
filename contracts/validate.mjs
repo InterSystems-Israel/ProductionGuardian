@@ -682,6 +682,83 @@ const CAPTURE_CLAIMS = [
   { name: 'messages_errored carries NO host label (§6.3)', re: /^iris_interop_messages_errored\{id="LABDEMO",production="LABDEMO\.Production"\} 0$/m },
 ];
 
+/**
+ * The `*-api.md` files whose fenced payloads are checked (#205).
+ *
+ * `samples/` was the only thing validated here, and the divergences kept living somewhere else: all
+ * three §8 payloads in `investigation-api.md` were schema-invalid for twelve days (#201), and five
+ * more shipped in `resolve-api.md` (#202). A fenced block in a ratified contract is a published
+ * artefact — a consumer mocks against it exactly as they mock against `samples/` — and until now
+ * nothing could disagree with it.
+ *
+ * This is **all five HTTP API contracts**, including `earlywarning-api.md`, which has no schema at
+ * all — it is listed precisely so its `0 annotated, 3 unannotated` prints on every run instead of
+ * being invisible by omission. `GET /api/earlywarning` is the one MVP 2 endpoint with no
+ * machine-readable shape (#219).
+ *
+ * `mcp-tools.md` is deliberately absent, and not because it lacks a schema — so does earlywarning.
+ * It documents MCP tool returns, a different protocol reached through a different boundary, and its
+ * thirteen sections of unannotated fences would bury the single conspicuous zero this table exists
+ * to show. Its divergences are real and measured (#218 found three in one section); the fix there is
+ * a schema for the tool returns, not a line in this array.
+ */
+const CONTRACT_MD = [
+  'healthscan-api.md',
+  'proxy-api.md',
+  'investigation-api.md',
+  'earlywarning-api.md',
+  'resolve-api.md',
+];
+
+/** Schema filename as written in a fence annotation -> the `$id` ajv knows it by. */
+const SCHEMA_IDS_BY_FILE = {
+  'healthscan.schema.json': SCHEMA_ID,
+  'proxy.schema.json': PROXY_SCHEMA_ID,
+  'investigation.schema.json': INVESTIGATION_SCHEMA_ID,
+  'resolve.schema.json': RESOLVE_SCHEMA_ID,
+};
+
+/**
+ * Pull every ```json fence out of a markdown file, annotated or not.
+ *
+ * The annotation rides in the CommonMark info string, after the language:
+ *
+ *     ```json validate=resolve.schema.json#/definitions/ResolveResponse
+ *
+ * GitHub renders the block as `json` regardless, so nothing about how these files read changes.
+ *
+ * OPT-IN, and the counts below are the price of that. Most fences in these files are deliberately
+ * not whole documents — a bare `"reversal": {...}` fragment, a request body for an endpoint whose
+ * request has no schema, an `{"error": "..."}` shape — and requiring `validate=none` on each would
+ * add noise to five files to catch a mistake in one. The risk is the opposite one: an unannotated
+ * fence is invisible, which is the hole this exists to close. So every file reports its annotated
+ * and unannotated counts, and a file that drops to `0 annotated` says so on every CI run.
+ */
+function jsonFences(file) {
+  const lines = readFileSync(join(here, file), 'utf8').split(/\r?\n/);
+  const fences = [];
+  let i = 0;
+  while (i < lines.length) {
+    const opener = /^```json(?:\s+(.*))?$/.exec(lines[i].trimEnd());
+    if (opener === null) {
+      i += 1;
+      continue;
+    }
+    const bodyStart = i + 1;
+    let j = bodyStart;
+    while (j < lines.length && lines[j].trimEnd() !== '```') j += 1;
+    fences.push({
+      // 1-indexed, and pointing at the opener rather than the body: that is the line a reader
+      // clicks, and the line a `file:line` in CI output has to match.
+      line: i + 1,
+      info: (opener[1] ?? '').trim(),
+      body: lines.slice(bodyStart, j).join('\n'),
+    });
+    i = j + 1;
+  }
+  return fences;
+}
+
 const ajv = new Ajv({ strict: false, allErrors: true });
 addFormats(ajv);
 ajv.addSchema(JSON.parse(readFileSync(join(here, 'healthscan.schema.json'), 'utf8')));
@@ -784,6 +861,59 @@ for (const { name, definition, data } of PROXY_MUST_REJECT) {
   report(!validate(data), `proxy rejects: ${name}`);
 }
 
+// The fenced payloads in the contract prose (#205). Annotated fences are validated; unannotated
+// ones are counted and reported, never silently dropped.
+let fencesChecked = 0;
+const fenceCounts = [];
+for (const file of CONTRACT_MD) {
+  const fences = jsonFences(file);
+  let annotated = 0;
+  for (const { line, info, body } of fences) {
+    const at = `${file}:${line}`;
+    const spec = /(?:^|\s)validate=(\S+)/.exec(info);
+    if (spec === null) continue;
+    annotated += 1;
+    fencesChecked += 1;
+
+    // A malformed annotation FAILS rather than skipping. The whole point is that an unchecked
+    // payload must not be able to look checked, and a typo in the definition name is the cheapest
+    // way for one to.
+    const ref = /^([^#]+)#\/definitions\/(.+)$/.exec(spec[1]);
+    if (ref === null) {
+      report(false, `${at}: annotation is not <schema.json>#/definitions/<Definition>`);
+      continue;
+    }
+    const [, schemaFile, definition] = ref;
+    const schemaId = SCHEMA_IDS_BY_FILE[schemaFile];
+    if (schemaId === undefined) {
+      report(false, `${at}: no such schema file: ${schemaFile}`);
+      continue;
+    }
+    const validate = ajv.getSchema(`${schemaId}#/definitions/${definition}`);
+    if (validate === undefined) {
+      report(false, `${at}: no such definition: ${schemaFile}#/definitions/${definition}`);
+      continue;
+    }
+
+    let data;
+    try {
+      data = JSON.parse(body);
+    } catch (err) {
+      report(false, `${at}: not parseable JSON — ${err.message}`);
+      continue;
+    }
+    const ok = validate(data);
+    report(ok, `${at} validates as ${definition}`);
+    if (!ok) console.log(`      ${ajv.errorsText(validate.errors)}`);
+  }
+  fenceCounts.push({ file, annotated, unannotated: fences.length - annotated });
+}
+console.log('\njson fences in the contract prose (unannotated are NOT validated):');
+for (const { file, annotated, unannotated } of fenceCounts) {
+  console.log(`      ${annotated} annotated, ${unannotated} unannotated  ${file}`);
+}
+console.log('');
+
 const capture = readFileSync(join(here, 'samples/metrics-dump.txt'), 'utf8');
 for (const { name, re } of CAPTURE_CLAIMS) {
   report(re.test(capture), `metrics-dump.txt: ${name}`);
@@ -794,7 +924,7 @@ console.log(
     ? `\nall checks passed (${CASES.length + INVESTIGATION_CASES.length + RESOLVE_CASES.length} samples, `
       + `${MUST_ACCEPT.length + PROXY_MUST_ACCEPT.length + RESOLVE_MUST_ACCEPT.length} accept, `
       + `${MUST_REJECT.length + PROXY_MUST_REJECT.length + INVESTIGATION_MUST_REJECT.length + RESOLVE_MUST_REJECT.length} reject, `
-      + `${CAPTURE_CLAIMS.length} capture claims)`
+      + `${CAPTURE_CLAIMS.length} capture claims, ${fencesChecked} prose fences)`
     : `\n${failures} check(s) failed`,
 );
 process.exit(failures === 0 ? 0 : 1);

@@ -438,7 +438,7 @@ the investigation were measured.
 
 ### 3.2 `evidence[]`
 
-```json
+```json validate=investigation.schema.json#/definitions/EvidenceItem
 {
   "label": "Cloud API pool size",
   "detail": "Cloud API PoolSize = 1",
@@ -501,7 +501,7 @@ padded from the snapshot by either side.
 
 ### 3.3 `recommendedAction` is a structured object, never prose
 
-```json
+```json validate=investigation.schema.json#/definitions/RecommendedAction
 {
   "action": {
     "type": "set_pool_size",
@@ -996,7 +996,7 @@ until #201**, each with the same four errors in `diagnostics`. They are hand-che
 
 `POST /api/investigate` → `200`, `X-Investigation-State: complete`
 
-```json
+```json validate=investigation.schema.json#/definitions/InvestigationResponse
 {
   "requestId": "inv-8a31f0",
   "findingId": "f-1041",
@@ -1085,7 +1085,7 @@ should still exercise them — but do not read this block as something the runni
 
 `200`, `X-Investigation-State: degraded`
 
-```json
+```json validate=investigation.schema.json#/definitions/InvestigationResponse
 {
   "requestId": "inv-8a3204",
   "findingId": "f-1041",
@@ -1145,7 +1145,7 @@ enum.
 
 `200`, `X-Investigation-State: unavailable`
 
-```json
+```json validate=investigation.schema.json#/definitions/InvestigationResponse
 {
   "requestId": "inv-8a3299",
   "findingId": "f-1041",
