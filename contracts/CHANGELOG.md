@@ -4,6 +4,90 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — the JSON payloads *inside* the contract prose are validated now, and the first run found two more divergences
+
+**No shape changes to any schema except one optional field, and that field is a bug report.** `samples/`
+was the only thing `validate.mjs` checked. The divergences kept turning up somewhere else: all three §8
+payloads in `investigation-api.md` were schema-invalid for twelve days (#201), five more shipped in
+`resolve-api.md` (#202). A fenced payload in a ratified contract is a published artefact — a consumer
+mocks against it exactly as they mock against `samples/` — and nothing could disagree with it. #205.
+
+### The convention
+
+The annotation rides in the CommonMark info string, after the language:
+
+````
+```json validate=resolve.schema.json#/definitions/ResolveResponse
+````
+
+GitHub renders the block as `json` regardless, so nothing about how these files read changes. Ten
+payloads across four files are annotated today:
+
+| File | Annotated | Unannotated |
+|---|---|---|
+| `healthscan-api.md` | 2 | 0 |
+| `proxy-api.md` | 3 | 0 |
+| `investigation-api.md` | 5 | 4 |
+| `earlywarning-api.md` | **0** | 3 |
+| `resolve-api.md` | 4 | 11 |
+
+**Opt-in, and the counts are the price of that.** Most fences in these files are deliberately not whole
+documents — a bare `"reversal": {...}` fragment, a request body for an endpoint whose request has no
+schema, an `{"error": "..."}` shape — and requiring `validate=none` on each would add noise to five
+files to catch a mistake in one. But an unannotated fence is invisible, which is the hole this exists to
+close, so every run prints both counts per file and a file that drops to `0 annotated` says so.
+
+`earlywarning-api.md` is that zero, permanently until someone acts: it is the last MVP 2 endpoint with
+no schema, so there is nothing for an annotation to name. Filed as **#219**. It is listed in
+`CONTRACT_MD` rather than omitted precisely so the gap prints.
+
+`mcp-tools.md` is deliberately out, and not for lack of a schema — so does earlywarning. It documents
+MCP tool returns, a different protocol through a different boundary, and thirteen sections of
+unannotated fences would bury the one conspicuous zero the table exists to show. Its divergences are
+real and measured (#218), and the fix there is a schema for the tool returns.
+
+**A malformed annotation fails rather than skips.** An unknown schema file, an unknown definition name,
+a shape that isn't `<schema.json>#/definitions/<Definition>`, or unparseable JSON — all `fail`. The
+whole point is that an unchecked payload must not be able to look checked, and a typo in a definition
+name is the cheapest way for one to.
+
+### It found two divergences on its first real run
+
+All four `ResolveResponse` payloads in `resolve-api.md` failed, on `additionalProperties`, for two
+independent reasons:
+
+- **`replayed`** — §1.3's field table types it as a plain required `boolean`, §6 builds a whole replay
+  contract on it, and §11's R5 cites it as one of three mechanisms answering "what happens if I click
+  Approve twice?". **Nothing emits it.** `resolve.ts` accepts and echoes `requestId` and has no store,
+  no window, and no `replayed`; it does not even require `requestId` on an `apply`, so §7's
+  `malformed_request` row for that does not fire either. So mechanism 3 of three does not exist — the
+  double-click is harmless (mechanisms 1 and 2 are real) but mints a second audit row for one human
+  decision, on the screen the demo ends on. It is now **permitted and not required** in
+  `resolve.schema.json`, with the reasoning on the field: requiring it would fail the shipped path,
+  dropping it would fail the ratified contract. That is an unimplemented feature rather than a shape
+  question, filed as **#220** with the A/B decision stated and deliberately not taken.
+- **`before.readAt` / `after.readAt`** — present in five prose payloads, absent from §1.3's field table,
+  absent from `resolve.ts`, absent from all three captures. **Removed from the prose** as unratified
+  cruft: `PoolShape` is `{poolSize}` and nothing else, in the schema and in the code. Recorded here
+  rather than only in a diff because there is a second reading worth reconsidering deliberately — that
+  `readAt` documents *when* the pool size was read, which is the timestamp an optimistic-concurrency
+  story around `precondition.poolSize` would want. If that is the intent, it comes back as a field
+  table row and a schema property, not as a payload key nobody declared.
+
+Both were invisible for as long as the payloads existed. That is the argument for the whole pass, and
+it is #84's argument applied to a fenced block rather than to a copied number.
+
+### Consumers
+
+None. No schema loosened, no field required, no sample changed. The four `resolve-api.md` payloads a
+consumer might have mocked against are now *closer* to the shipped shape by five keys. The engine and
+the dashboard are unaffected.
+
+`cd contracts && npm run validate` now reports `6 samples, 16 accept, 32 reject, 7 capture claims,
+14 prose fences`.
+
+---
+
 ## 2026-09-01 — `resolve.schema.json` + three captured samples: Smart Resolve is machine-checked for the first time
 
 **No shape changes. This adds the missing artefact, not a new field.** `POST /api/resolve` was the

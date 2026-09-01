@@ -62,7 +62,7 @@ documents what the proxy *does* today, not an intent. Where the code and Dev B's
 The latest metric snapshot. One entry per interoperability host IRIS reported, plus per-production
 scalars and diagnostics.
 
-```json
+```json validate=proxy.schema.json#/definitions/MetricsResponse
 {
   "hosts": [
     {
@@ -253,7 +253,7 @@ reads host state and counts rows. It performs no remediation and changes no prod
 
 `/api/monitor/alerts`, forwarded.
 
-```json
+```json validate=proxy.schema.json#/definitions/AlertsResponse
 {
   "alerts": [
     {
@@ -320,7 +320,7 @@ payload is pinned by one, obtained by accident on a first-ever read. A consumer 
 
 ## 3. `GET /proxy/health`
 
-```json
+```json validate=proxy.schema.json#/definitions/HealthResponse
 {
   "status": "ok",
   "uptime": 3.7539876,

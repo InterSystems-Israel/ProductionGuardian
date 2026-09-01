@@ -133,15 +133,15 @@ the prose-parsing failure with extra steps.
 `200` in every case the request was understood. One shape for all five outcomes, so Dev C
 renders from one type rather than from a status code.
 
-```json
+```json validate=resolve.schema.json#/definitions/ResolveResponse
 {
   "resolveId": "rs-19f3",
   "requestId": "rq-6f2c1e",
   "mode": "apply",
   "outcome": "applied",
   "action": { "type": "set_pool_size", "host": "Cloud API", "size": 4 },
-  "before": { "poolSize": 1, "readAt": "2026-08-18T14:06:41Z" },
-  "after":  { "poolSize": 4, "readAt": "2026-08-18T14:06:43Z" },
+  "before": { "poolSize": 1 },
+  "after":  { "poolSize": 4 },
   "reversal": {
     "host": "Cloud API",
     "size": 1,
@@ -983,14 +983,14 @@ Request:
 
 Response `200`, `X-Resolve-Outcome: previewed`:
 
-```json
+```json validate=resolve.schema.json#/definitions/ResolveResponse
 {
   "resolveId": "rs-19f2",
   "requestId": null,
   "mode": "dry_run",
   "outcome": "previewed",
   "action": { "type": "set_pool_size", "host": "Cloud API", "size": 4 },
-  "before": { "poolSize": 1, "readAt": "2026-08-18T14:06:12Z" },
+  "before": { "poolSize": 1 },
   "after": null,
   "reversal": null,
   "refusal": null,
@@ -1037,8 +1037,8 @@ load-bearing parts:
 ```json
 {
   "outcome": "applied",
-  "before": { "poolSize": 1, "readAt": "2026-08-18T14:06:41Z" },
-  "after":  { "poolSize": 4, "readAt": "2026-08-18T14:06:43Z" },
+  "before": { "poolSize": 1 },
+  "after":  { "poolSize": 4 },
   "reversal": {
     "host": "Cloud API",
     "size": 1,
@@ -1057,7 +1057,7 @@ load-bearing parts:
 Same request as §11.2, from a caller without the write role. Response `200`,
 `X-Resolve-Outcome: refused`:
 
-```json
+```json validate=resolve.schema.json#/definitions/ResolveResponse
 {
   "resolveId": "rs-19f4",
   "requestId": "rq-6f2c1e",
@@ -1109,14 +1109,14 @@ Request (`size: 40`):
 
 Response `200`, `X-Resolve-Outcome: refused`:
 
-```json
+```json validate=resolve.schema.json#/definitions/ResolveResponse
 {
   "resolveId": "rs-19f5",
   "requestId": "rq-6f2c22",
   "mode": "apply",
   "outcome": "refused",
   "action": { "type": "set_pool_size", "host": "Cloud API", "size": 40 },
-  "before": { "poolSize": 1, "readAt": "2026-08-18T14:07:20Z" },
+  "before": { "poolSize": 1 },
   "after": null,
   "reversal": null,
   "refusal": {

@@ -33,9 +33,15 @@ as recording who owns it now. It does mean the engine↔dashboard rows have the 
 sides, which is the seam the root file's mock-first rule addresses directly: nothing forces a
 contract to be real when one author owns both ends of it.
 
-One gap left in that block, noted rather than left to be discovered: **neither `investigation.d.ts`
-nor `resolve.d.ts` exists**, so unlike Health Scan there is no TypeScript transcription for a consumer
-to import — the engine and the dashboard each hand-maintain one for both shapes.
+Two gaps left in that block, noted rather than left to be discovered:
+
+- **neither `investigation.d.ts` nor `resolve.d.ts` exists**, so unlike Health Scan there is no
+  TypeScript transcription for a consumer to import — the engine and the dashboard each hand-maintain
+  one for both shapes
+- **`earlywarning-api.md` has no schema and no sample** (#219). It is the last MVP 2 endpoint in that
+  state, and since #205 the validator prints it as `0 annotated` on every run rather than leaving it to
+  be noticed. The three worked payloads in its §4 are unchecked by anything but reading — which is
+  exactly the position `investigation-api.md` was in for the twelve days of #201
 
 `resolve.schema.json` and the three captures closed the other gap on 2026-09-01 (#202): `POST
 /api/resolve` was the one MVP 2 endpoint nothing validated, which is why five field-level divergences
@@ -109,7 +115,7 @@ the shared fixtures disagree, CI says so — rather than the Day-5 rehearsal.
 cd contracts && npm install && npm run validate
 ```
 
-It checks four things, and the middle two are what make the first mean anything:
+It checks five things, and the middle two are what make the first mean anything:
 
 - each JSON sample against **one named definition** (`HostsResponse`, `FindingsResponse`,
   `InvestigationResponse`, `ResolveResponse`)
@@ -128,6 +134,20 @@ It checks four things, and the middle two are what make the first mean anything:
   **absent** — `iris_interop_queued` and `iris_interop_messages_errored` carry no `host` label, and
   an assertion that something is missing is the only way a future capture silently gaining it gets
   noticed
+- **the JSON payloads fenced inside the `*-api.md` prose** (#205), which used to be the one published
+  artefact nothing could disagree with — and where #201's twelve days of invalid payloads and #202's
+  five divergences both lived. Opt-in via the CommonMark info string, so nothing about how the files
+  read changes:
+
+  ````
+  ```json validate=resolve.schema.json#/definitions/ResolveResponse
+  ````
+
+  Opt-in because most fences here are deliberately *not* whole documents — request bodies, bare
+  fragments, error shapes. The compensating rule: every run prints each file's annotated **and**
+  unannotated counts, a malformed annotation **fails** rather than skips, and a file that drops to
+  `0 annotated` says so on every CI run. `earlywarning-api.md` is at `0` today because it has no
+  schema (#219); that is the gap being visible rather than absent
 
 **Do not replace this with an `ajv-cli` one-liner.** Three reasons, all learned the hard way on
 PR #3:
