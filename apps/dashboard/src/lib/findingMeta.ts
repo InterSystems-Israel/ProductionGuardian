@@ -171,3 +171,37 @@ const ABSOLUTE_TYPES: ReadonlySet<string> = new Set<FindingType>([
 export function comparesToBaseline(type: string): boolean {
   return !ABSOLUTE_TYPES.has(type);
 }
+
+/**
+ * Whether an investigation exists for a finding type, and if not, which of the two reasons applies.
+ *
+ * `investigation-api.md` §2.4 tells the consumer not to offer Investigate outside this set, and says
+ * in the same breath that the engine's own check "is the backstop, not the UI's contract" — so this
+ * list is a deliberate duplicate of `INVESTIGABLE_TYPES` in the engine rather than a single source of
+ * truth. Both exist because a hidden button is not a boundary and a served refusal is not a UI.
+ *
+ * THE TWO REASONS ARE KEPT APART because they are different facts about the product, and an operator
+ * acting on them would do different things. `never_forwarded` is a data rule: a `system_alert`'s
+ * message is text IRIS wrote and can name the message an alert was about, so it does not leave the
+ * instance (root `CLAUDE.md` §2.1). `no_scenario` is a coverage gap: nothing is unsafe, there is
+ * simply no investigation built for it yet. Collapsing them into "cannot investigate" would let a
+ * privacy boundary read as an unfinished feature.
+ *
+ * KEYED ON TYPE, NOT ON `(type, host)` as §2.4 words it. Two scenarios ship — queue buildup on a
+ * throughput-bound operation, and a host that has stopped processing — and a host name here would be
+ * this directory tracking `Production.cls`'s config, which §9 forbids outright (#25).
+ *
+ * An unrecognized type gets `no_scenario`, which matches what the engine would answer: its check is
+ * an allowlist, so a type neither side knows is refused by both.
+ */
+export type InvestigationScope = 'investigable' | 'never_forwarded' | 'no_scenario';
+
+const INVESTIGABLE_TYPES: ReadonlySet<string> = new Set<FindingType>([
+  'queue_buildup',
+  'dead_host',
+]);
+
+export function investigationScope(type: string): InvestigationScope {
+  if (type === 'system_alert') return 'never_forwarded';
+  return INVESTIGABLE_TYPES.has(type) ? 'investigable' : 'no_scenario';
+}

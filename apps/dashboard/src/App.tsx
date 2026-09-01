@@ -568,6 +568,7 @@ export function App(): JSX.Element {
         investigation={
           selected === null ? null : (
             <InvestigationPanel
+              findingType={selected.type}
               investigation={detective.investigation}
               investigating={detective.investigating}
               error={detective.error}

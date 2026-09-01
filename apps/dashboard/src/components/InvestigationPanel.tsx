@@ -33,8 +33,11 @@
 
 import type { InvestigationView, ResolveActionView, ResolveMode, ResolveView } from '../types/mvp2';
 import { ABSENT } from '../lib/format';
+import { findingMeta, investigationScope } from '../lib/findingMeta';
 
 export interface InvestigationPanelProps {
+  /** The finding's type, for the §2.4 scope check. Only the type is needed, so only it is passed. */
+  findingType: string;
   investigation: InvestigationView | null;
   investigating: boolean;
   error: string | null;
@@ -74,6 +77,7 @@ function confidenceText(confidence: number | null): string {
 }
 
 export function InvestigationPanel({
+  findingType,
   investigation,
   investigating,
   error,
@@ -87,6 +91,39 @@ export function InvestigationPanel({
   const manual = investigation?.manualRemediation ?? null;
   const canned = investigation?.source === 'canned';
   const unavailable = investigation !== null && investigation.rootCause === null;
+  const scope = investigationScope(findingType);
+
+  /*
+   * OUT OF SCOPE RETURNS EARLY rather than wrapping the button in a condition, so `onInvestigate` is
+   * unreachable from this branch at all. Same argument as `manualRemediation` renders from its own
+   * branch below: a control that must not exist should be absent by construction, not disabled by an
+   * `if` somebody can invert later. §2.4 asks the UI not to offer the button; the engine refuses
+   * independently, which is what makes this a UI concern rather than the boundary itself.
+   */
+  if (scope !== 'investigable') {
+    return (
+      <section className="pg-investigate" aria-label="AI Detective and Smart Resolve">
+        <h3 className="pg-investigate__heading">Why is this happening?</h3>
+        <p className="pg-investigate__intro">
+          {scope === 'never_forwarded' ? (
+            <>
+              <strong>System alerts are not investigated.</strong> The text of an alert is written by
+              IRIS and can name the message it was about, so it never leaves the instance — only
+              metrics and configuration do. The alert itself is above, verbatim.
+            </>
+          ) : (
+            <>
+              <strong>
+                No investigation exists for {findingMeta(findingType).label.toLowerCase()} findings
+              </strong>{' '}
+              yet. The AI Detective covers queue buildup on a throughput-bound host and a host that
+              has stopped processing. Nothing is being withheld — this one has not been built.
+            </>
+          )}
+        </p>
+      </section>
+    );
+  }
 
   return (
     <section className="pg-investigate" aria-label="AI Detective and Smart Resolve">

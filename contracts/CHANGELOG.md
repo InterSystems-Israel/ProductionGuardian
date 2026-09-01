@@ -4,6 +4,64 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — `investigation-api.md` §2.4: the scope gate now exists, keyed on type, and refuses `system_alert` separately
+
+**A behaviour change, not a wording one, and it closes the hole the entry below filed as #206.**
+`POST /api/investigate` previously accepted **any** finding on **any** host — including a
+`system_alert`, whose `message` is text IRIS wrote into `alerts.log` and which an alert about a failed
+send can use to name the message it failed to send. That string was forwarded verbatim to an external
+LLM. Root `CLAUDE.md` §2.1 makes that a rule rather than a preference: metrics and configuration leave
+the instance, never message content.
+
+### What changed on the wire
+
+| | Accepted |
+|---|---|
+| §2.4, until today | `type === 'queue_buildup'` **and** `host === 'Cloud API'` — asserted in three places in prose, enforced in none |
+| §2.4, now | `type` is `queue_buildup` **or** `dead_host`. No host check. `system_alert` refused by a separate rule checked first |
+
+Everything else is `200` + `state: "unavailable"` + `source: "none"` with a `note`, which is what §5
+already specified for this case. **No consumer of a valid request sees a different response**, and
+nothing in `investigation.schema.json` changes — an out-of-scope refusal is the `unavailable` shape
+that was already schema-valid.
+
+### Two lists, not one, and the order is the point
+
+The boundary refusal (`NEVER_FORWARDED`) is **not derived from** the scope allowlist
+(`INVESTIGABLE_TYPES`) and is checked before it. Until now §2.3's alert-text rule was *implied* by
+§2.4's single accepted shape, so widening scope for a second scenario would have reopened it silently —
+which is exactly how a gate asserted in three paragraphs came to be enforced nowhere. Widening scope
+now cannot widen the boundary. `test/investigationScope.test.ts` pins the two sets as disjoint, and
+every test there asserts **`callAgent` was not called**, because the absence of the outbound call is
+the property that matters rather than the shape of the reply.
+
+### The fix #206 proposed would have broken a shipped scenario
+
+That issue proposed rejecting anything but `(queue_buildup, Cloud API)`. **MVP 3 shipped a second
+scenario** — `dead_host` on a service polling a directory that does not exist
+(`docs/production-guardian-mvp3.md` §2.1/§2.3, with `Triggers.MissingFolder()`, `get_host_settings`
+and `manualRemediation` all built for it) — and §2.4 was never amended when it landed. Enforcing the
+contract as literally written would have refused a scenario the product demonstrates. Two lessons, both
+already in this file's history: a scope table is a contract surface and drifts like any other, and the
+right response to "the code does not match the contract" is to check which one is wrong.
+
+**The host half of the pair is dropped rather than extended.** The concern is the provenance of
+`finding.message`, which is a property of the *type*; the agent's read tools are host-agnostic; and a
+host name compiled into the engine or the panel is either of them tracking `Production.cls`'s config,
+which `apps/dashboard/CLAUDE.md` §9 forbids outright (#25). `mockClient.investigate` already keys its
+own branch on type for that reason (#84).
+
+### Consumers
+
+The panel hides Investigate for the six refused types and **distinguishes the two reasons in its
+copy** — `system_alert` is a data rule, the other five are an unbuilt feature, and collapsing them into
+"cannot investigate" would let a privacy boundary read as a missing feature. That duplicate type list
+in `apps/dashboard/src/lib/findingMeta.ts` is deliberate: §2.4 says the engine's check is the backstop,
+not the UI's contract, because a hidden button is not a boundary.
+
+§4.1 gains the two new `note` shapes; §5 replaces its "no check exists" row with the two refusals; Q3
+no longer promises a host filter or the retired `out_of_scope` failure reason.
+
 ## 2026-09-01 — `investigation-api.md`: `diagnostics` documented a block no build has ever sent
 
 **No wire change.** Every field named here already ships and is already in
@@ -78,6 +136,8 @@ names the issue rather than quietly asserting either side:
 - **§2.4's scope gate does not exist** — no type or host check anywhere, so a `system_alert` finding,
   whose `message` is text IRIS wrote into `alerts.log`, can be forwarded to the external LLM. §2.3
   names that as the hole §2.4 closes, and it does not. **#206**, and the most serious of the three.
+  *Fixed the same day — see the entry above. Left as written because this entry records what that PR
+  found, and the fix turned out not to be the one the issue proposed.*
 - **§4.3's fallback chain has no cache and `canned` is a boot mode, not a fallback**, so nothing ever
   produces `state: "degraded"` and §8.2 is schema-valid but unreachable. **#207**
 - **A cleared `findingId` is a `400`**, not the `200` + `state: "unavailable"` §5 argues for at

@@ -134,6 +134,46 @@ const TIMEOUT_MS = 30_000;
 /** §3.3. Must match resolve-api.md §3 exactly — an out-of-bounds recommendation is unusable. */
 const BOUNDS = { min: 2, max: 8 } as const;
 
+/**
+ * §2.3's data boundary, as a refusal rather than as a comment about one.
+ *
+ * A `system_alert` finding's `message` is the ONLY finding message this engine does not author: it is
+ * copied out of `alerts.log`, which IRIS wrote, and an alert about a failed send can name the message
+ * it failed to send. There is no reliable way to sanitise arbitrary alert prose, so it is not sent.
+ * Root `CLAUDE.md` §2.1 is the rule this enforces — metrics and configuration leave the instance,
+ * never message content.
+ *
+ * SEPARATE FROM `INVESTIGABLE_TYPES` AND CHECKED FIRST, deliberately. Until now the boundary was
+ * *implied* by §2.4's one accepted shape, so widening the accepted set would have reopened it
+ * silently — which is how the gate came to be asserted in three places in prose and none in code
+ * (#206). A refusal that is not derived from the scope list cannot be widened by widening scope.
+ * `test/investigationScope.test.ts` pins the two lists as disjoint.
+ */
+export const NEVER_FORWARDED: ReadonlySet<Finding['type']> = new Set(['system_alert']);
+
+/**
+ * §2.4. The finding types an investigation exists for.
+ *
+ * TWO SCENARIOS, NOT ONE, because two shipped: `queue_buildup` on a throughput-bound operation is
+ * MVP 2's, and `dead_host` is MVP 3's missing-folder service (spec §2.3 — `Error` is already in
+ * `DEAD_STATUSES`, so that scenario needed no new rule). §2.4 still named only the first, which is
+ * the second thing #206 found: enforcing the contract as literally written would have refused a
+ * shipped, specified scenario.
+ *
+ * KEYED ON TYPE, NOT ON `(type, host)` AS §2.4 SPECIFIES. The host half was in that section because
+ * MVP 2 had exactly one host, and it buys nothing now: the boundary concern is the provenance of
+ * `finding.message`, which is a property of the *type*, and the agent's read tools are host-agnostic.
+ * A host name here would also be this service tracking `Production.cls`'s config — the same argument
+ * `mockClient.investigate` already makes for keying its own branch on type (#84).
+ *
+ * The five remaining types are refused because no investigation exists for them, not because they are
+ * unsafe. An endpoint that accepts all eight implies eight investigations exist.
+ */
+export const INVESTIGABLE_TYPES: ReadonlySet<Finding['type']> = new Set([
+  'queue_buildup',
+  'dead_host',
+]);
+
 function isoSeconds(ms: number): string {
   return `${new Date(Math.round(ms / 1000) * 1000).toISOString().slice(0, 19)}Z`;
 }
@@ -522,6 +562,37 @@ export async function investigate(
   // Deterministic and correlatable: this id appears in the AI Hub audit entries for the tool calls
   // this investigation makes, which is how a reviewer ties an action back to the reasoning.
   const requestId = `inv-${finding.id}-${started}`;
+
+  /*
+   * THE §2.4 GATE, before anything is built and long before anything leaves the process.
+   *
+   * Placed here rather than in `index.ts` so it holds for every caller: the endpoint, a test, and any
+   * future wiring. The panel hides its Investigate button for these types too, but a hidden button is
+   * not a boundary — §2.4 says as much ("the check here is the backstop, not the UI's contract").
+   *
+   * `200` + `unavailable` rather than `400`, per §5's own line: a state is a state, and only a
+   * malformed request is an error. The caller asked a legitimate question and the answer is no.
+   */
+  if (NEVER_FORWARDED.has(finding.type)) {
+    deps.log?.(`investigation ${requestId} refused: ${finding.type} is outside the data boundary`);
+    return unavailable(
+      requestId,
+      finding.id,
+      started,
+      // Names the reason without quoting the finding: the message is the thing that must not travel,
+      // and a note is rendered in a browser.
+      `${finding.type} findings are not investigated: the alert text is IRIS's, not ours to forward`,
+    );
+  }
+  if (!INVESTIGABLE_TYPES.has(finding.type)) {
+    deps.log?.(`investigation ${requestId} refused: no investigation exists for ${finding.type}`);
+    return unavailable(
+      requestId,
+      finding.id,
+      started,
+      `no investigation exists for ${finding.type} findings`,
+    );
+  }
 
   // Built first and passed in: `snapshot.inboundRatePerSec` is derived from `trend.recentSlope`, and reading
   // it off the trend the agent actually receives is what keeps the two from ever disagreeing (#188).
