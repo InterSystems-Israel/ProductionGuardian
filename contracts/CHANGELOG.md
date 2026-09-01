@@ -4,6 +4,57 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — `mcp-tools.md` §3.13: `get_active_findings` capped at 25 in silence — `total` and `truncated`
+
+**Two fields added to `get_active_findings`, and one field added to the request that feeds it.**
+`total` (integer | null) is how many findings **exist**; `truncated` (boolean | null) says whether it
+differs from `count`. On the request the engine now also sends `findingsTotal`. Nothing is removed and
+no existing field changes meaning, so a consumer reading only `count` still reads what it read before —
+it just no longer has to assume that number is the answer.
+
+### What was wrong
+
+`count` was the size of the list **after** the cap, and three separate caps of 25 could clip it: the
+engine's slice, the stash on receipt, and the tool's own. A clipped payload was byte-identical to a
+complete one, so the model stated `count` as the number of open findings. §3.13 mentioned no cap at all
+— a consumer implementing from this contract could not know findings were droppable.
+
+The section already goes to real trouble over `count: 0` meaning four different things. This was the
+same failure pointing the other way and **more** likely to fire, because findings multiply exactly when
+a production is in trouble, which is when someone asks how many there are (@tanifgit, #165).
+
+### The shape follows §3.14 rather than inventing one
+
+`get_interface_path` already solved this for itself — `pathsReturned` / `pathCount` / `truncated` — and
+its own section named #165 as the open defect that made it state the rule. So this is that rule applied,
+including the part #186 had to learn the hard way: **`total` is scoped to the same filter as `count`**,
+never to the production, because "3 of 31 shown" about a host with three findings is a worse answer than
+no total at all.
+
+That scoping makes one case genuinely unknowable, and it is reported as `null` rather than guessed: a
+filtered call against an already-clipped list cannot know how many of the withheld findings were on that
+host. `truncated` still answers `true` there — that some were dropped is known even when how many of
+yours is not — and the `note` refuses the all-clear rather than saying "no open findings on `Cloud API`".
+`truncated` is tested **before** `count: 0` for that reason, which the section now states.
+
+All three fields are `null`, never `false` or `0`, on any payload where no snapshot was read. §2.1's
+rule, applied to a boolean and to a count instead of to a metric.
+
+### Why the cap's justification is also gone
+
+The same sentence appeared in all three cap comments: eight finding types across three hosts is 24, one
+under 25, so the cap could not clip a real production. Findings are keyed `(host, type)`, so the ceiling
+is `hosts × 8` — a **host count** compiled into a justification, which #25 and #34 forbid, and wrong at
+four hosts. #165 filed it as the same defect for the same reason it filed the silence: the 25 is two
+independent literals across the language boundary, so raising one silently drops findings at the other.
+That is now observable instead of invisible.
+
+Pinned by `Test.FindingsTruncation` (`iris/test/`, hand-run, 27 assertions), which was checked against
+two mutations rather than assumed to catch them — including one that shows #165's own reading of the
+filter/cap order was not quite what the code does. The class comment records the difference.
+
+---
+
 ## 2026-09-01 — `resolve-api.md`: `audit.tool` is `SetPoolSize`, a preview runs the write tool, and `confirmation` is nullable
 
 **One shape change, and it is the document catching up with five shipped implementations.**

@@ -312,10 +312,11 @@ describe('chat', () => {
     assert.equal(seen['findingsState'], 'stale');
   });
 
-  it('caps the findings it sends', async () => {
-    // The cap is the FIRST of two, the second being `Tools.Findings.#MAXFINDINGS`. Eight types
-    // across three hosts is 24 at the ceiling, so this cannot clip a real production -- it bounds a
-    // malformed snapshot, not a busy one.
+  it('caps the findings it sends, and declares the true length it capped', async () => {
+    // The cap is the FIRST of two, the second being `Tools.Findings.#MAXFINDINGS`. This used to
+    // assert only the slice, with a comment saying 24 was the ceiling so it could not clip a real
+    // production -- a host count in a justification (#165, and #25's shape). `findingsTotal` is the
+    // half that matters: without it the far side cannot tell 25 of 40 from a complete 25.
     const seen = await outbound({
       findings: () => ({
         findings: Array.from({ length: 40 }, (_, i) => finding({ id: `f-${i}` })) as never,
@@ -324,6 +325,21 @@ describe('chat', () => {
       }),
     });
     assert.equal((seen['findings'] as unknown[]).length, 25);
+    assert.equal(seen['findingsTotal'], 40);
+  });
+
+  it('sends findingsTotal equal to the array when nothing was clipped', async () => {
+    const seen = await outbound({
+      findings: () => ({ findings: [finding()] as never, lastPollAt: 1, state: 'ok' }),
+    });
+    assert.equal(seen['findingsTotal'], 1);
+  });
+
+  it('sends a null total rather than zero when no supplier is wired', async () => {
+    // Same argument as `findingsState: 'warming'` two tests up: zero findings measured and no
+    // measurement taken are different claims, and the tool must not report the second as the first.
+    const seen = await outbound();
+    assert.equal(seen['findingsTotal'], null);
   });
 
   it('ignores findings a caller puts in the request body', async () => {

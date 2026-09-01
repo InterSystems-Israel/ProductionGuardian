@@ -1643,8 +1643,13 @@ was compared against.
 
 **Input**: `host` (optional — omit for the whole production).
 
-**Output**: `host`, `supplied`, `count`, `findings[]`, `asOf`, `state`, `sanitised`, and `note` or
-`reason` where they apply.
+**Output**: `host`, `supplied`, `count`, `total`, `truncated`, `findings[]`, `asOf`, `state`,
+`sanitised`, and `note` or `reason` where they apply.
+
+`count` is how many findings came back. `total` is how many **exist** — see the cap section below —
+and `truncated` says whether they differ. All three are `null` on any payload where no snapshot was
+read (`supplied: false`, or an unparseable one): `truncated: false` there would assert that a list
+nobody read is complete, which §2.1 forbids for a boolean exactly as it forbids `0` for a metric.
 
 `findings[]`: the eight `healthscan.d.ts` `Finding` keys — `id`, `host`, `type`, `severity`,
 `currentValue`, `baselineValue`, `detectedAt`, `message`. **Allowlisted and copied key by key**, so a
@@ -1661,8 +1666,9 @@ dashboard showing it in red two panels away.
 #### The findings are SUPPLIED WITH THE REQUEST, not queried
 
 Findings are computed by the detection engine on `:3002`, outside this instance. The engine sends them
-in the body of its `POST /labdemo/chat/ask` (`findings`, `findingsAsOf`, `findingsState`);
-`REST.ChatDispatcher` stashes them in a process-private global on entry and this tool republishes them.
+in the body of its `POST /labdemo/chat/ask` (`findings`, `findingsAsOf`, `findingsState`,
+`findingsTotal`); `REST.ChatDispatcher` stashes them in a process-private global on entry and this tool
+republishes them.
 
 Chosen over an IRIS→engine callback because the engine already holds the snapshot in the process making
 the request, and a callback needs an engine URL inside the IRIS container — the class of configuration
@@ -1695,10 +1701,42 @@ ambiguous between the four rows above, and the reassuring reading is available w
 doing anything wrong — which is the same failure as `supplied: false` wearing the shape of a successful
 answer. §2.1 governs: an unmeasurable value is not a small one, and here the "value" is a list.
 
+#### The list is capped at 25, and the cap is reported — `truncated`, with `total` scoped to the filter
+
+**Three caps, none of them silent.** The engine slices to `MAX_FINDINGS` before sending (keeps the
+request small), `ChatDispatcher.StashFindings` caps on receipt (bounds the global), and this tool caps
+what it republishes (bounds the model's context). All three are 25. Each is defensible and until #165
+all three were mute: `count` was the post-cap size, so a clipped payload was byte-identical to a
+complete one and a model reading it stated 25 as the number of open findings. Findings multiply exactly
+when a production is in trouble, which is when that question gets asked.
+
+`findingsTotal` on the request is what makes the difference knowable. It is the array's length **before
+the engine's own slice** — the last point at which the true number exists — and the stash keeps it
+beside the array. Absent (an older engine build, a hand-rolled POST), the stash falls back to the length
+that arrived, and a declared total *below* what arrived is rejected rather than believed.
+
+**`total` is scoped to the same filter as `count`**, which is §3.14's rule for `pathCount` and for the
+reason #186 gives there: a total describing the production while the list describes one host reads as
+"3 of 31 shown" about a host with three findings. That scoping is why one case is genuinely unknowable:
+
+| Call | `total` | `truncated` |
+|---|---|---|
+| unfiltered | exact — the engine's pre-slice length, so `count < total` catches a clip at **either** stage | `count < total` |
+| `host` given, nothing dropped upstream | exact — every finding that exists was available to filter | `count < total` |
+| `host` given, list already clipped | **`null`** — the withheld findings were dropped before any host was applied, so how many were on *this* host cannot be known here | **`true`** — that some were dropped is known even when how many of yours is not |
+
+The third row is the one that changes an answer. `count: 0` on it means "none on this host **among the
+ones I can see**", so `note` says so and does **not** say "no open findings on `Cloud API`" — the
+`truncated` branch is tested before the `count: 0` branch for exactly that reason. Read it as a fifth
+row of the table above: a clipped filtered list is a fourth way an empty list is not an all-clear.
+
+`Test.FindingsTruncation` in `iris/test/` pins all of it, including that the `host` filter is applied
+**before** the cap. Hand-run; `iris/CLAUDE.md` says why `iris/test/` is not compiled at boot.
+
 ```jsonc
 // <- host "Cloud API"
 {
-  "host": "Cloud API", "supplied": true, "count": 1,
+  "host": "Cloud API", "supplied": true, "count": 1, "total": 1, "truncated": false,
   "findings": [
     { "id": "cloud-api-queue-buildup", "host": "Cloud API", "type": "queue_buildup",
       "severity": "critical", "currentValue": 486, "baselineValue": 0,
@@ -1706,6 +1744,16 @@ answer. §2.1 governs: an unmeasurable value is not a small one, and here the "v
       "message": "Queue depth 486 is 32x baseline" }
   ],
   "asOf": "2026-08-30T09:39:50Z", "state": "ok", "sanitised": true
+}
+```
+
+```jsonc
+// <- no host, on a production with more open findings than the cap
+{
+  "host": null, "supplied": true, "count": 25, "total": 31, "truncated": true,
+  "findings": [ /* 25 of them */ ],
+  "asOf": "2026-08-30T09:39:50Z", "state": "ok", "sanitised": true,
+  "note": "this list is INCOMPLETE: 25 of 31 open findings on this production are shown, and the rest were dropped by a size cap before this tool could read them -- state 31 as the number of open findings and say that only 25 of them are described here"
 }
 ```
 
@@ -1804,9 +1852,11 @@ map instead of a metric.
 
 `#MAXPATHS` is 50. `pathsReturned` is what came back, `pathCount` is the true total **of paths this
 host sits on** — including any the cap withheld — and `truncated` says whether they differ. Stated
-because the opposite choice is an open defect elsewhere in this contract (#165): a tool that capped
+because the opposite choice **was** a defect elsewhere in this contract (#165): a tool that capped
 silently and published a count of the *capped* list, leaving a consumer unable to tell a small
-production from a clipped one.
+production from a clipped one. §3.13 now follows this section — `total` and `truncated`, with `total`
+scoped to the filter for the reason two paragraphs down. Kept in the past tense rather than deleted,
+because this rule is the reason that one was fixed to this shape instead of a new one.
 
 **Both counts are scoped to the host asked about**, never to the production. Spelled out because "the
 true total" alone reads just as naturally as production-wide, and that is the reading the first
