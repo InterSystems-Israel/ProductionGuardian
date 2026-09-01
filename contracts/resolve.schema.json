@@ -1,0 +1,156 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://production-guardian/contracts/resolve.schema.json",
+  "title": "Production Guardian — Smart Resolve response (MVP 2)",
+  "description": "The response half of `POST /api/resolve`, which had no machine-readable form until #202. The request half is already covered: `investigation.schema.json#/definitions/ResolveAction` is the `action` object and `validate.mjs` carries must-reject cases for it. Every divergence #202 found was invisible because nothing here could disagree with the prose — the only tests over this path pin the implementation while citing '§3 + §7' as their authority. Two of those divergences are open decisions (§4 `after` on a preview, §5 `confirmation.directEvidence` and `clearsWhen`); this schema is deliberately PERMISSIVE at exactly those two points and says so on the fields, so it holds the decided shape without quietly settling the undecided one.",
+  "definitions": {
+    "PoolShape": {
+      "description": "`before` and `after` are the same one-key object. Its own definition rather than two copies, because the pair is read side by side and a schema that let them diverge would be describing a UI bug as legal.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["poolSize"],
+      "properties": {
+        "poolSize": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "Reversal": {
+      "description": "The undo target, and §4.1 is explicit that it is a RECORD of what was read rather than a request anybody sends (#114). `capturedFrom` names where the value came from — `live` on the shipped path — which is what distinguishes a measured undo target from an inherited one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "size", "capturedFrom"],
+      "properties": {
+        "host": { "type": "string", "minLength": 1 },
+        "size": { "type": "integer", "minimum": 1 },
+        "capturedFrom": { "type": "string", "minLength": 1 }
+      }
+    },
+    "Refusal": {
+      "description": "A policy refusal, which is a normal 200 response and not an error. `reason` is a CLOSED set in the prose and is deliberately NOT an enum here, for the reason `resolve.ts` gives for typing it as a string: an unrecognised reason must reach the UI to be rendered verbatim rather than be dropped by a narrow union. Enforcing the closed set here would turn a new refusal code into a schema failure on the one path §5 asks consumers to render blindly.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "message", "checkedBy"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "checkedBy": { "type": "string", "minLength": 1 },
+        "bounds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "type": "integer" },
+            "max": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "Failure": {
+      "description": "`liveStateVerified` is the field that matters: a failed write whose live state was NOT verified leaves the operator unable to say whether the change landed, and §5.2 makes that a different disposition from a clean failure.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "message", "liveStateVerified"],
+      "properties": {
+        "stage": { "type": "string", "minLength": 1 },
+        "message": { "type": "string" },
+        "liveStateVerified": { "type": "boolean" }
+      }
+    },
+    "Confirmation": {
+      "description": "Present ONLY on `applied` — the top-level `if/then` enforces that, and it is a safety property rather than tidiness: `InvestigationPanel.tsx` renders its 'will clear within N seconds' line from `confirmation !== null && !directEvidence`, so a confirmation object on a preview makes a dry run promise a clearance. §3's original 'always present, `status: \"not_applicable\"` for everything except applied' rule was the defect (#202); five implementations and two tests already agreed on `null`.\n\nDELIBERATELY PERMISSIVE ON `directEvidence` AND `observeVia`, and on `clearsWhen` being absent — that is #202 §5, an open decision. The prose describes `directEvidence` as a string naming the measurement (`hosts[host=\"Cloud API\"].queued falling`) and `observeVia` as an array; the engine emits a boolean and one string. Both readings validate here on purpose. TIGHTEN THIS ONCE §5 IS DECIDED — a schema that had picked a side would have settled the question by accident.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "findingId", "observeVia", "expectedWithinSeconds", "directEvidence"],
+      "properties": {
+        "status": { "type": "string", "minLength": 1 },
+        "findingId": { "type": ["string", "null"] },
+        "observeVia": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+          ]
+        },
+        "expectedWithinSeconds": { "type": "number", "minimum": 0 },
+        "directEvidence": { "type": ["boolean", "string"] },
+        "clearsWhen": { "type": "string", "minLength": 1 }
+      }
+    },
+    "Audit": {
+      "description": "PRESENT ON EVERY RESPONSE — applies, refusals and previews alike — which is why it is in `required` above and why the whole object is nullable rather than optional. `null` means the record could not be written, and that is a meaningful state: §8's opening line is that the contract does not permit an unattributed write. The field was dropped by the engine for a fortnight while every response still claimed §8 compliance, so 'the key is absent' is the exact defect this entry exists to fail on.\n\n`tool` is the RUNTIME METHOD NAME (`SetPoolSize`), on an apply and on a preview alike, and is not the same string as `action.type` (#202 §1). Typed as a plain string and never pinned to a literal, because §8's field table tells consumers to render it and never compare it — a schema pinning the value would be that comparison, moved.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["auditId", "actor", "role", "requestedBy", "tool", "recordedAt", "source"],
+      "properties": {
+        "auditId": { "type": ["string", "null"] },
+        "actor": { "type": ["string", "null"] },
+        "role": { "type": ["string", "null"] },
+        "requestedBy": { "type": ["string", "null"] },
+        "tool": { "type": ["string", "null"] },
+        "recordedAt": { "type": ["string", "null"] },
+        "source": { "type": ["string", "null"] }
+      }
+    },
+    "ResolveResponse": {
+      "description": "`additionalProperties: false` is the point of this file. Every #202 divergence was a field whose documented shape and shipped shape differed with nothing in between them; a permissive root would accept the next one too.\n\nTimestamps use `healthscan.schema.json`'s pattern rather than `format: date-time`, for the reason stated there: `toISOString()` output and second-precision Z-suffixed output are both legal here and `format` would accept offsets the rest of the contract forbids.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resolveId",
+        "requestId",
+        "mode",
+        "requestedAt",
+        "outcome",
+        "action",
+        "before",
+        "after",
+        "reversal",
+        "refusal",
+        "failure",
+        "confirmation",
+        "audit",
+        "completedAt"
+      ],
+      "properties": {
+        "resolveId": { "type": "string", "minLength": 1 },
+        "requestId": { "type": ["string", "null"] },
+        "mode": { "enum": ["dry_run", "apply"] },
+        "requestedAt": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
+        },
+        "outcome": { "enum": ["previewed", "applied", "no_change", "refused", "failed"] },
+        "action": {
+          "oneOf": [
+            { "$ref": "https://production-guardian/contracts/investigation.schema.json#/definitions/ResolveAction" },
+            { "type": "null" }
+          ]
+        },
+        "before": { "oneOf": [{ "$ref": "#/definitions/PoolShape" }, { "type": "null" }] },
+        "after": {
+          "description": "NULLABLE ON PURPOSE AND ON BOTH SIDES OF AN OPEN DECISION (#202 §4). The prose argues `after` must be `null` on a preview because a predicted number in a field named `after` is a forecast presented as a measurement (#58's defect class); the shipped path returns `{\"poolSize\": 4}` and the dashboard labels it '(would be)' at the only place a human reads it. Both validate until that is decided.",
+          "oneOf": [{ "$ref": "#/definitions/PoolShape" }, { "type": "null" }]
+        },
+        "reversal": { "oneOf": [{ "$ref": "#/definitions/Reversal" }, { "type": "null" }] },
+        "refusal": { "oneOf": [{ "$ref": "#/definitions/Refusal" }, { "type": "null" }] },
+        "failure": { "oneOf": [{ "$ref": "#/definitions/Failure" }, { "type": "null" }] },
+        "confirmation": { "oneOf": [{ "$ref": "#/definitions/Confirmation" }, { "type": "null" }] },
+        "audit": { "oneOf": [{ "$ref": "#/definitions/Audit" }, { "type": "null" }] },
+        "completedAt": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
+        }
+      },
+      "allOf": [
+        {
+          "description": "A confirmation exists only for a change that happened. See the Confirmation description — a UI reads its presence as 'this will clear', so a preview carrying one promises a clearance nothing was applied to produce.",
+          "if": { "properties": { "outcome": { "not": { "const": "applied" } } }, "required": ["outcome"] },
+          "then": { "properties": { "confirmation": { "type": "null" } } }
+        },
+        {
+          "description": "A preview cannot report a write. `Tools/Resolve.cls` returns before the write when `dryRun` is set, so this holds structurally rather than by promise — and stating it here is what makes 'the dry run applied something' a schema failure instead of a reading of the audit log.",
+          "if": { "properties": { "mode": { "const": "dry_run" } }, "required": ["mode"] },
+          "then": { "properties": { "outcome": { "not": { "const": "applied" } } } }
+        }
+      ]
+    }
+  }
+}

@@ -28,18 +28,30 @@ ourselves — the write happens in IRIS behind RBAC, and this service is a calle
 what it asked for and what came back." The engine gained orchestration, not authority. Read §9
 before assuming otherwise.
 
-**No machine-readable artefact yet, and that is why this file drifted.** There is no
-`resolve.schema.json` and no `resolve.d.ts`, and no `samples/resolve-*.json`. The JSON in §11 is what
-Dev C mocks against until those land; committing them is a follow-up PR — **still open as #202, which
-is also where five divergences found by diffing this document against the shipped path are recorded.**
-Three of them are corrected here (§2, §7, §8); two are open decisions. Every other MVP 2 contract has a
-schema and a captured sample, so this is the only one where prose is the sole normative form and
-nothing fails when it stops being true. `contracts` CI counts are unchanged by this document, because
-it adds no sample for `validate.mjs` to check. **The counts themselves are deliberately not quoted
-here** — this line carried "15 accept / 19 reject / 7 capture claims" and the reject count had reached
-26, a copied number staling exactly as §3's host lists do. `validate.mjs`'s own output is the count.
-Stated rather than quietly left off the table, the way `README.md` does for the two `samples/`
-files `CONTRIBUTING.md` §1 promised and nobody wrote.
+**Machine-readable: `resolve.schema.json` landed 2026-09-01 and `contracts/validate.mjs` enforces it,
+over three captured samples.** Until then this was the only MVP 2 contract where prose was the sole
+normative form and nothing failed when it stopped being true — which is why five field-level
+divergences from the shipped path went unnoticed until they were found by hand (#202). **Where this
+file and the schema disagree about a shape the schema constrains, the schema wins** — the same
+reversal `investigation-api.md`'s header made after #201.
+
+**Two points are deliberately left un-decided, and the schema says so on the fields rather than
+picking:** §4's `after` on a preview, and §5's `confirmation.directEvidence` / `clearsWhen`. Both are
+open decisions on #202 and both are typed permissively, so the schema holds the decided shape without
+quietly settling the undecided one. A permissive field with `TIGHTEN THIS ONCE …` in its `description`
+is a marker, not an answer; the schema does not become the authority for those two until they are
+tightened. `resolve.d.ts` is still genuinely absent — as `investigation.d.ts` is — so there is no
+TypeScript transcription to check against; the engine (`src/detect/resolve.ts`) and the dashboard
+(`src/types/mvp2.ts`) each carry their own.
+
+**`samples/resolve-response.json`, `resolve-preview.json` and `resolve-refusal.json` are captured from
+the live stack and are the bytes to mock against.** Three rather than one because the shape is
+outcome-dependent: `confirmation` is an object only on `applied`, `refusal` only on `refused`, and
+`before`/`after`/`reversal` are all null on a refusal, so one capture would leave both branches a
+consumer has to handle uncovered. The JSON in §11 stays **illustrative** — read §11 for shape and the
+samples for bytes. **CI counts are deliberately not quoted here** — this paragraph carried
+"15 accept / 19 reject / 7 capture claims" and the reject count had reached 26, a copied number staling
+exactly as §3's host lists do. `validate.mjs`'s own output is the count.
 
 ---
 

@@ -1,0 +1,36 @@
+{
+  "resolveId": "res-Cloud-API-1788278400002",
+  "requestId": null,
+  "mode": "apply",
+  "requestedAt": "2026-09-01T16:00:00Z",
+  "outcome": "refused",
+  "action": {
+    "type": "set_pool_size",
+    "host": "Cloud API",
+    "size": 9
+  },
+  "before": null,
+  "after": null,
+  "reversal": null,
+  "refusal": {
+    "reason": "out_of_bounds",
+    "message": "size must be an integer between 2 and 8",
+    "checkedBy": "iris",
+    "bounds": {
+      "min": 2,
+      "max": 8
+    }
+  },
+  "failure": null,
+  "confirmation": null,
+  "audit": {
+    "auditId": "pg-audit-598",
+    "actor": "SuperUser",
+    "role": "%All",
+    "requestedBy": "contracts/resolve.schema.json capture",
+    "tool": "SetPoolSize",
+    "recordedAt": "2026-09-01T16:00:00Z",
+    "source": "live"
+  },
+  "completedAt": "2026-09-01T16:00:00Z"
+}
