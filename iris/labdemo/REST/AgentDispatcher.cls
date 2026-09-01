@@ -693,6 +693,25 @@ ClassMethod SystemPrompt() As %String [ Private ]
     set p = p _ "rootCause (string, 2-3 sentences explaining WHY in operator language), "
     set p = p _ "evidence (array of {label, detail, source, tool} where source is ""mcp_tool"" for a value you read with a tool "
     set p = p _ "or ""snapshot"" for one given to you, and tool is the tool name or null), "
+    // A SNAPSHOT-SIDE GRANULARITY RULE BELONGS HERE AND IS DELIBERATELY ABSENT. #192's one-entry-per-call
+    // rule in `BuildGoal` displaces `source: "snapshot"` bullets -- 0 of 8 runs carried one, against 3 of
+    // 5 before it -- so the obvious completion is a sentence here requiring an entry for any given metric
+    // the narrative argues from. Three formulations were measured and every one cost more than it bought:
+    //
+    //   in BuildGoal, as a second paragraph   3 runs: lost GetInterfacePath twice, GetHostSettings once,
+    //                                                 and reported 2 entries for 3 error calls once
+    //   here, as its own sentence             3 runs: lost GetInterfacePath in ALL THREE
+    //   here, plus "both are required"        3 runs: two clean, and one attributed two entries to
+    //                                                 GetProcessingTime -- a REAL registered tool with
+    //                                                 no audit row for that request
+    //
+    // The third is the one that settles it. A fabricated citation is not a smaller version of a missing
+    // one: `investigation-api.md` §3.2 promises that `mcp_tool` means the call is in the audit log, and a
+    // bullet marked tool-measured with nothing behind it is the #189 direction and falsifies the one
+    // guarantee a human approving a write is relying on. Silence about a snapshot number is survivable --
+    // it stays in `rootCause` prose either way. So the trade is refused rather than split, and the
+    // snapshot displacement is tracked as its own defect.
+
     set p = p _ "confidence (number 0-1, your own judgement), "
     set p = p _ "recommendedAction ({action: {type, host, size}, currentValue}) or null, "
     set p = p _ "manualRemediation ({summary, steps, target}) or null. "
@@ -1199,6 +1218,63 @@ ClassMethod BuildGoal(body As %DynamicObject) As %String [ Private ]
     set g = g _ " source ""mcp_tool"" and tool set to the exact tool name you called. Use source"
     set g = g _ " ""snapshot"" only for the metrics given to you above. Never leave source or tool"
     set g = g _ " unset for something you read with a tool."
+
+    // AND ONE ENTRY PER CALL, which the clause above does NOT already require (#192). It is a SHAPING
+    // rule -- it says what an entry looks like given that one exists -- and says nothing about how many
+    // exist. So folding three readings into one correctly-shaped entry satisfies it completely, and the
+    // model does exactly that: it reports one entry per CONCLUSION, not one per call.
+    //
+    // Measured on `6910c1b`, five runs, `Audit.Entry` deltas taken around each. The audit was identical
+    // every run -- GetHostSettings x1, GetInterfacePath x1, GetRecentConfigChanges x1, GetRecentErrors
+    // x3, and `toolCalls: 6` -- while the reply reported:
+    //
+    //     run   GetInterfacePath entry   entries for the 3 error calls
+    //      1    yes                      3
+    //      2    yes                      3
+    //      3    NO                       1
+    //      4    yes                      1
+    //      5    NO                       3
+    //
+    // GetInterfacePath IS THE ONE THAT LOSES, and not by coincidence: its answer is never a conclusion
+    // on its own, it is the INPUT to the upstream reads the MUST above demands. So when those reads
+    // collapse into one "no errors anywhere upstream" statement, the topology rides along inside it. Run
+    // 3's single entry reads `"No errors found for Cloud API, Lab Router, or EMR Source"` attributed to
+    // get_recent_errors -- and which hosts are upstream came from GetInterfacePath, so that is a
+    // MISATTRIBUTION rather than an omission, the #189 direction on the same data.
+    //
+    // Run 4 is why this is stated as granularity rather than as "something suppresses the topology
+    // read": it collapsed the error entries while KEEPING the map attributed, the inverse of 3 and 5.
+    // The two tools vary independently, so no directive is competing with GetInterfacePath specifically.
+    //
+    // A CLEAN READ IS A RESULT, stated because it is the collapsed case: three quiet hosts read as one
+    // fact worth one sentence, and that is the reasonable-sounding move that loses the provenance.
+    //
+    // GetRecentConfigChanges IS CARVED OUT, and the carve-out is load-bearing rather than tidy. "An
+    // empty read is still a result" is exactly the reasoning #190 prohibited for that one tool: it
+    // cannot distinguish "no changes were made" from "changes were made outside the paths it sees", so
+    // an absence claim from it is unsupportable and `DropUnsupportedConfigAbsence` removes it. Without
+    // this sentence the rule below would invite the claim that guard exists to refuse.
+    set g = g _ " ONE EVIDENCE ENTRY PER TOOL CALL, and never one entry for several calls: if you"
+    set g = g _ " called get_recent_errors on three hosts, that is THREE entries, each naming the host"
+    set g = g _ " you asked about. A value one tool returned must never appear in an entry attributed"
+    set g = g _ " to a different tool -- which hosts feed this one came from GetInterfacePath, so it"
+    set g = g _ " belongs in ITS entry and not inside an error entry. A clean read is a result: ""no"
+    set g = g _ " errors on Lab Router in the last 60 minutes"" is evidence and is reported, not"
+    set g = g _ " dropped because nothing was wrong. The one exception is GetRecentConfigChanges,"
+    set g = g _ " where an empty list proves nothing and the prohibition above still stands."
+    // THIS CLAUSE HAS A COST, AND IT IS NOT PAID HERE. It displaces `source: "snapshot"` bullets: with it
+    // in place eight consecutive runs reported five entries each, every one `mcp_tool`, and NOT ONE from
+    // the snapshot, where the baseline runs it replaced carried four or five in three of five. The
+    // numbers are not lost -- they move into `rootCause` prose ("a queue depth of 224 ... an inbound rate
+    // of approximately 2 messages per second") -- but their provenance is, which is this issue's own
+    // defect in the direction the clause does not cover. A block about tool calls, read last, makes the
+    // reply about tool calls.
+    //
+    // THE GOAL'S CLOSING BLOCK HAS A BUDGET, and the three attempts to spend more of it are recorded in
+    // `SystemPrompt` beside the evidence schema, where the fix for that half would go. #190 established
+    // that a long block here outcompetes the system prompt; adding a second paragraph to this one showed
+    // it also outcompetes its own first paragraph. Do not add a third rule here without measuring what
+    // the existing two lose.
     quit g
 }
 
