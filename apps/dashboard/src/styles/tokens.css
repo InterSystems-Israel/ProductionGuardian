@@ -1,7 +1,13 @@
-/* Design tokens ONLY. No selectors beyond :root, no component styles.
+/* Design tokens ONLY. No selectors beyond :root and its dark variant at the
+   bottom of this file, no component styles.
    Palette from docs/production-guardian-deck.pptx and docs/Brochure.png. */
 
 :root {
+  /* Light is the brand default and the demo default. Set explicitly so the dark
+     variant can flip it, which is what makes native scrollbars and the settings
+     drawer's number inputs follow the theme -- neither is reachable from CSS. */
+  color-scheme: light;
+
   /* Brand */
   --pg-navy-900: #142138;   /* deepest — nav rail base            */
   --pg-navy-800: #1B2A4A;   /* primary brand navy — headings, rail */
@@ -18,7 +24,30 @@
   --pg-border-soft:  #E8EEF5;
   --pg-text:         #1B2A4A;
   --pg-text-muted:   #6B7280;
-  --pg-text-invert:  #FFFFFF;
+  --pg-text-invert:  #FFFFFF;   /* text ON navy — the rail, the primary button */
+  /* Emphasised text: headings, a finding's type, a metric under emphasis. Its
+     value is `--pg-navy-800` and it is deliberately NOT written as
+     `var(--pg-navy-800)`: the dark theme lightens the navy scale so navy stays a
+     usable *fill*, and a foreground aliased to it would follow it into
+     illegibility. A primitive used as both ink and background cannot be themed,
+     so the two uses get separate tokens. */
+  --pg-text-strong:  #1B2A4A;
+
+  /* The rail is dark in both themes, so it needs its own hover and edge rather
+     than borrowing from the navy scale. In light mode the rail reads as chrome
+     because it is navy against a near-white page (14.6:1); in dark mode nothing
+     separates them, and `--pg-rail-edge` is what puts the seam back. */
+  --pg-rail-hover:   #233A5C;   /* = navy-700, lifted from the rail base */
+  --pg-rail-edge:    transparent;
+
+  /* The primary button's outline. Its value is the fill, so in this theme there is
+     no visible rim — a navy button on a white card is a 14:1 boundary already.
+     It exists for the dark theme, where the two constraints on that button pull
+     apart: white on navy needs 4.5:1 (it is the Smart Resolve approve control, so
+     its label is not negotiable) and the button's edge needs 3:1 against the card,
+     and no single navy satisfies both. The fill keeps the label; the rim keeps the
+     edge. */
+  --pg-button-primary-border: #1B2A4A;
 
   /* Severity — the only semantic colors; never reuse for decoration.
      Darkened from the brochure's marketing tones so severity text clears
@@ -53,4 +82,74 @@
   --pg-content-max: 1600px;
   --pg-drawer-width: 420px;
   --pg-focus-ring: 0 0 0 3px rgb(0 168 135 / 45%);
+}
+
+/* ── Dark theme ──────────────────────────────────────────────────────────────
+   A TOKEN OVERRIDE AND NOTHING ELSE. `app.css` is already free of literal colors
+   (§9), so every rule in it themes itself from here — the only component changes
+   dark mode needed were the two primitives above, which were serving as ink and
+   as fill at the same time.
+
+   KEYED ON THE ATTRIBUTE, WITH NO `@media (prefers-color-scheme: dark)` BLOCK.
+   The system preference is honoured, but in one place: `src/lib/theme.ts`
+   resolves stored-choice-then-system and writes `data-theme` on <html>. A media
+   query here would be a second authority over the same decision, and the two
+   would disagree the moment an operator on a dark desktop picks light.
+
+   Surfaces are navy-derived rather than neutral grey, so the brand still reads
+   dark rather than generic. Separation between page, card and inset is
+   deliberately as slight as the light theme's (1.17:1 here, 1.11:1 there) —
+   cards are told apart by their border and shadow in both themes, which is why
+   `--pg-shadow-*` is re-cast in black below instead of the navy tint that is
+   invisible on a dark page.
+
+   Severity is RE-DERIVED, not reused. The light values are darkened for AA on
+   white (§7.1) and are unreadable on a dark card; these are lifted instead, and
+   each clears 4.5:1 both on `--pg-surface` and on its own tint, the weakest
+   being 6.06:1. That is a stricter bar than the shipped light set actually
+   meets — `--pg-warning` is 3.63:1 on white, not the AA its comment claims —
+   so nothing here regresses contrast. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* Brand. Navy is a FILL in this theme — the primary button, the architecture
+     diagram's brand nodes — so the scale is lifted to stay distinguishable from
+     the surfaces below it. 900 stays dark because it is still the rail. */
+  --pg-navy-900: #101A2C;
+  --pg-navy-800: #2C4675;
+  --pg-navy-700: #3A5789;   /* primary-button hover: lighter than 800, as in light */
+  --pg-navy-600: #4A6AA0;   /* diagram flow lines — must survive on a dark card */
+  --pg-teal-500: #14C79E;   /* lifted so the accent and the focus ring read on navy */
+  --pg-teal-200: #7FD8C6;
+
+  /* Neutrals */
+  --pg-surface:      #16213A;
+  --pg-surface-alt:  #0B1220;
+  --pg-surface-sunk: #1E2A45;
+  --pg-border:       #2E3E5C;
+  --pg-border-soft:  #22304A;
+  --pg-text:         #E4EBF5;
+  --pg-text-muted:   #9CAABF;
+  --pg-text-invert:  #FFFFFF;   /* still white: still on navy */
+  --pg-text-strong:  #F2F6FB;
+
+  --pg-rail-hover:   #223257;
+  --pg-rail-edge:    #22304A;
+  --pg-button-primary-border: #5C84B8;   /* 4.2:1 against --pg-surface */
+
+  /* Severity */
+  --pg-critical:     #FF8A7A;
+  --pg-critical-bg:  #3A1D1B;
+  --pg-warning:      #E8B04B;
+  --pg-warning-bg:   #33260F;
+  --pg-info:         #7FB6EE;
+  --pg-info-bg:      #14263A;
+  --pg-ok:           #3FD3AE;
+  --pg-ok-bg:        #10302A;
+  --pg-neutral:      #9CAABF;
+  --pg-neutral-bg:   #1E2A45;
+
+  --pg-shadow-card: 0 1px 2px rgb(0 0 0 / 40%), 0 2px 8px rgb(0 0 0 / 28%);
+  --pg-shadow-drawer: -8px 0 24px rgb(0 0 0 / 45%);
+  --pg-focus-ring: 0 0 0 3px rgb(20 199 158 / 55%);
 }

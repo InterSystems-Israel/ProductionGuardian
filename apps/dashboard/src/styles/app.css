@@ -78,6 +78,12 @@ button {
   padding: var(--pg-space-4) var(--pg-space-3);
   background: var(--pg-navy-900);
   color: var(--pg-text-invert);
+  /* Transparent in the light theme, where navy against a near-white page is
+     already a 14.6:1 seam. In the dark theme every surface is dark and the rail
+     would melt into the content area without it, so the token carries a border
+     colour there instead. Border rather than shadow because the rail is a fixed
+     grid column and `box-sizing: border-box` is global, so it costs no layout. */
+  border-right: 1px solid var(--pg-rail-edge);
 }
 
 .pg-rail__brand {
@@ -114,7 +120,7 @@ button {
 }
 
 .pg-rail__item--active {
-  background: var(--pg-navy-700);
+  background: var(--pg-rail-hover);
   color: var(--pg-text-invert);
   font-weight: 600;
   box-shadow: inset 3px 0 0 var(--pg-teal-500);
@@ -140,7 +146,7 @@ button {
   align-items: baseline;
   gap: var(--pg-space-2);
   font-size: 16px;
-  color: var(--pg-navy-800);
+  color: var(--pg-text-strong);
 }
 
 .pg-header__divider {
@@ -284,7 +290,7 @@ button {
   margin: 0;
   font-size: 13.5px;
   font-weight: 600;
-  color: var(--pg-navy-800);
+  color: var(--pg-text-strong);
 }
 
 .pg-banner__detail {
@@ -326,14 +332,17 @@ button {
 
 .pg-toggle__option--active {
   background: var(--pg-surface);
-  color: var(--pg-navy-800);
+  color: var(--pg-text-strong);
   font-weight: 600;
   box-shadow: var(--pg-shadow-card);
 }
 
 .pg-button--primary {
   background: var(--pg-navy-800);
-  border-color: var(--pg-navy-800);
+  /* Same value as the fill in the light theme, so no rim shows. See the token —
+     in the dark theme it is what gives the button an edge against its card, which
+     the fill cannot do without taking the label below AA. */
+  border-color: var(--pg-button-primary-border);
   color: var(--pg-text-invert);
 }
 
@@ -372,7 +381,7 @@ button {
   border-radius: var(--pg-radius);
   font-size: 12.5px;
   font-weight: 500;
-  color: var(--pg-navy-800);
+  color: var(--pg-text-strong);
   cursor: pointer;
 }
 
@@ -558,7 +567,7 @@ button {
 
 .pg-metric__value--emphasis {
   font-weight: 600;
-  color: var(--pg-navy-800);
+  color: var(--pg-text-strong);
 }
 
 .pg-host__footer {
@@ -642,7 +651,7 @@ button {
   gap: var(--pg-space-2);
   font-size: 13px;
   font-weight: 600;
-  color: var(--pg-navy-800);
+  color: var(--pg-text-strong);
 }
 
 .pg-finding__host {
@@ -738,7 +747,7 @@ button {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
-  color: var(--pg-navy-800);
+  color: var(--pg-text-strong);
 }
 
 .pg-empty__detail {
@@ -1297,7 +1306,7 @@ button {
 }
 
 .pg-rail__item--action:hover {
-  background: var(--pg-navy-700);
+  background: var(--pg-rail-hover);
   color: var(--pg-text-invert);
 }
 
@@ -1546,7 +1555,7 @@ button {
 }
 
 .pg-rail__item--trigger:hover:not(:disabled) {
-  background: var(--pg-navy-700);
+  background: var(--pg-rail-hover);
   color: var(--pg-text-invert);
 }
 
@@ -1638,7 +1647,7 @@ button {
 
 .pg-button--subtle:hover {
   background: var(--pg-surface-sunk);
-  color: var(--pg-navy-800);
+  color: var(--pg-text-strong);
 }
 
 .pg-chat__intro {
@@ -1667,7 +1676,7 @@ button {
   border-radius: var(--pg-radius-pill);
   font-family: inherit;
   font-size: 0.75rem;
-  color: var(--pg-navy-800);
+  color: var(--pg-text-strong);
   text-align: left;
   cursor: pointer;
 }
@@ -2249,7 +2258,7 @@ button {
 
 .pg-button--link:hover {
   background: none;
-  color: var(--pg-navy-800);
+  color: var(--pg-text-strong);
 }
 
 /* The panel animates in with the drawer's own keyframes, so `prefers-reduced-motion` is
