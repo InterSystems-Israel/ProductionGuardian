@@ -407,7 +407,7 @@ the investigation were measured.
   "label": "Cloud API pool size",
   "detail": "Cloud API PoolSize = 1",
   "source": "mcp_tool",
-  "tool": "get_pool_size"
+  "tool": "GetPoolSize"
 }
 ```
 
@@ -416,7 +416,28 @@ the investigation were measured.
 | `label` | string | Short noun phrase. For grouping or a table column. |
 | `detail` | string | **The bullet.** Renderable on its own, authoritative, render as-is. |
 | `source` | string | `mcp_tool` \| `snapshot` \| `llm`. Open string: render unknown values as `llm`, the least-trusted value. |
-| `tool` | string \| null | MCP tool name when `source` is `mcp_tool`; otherwise `null`. Name only. |
+| `tool` | string \| null | Free-form provenance when `source` is `mcp_tool`; otherwise `null`. **Not an enum** — see below. |
+
+**`tool` is provenance text, not an identifier to validate.** It is the *runtime* name of the tool, and
+the runtime name is the **ClassMethod name** — `GetPoolSize`, `GetHostStatus`, `GetEventLogSummary`.
+`mcp-tools.md` §1 records this and says so of its own catalogue: the snake_case section titles there
+(`get_pool_size`) are a documentation convention and **have never been callable**, because `%AI.Tool`
+derives a tool's name from the method that implements it. The samples in this file carried the
+snake_case form until #155, which is the form a consumer copies from, so the two contracts disagreed on
+the field a consumer actually implements.
+
+Three rules follow, and the third is the one that costs something to get wrong:
+
+- **Render it, do not parse it.** It is a label next to a bullet.
+- **It may arrive with a provider prefix.** `functions.GetEventLogSummary` has been observed —
+  OpenAI-style tool namespacing that the model echoes back into its own JSON. Match on a suffix if you
+  must match at all.
+- **Never validate it against a name list, and never drop a bullet whose `tool` you do not recognise.**
+  A tool is added to `mcp-tools.md` more often than this file is reread, and the whole value of
+  `source: "mcp_tool"` is that a human approving a write can see the claim was measured. Discarding
+  that bullet because its name is unfamiliar silently downgrades measured evidence to absent evidence,
+  which is the one distinction §3.2 exists to preserve. Nothing in `apps/dashboard/**` does this today
+  (`mvp2Guards.ts` parses `tool` with `nullableStr`), and this paragraph is what keeps it that way.
 
 `evidence` is ordered most-to-least load-bearing, as the agent ranked it. Dev C may render in order
 and need not sort.
@@ -809,7 +830,7 @@ an answer is an assumption rather than a fact.
 | **Q2** | Is it synchronous? How long? | Synchronous. Hard deadline 30 s, so build the panel for a multi-second spinner, not an instant swap. No polling endpoint. |
 | **Q3** | Can I investigate any finding? | No. `queue_buildup` on `Cloud API` only (§2.4). Anything else is `200` + `out_of_scope`. Hide the button elsewhere. |
 | **Q4** | Is `rootCause` safe to render verbatim? | Yes, and it is authoritative — do not summarise or reflow it. Same rule as `Finding.message`. |
-| **Q5** | Is `evidence[]` strings or objects? | Objects. Render `detail` as the bullet; use `source` to mark what was tool-measured versus model-asserted (§3.2). |
+| **Q5** | Is `evidence[]` strings or objects? | Objects. Render `detail` as the bullet; use `source` to mark what was tool-measured versus model-asserted (§3.2). **`tool` is provenance text, not an enum** — it carries the runtime ClassMethod name (`GetPoolSize`), sometimes with a provider prefix (`functions.GetPoolSize`), and never the snake_case titles in `mcp-tools.md` §1. Render it; do not validate it, and do not drop a bullet whose tool you do not recognise (§3.2). |
 | **Q6** | Can I bind the approve button straight to `recommendedAction`? | Yes when `action.type` is `set_pool_size` and `action.size` is within `bounds`. Otherwise disable it and render nothing (§3.3). **Send `recommendedAction.action` to `POST /api/resolve` as `action`, unmodified** — it is already that contract's exact shape, and reshaping it is the failure `resolve-api.md` §1.2 warns about. Applying is that endpoint, not this one. |
 | **Q7** | Can I gate the approve button on `confidence`? | **No.** It is an uncalibrated LLM self-report (§3.4). Display it; never branch on it. |
 | **Q8** | What is a nullable field? | `rootCause`, `confidence`, `recommendedAction`, `diagnostics.model`, `diagnostics.failureReason`, `evidence[].tool`. Every key is always present; `evidence` is `[]` rather than `null`. |
@@ -858,7 +879,7 @@ Illustrative, not captured — see the note at the top of this file. ASCII insid
       "label": "Cloud API pool size",
       "detail": "Cloud API PoolSize = 1",
       "source": "mcp_tool",
-      "tool": "get_pool_size"
+      "tool": "GetPoolSize"
     },
     {
       "label": "Downstream cost per message",
@@ -882,7 +903,7 @@ Illustrative, not captured — see the note at the top of this file. ASCII insid
       "label": "Host health",
       "detail": "Cloud API status OK with 0 errored messages, so this is a throughput limit and not a fault",
       "source": "mcp_tool",
-      "tool": "get_host_status"
+      "tool": "GetHostStatus"
     }
   ],
   "confidence": 0.86,
@@ -936,7 +957,7 @@ too, per Q14.
       "label": "Cloud API pool size",
       "detail": "Cloud API PoolSize = 1",
       "source": "mcp_tool",
-      "tool": "get_pool_size"
+      "tool": "GetPoolSize"
     },
     {
       "label": "Queue trend",
