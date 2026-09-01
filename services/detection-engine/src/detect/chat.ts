@@ -138,6 +138,20 @@ interface ChatAgentRequest extends ChatRequest {
    * this and the chat prompt is told what each means.
    */
   findingsState: HealthScanState;
+  /**
+   * How many findings the snapshot held BEFORE `MAX_FINDINGS` clipped it — `null` when no snapshot
+   * was read at all.
+   *
+   * THIS IS THE ONLY PLACE THE TRUE LENGTH IS KNOWN. Everything downstream sees the sliced array:
+   * IRIS receives at most `MAX_FINDINGS` elements and `Tools.Findings` republishes what it receives,
+   * so without this field `count: 25` and a complete list of 25 are byte-identical and the model
+   * states the capped number as a fact (#165). Sending it costs one integer and is what lets the
+   * tool answer `truncated`.
+   *
+   * `null` rather than `0` for an absent supplier, for the same reason `findingsState` is `warming`
+   * there: nothing was measured, and a total of zero is a measurement.
+   */
+  findingsTotal: number | null;
 }
 
 /** The slice of `EngineSnapshot` this module needs, so a test can supply one without an engine. */
@@ -188,8 +202,14 @@ const MAX_HISTORY = 6;
  *
  * THE FIRST OF TWO CAPS ON PURPOSE, like the question-length cap above and for the same reason in
  * reverse: this one keeps the request small, and IRIS's keeps a hand-rolled POST from filling the
- * model's context. Eight finding types across three reported hosts is 24 at the absolute ceiling, so
- * 25 cannot clip a real production — which is why a cap here needs no accompanying "truncated" flag.
+ * model's context.
+ *
+ * IT DOES NEED AN ACCOMPANYING SIGNAL, and until #165 it had none. This comment used to argue it
+ * could not clip a real production — eight finding types across three reported hosts is 24, one
+ * under the cap — which is a host COUNT compiled into a justification, the thing #25/#34 forbid in
+ * `src/`. Findings are keyed `(host, type)`, so the ceiling is `hosts × 8` and moves the moment a
+ * production has four hosts. `findingsTotal` is sent alongside the slice so the far side can say it
+ * was clipped instead of publishing the capped number as the answer.
  */
 const MAX_FINDINGS = 25;
 
@@ -353,6 +373,9 @@ export async function chat(request: ChatRequest, deps: ChatDeps): Promise<ChatRe
         : isoSeconds(snapshot.lastPollAt),
     /* No supplier means no measurement, which is what `warming` says. See `ChatDeps.findings`. */
     findingsState: snapshot === undefined ? 'warming' : snapshot.state,
+    /* Read off the SAME `snapshot` const as the slice above, so the total and the array it describes
+       cannot come from different polls. */
+    findingsTotal: snapshot === undefined ? null : snapshot.findings.length,
   };
 
   let raw: unknown;

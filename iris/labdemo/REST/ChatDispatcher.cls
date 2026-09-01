@@ -368,8 +368,15 @@ ClassMethod Ask() As %Status
 /// NOT TRUSTED FOR SIZE. The array arrives over HTTP from another service, and a process-private
 /// global node holds a bounded string, so the element count is capped HERE as well as in the tool.
 /// Two caps rather than one, deliberately: this one protects the global, the tool's protects the
-/// model's context, and the engine's own protects the request. Eight finding types across three hosts
-/// is 24 at the ceiling, so none of the three can clip a real production.
+/// model's context, and the engine's own protects the request.
+///
+/// AND A CAP MUST LEAVE A RECORD OF WHAT IT DROPPED, which none of the three did until #165. This
+/// comment used to close by arguing that eight finding types across three hosts is 24, one under the
+/// cap, so none of them could clip a real production — a host COUNT inside a justification, and wrong
+/// the moment a fourth host is reported, because findings are keyed `(host, type)` and the ceiling is
+/// `hosts × 8`. So `total` is stashed next to the array: the engine's declared pre-slice length where
+/// it sent one, and the length that arrived here where it did not. `Tools.Findings` compares it to
+/// what it republishes and answers `truncated` from the difference.
 ClassMethod StashFindings(body As %DynamicObject) [ Private ]
 {
     if '$isobject(body) {
@@ -392,6 +399,22 @@ ClassMethod StashFindings(body As %DynamicObject) [ Private ]
     }
 
     set ^||PGGuardian("chat", "findings") = capped.%ToJSON()
+    // How many findings EXIST, as against how many are in the node above.
+    //
+    // The engine's own figure is preferred because it is the only one taken before any cap: it slices
+    // to `MAX_FINDINGS` before sending, so `findings.%Size()` here is already the clipped length and
+    // would under-report. A body with no `findingsTotal` (an older engine build, or a hand-rolled
+    // POST) falls back to what arrived, which is the most this class can honestly claim.
+    //
+    // AND A DECLARED TOTAL BELOW WHAT ARRIVED IS REJECTED rather than stored. It cannot be true, and
+    // believing it would make `truncated` read false on a clipped list -- the one wrong answer this
+    // field exists to prevent. Same direction as every other guard here: distrust the wire for size.
+    set declared = body.%Get("findingsTotal")
+    set total = findings.%Size()
+    if (declared '= ""), ($isvalidnum(declared)), (declared > total) {
+        set total = declared \ 1
+    }
+    set ^||PGGuardian("chat", "total") = total
     // The instant the engine measured them, so the model can say "as of" rather than implying the
     // reading is from the moment it is speaking. Absent is "" rather than a substituted `$ztimestamp`:
     // stamping it here would be this class inventing a measurement time for another service's reading.
@@ -746,6 +769,16 @@ ClassMethod SystemPrompt() As %String [ Private ]
     set p = p _ "fire, so nothing has been measured; ""stale"" means the list is the last one it could "
     set p = p _ "compute and may be out of date. Report either as such. Only ""ok"" with count: 0 "
     set p = p _ "supports ""no open findings"". "
+    // AND `count` IS NOT THE NUMBER OF FINDINGS WHEN THE LIST WAS CAPPED (#165). The third member of
+    // this set, and the one whose reassuring reading is the *arithmetic* rather than the emptiness:
+    // the payload of a clipped list is byte-shaped exactly like a complete one, so a model with no
+    // instruction states `count` as a fact. Told here as well as in `note` because the two paragraphs
+    // above establish that this tool's numbers need reading rather than quoting, and leaving the third
+    // case out of the prompt would make it the one a model handles by resemblance.
+    set p = p _ "When it returns truncated: true the list is NOT all of them and count is NOT the "
+    set p = p _ "number of open findings: if total is a number, report total as the count and say only "
+    set p = p _ "some are described; if total is null, say the number is at least count and that more "
+    set p = p _ "may exist, and do not call the host or the production clear on a truncated list. "
 
     set p = p _ "GetActivityCoverage lists which hosts have recorded activity and how far back the "
     set p = p _ "data goes -- call it first when you do not already know a host name or a date range. "

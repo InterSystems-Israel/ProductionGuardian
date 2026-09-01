@@ -86,8 +86,13 @@ Parameter HANDOFF = "findings";
 ///
 /// A cap the ENGINE also applies before sending (see `detect/chat.ts`), so this is the second of two
 /// and deliberately so: the engine's cap keeps the request small and this one keeps a hand-rolled
-/// POST from filling the model's context. Eight finding types across three hosts is 24 at the absolute
-/// ceiling, so 25 cannot clip a real production.
+/// POST from filling the model's context.
+///
+/// NEITHER CAP MAY BE SILENT, which both were until #165. The justification here used to be that eight
+/// finding types across three hosts is 24, one under the cap, so 25 could not clip a real production.
+/// That is a host COUNT written into a reason — the thing #25 and #34 forbid — and findings are keyed
+/// `(host, type)`, so the true ceiling is `hosts × 8` and a fourth reported host puts it at 32. The
+/// `total` and `truncated` fields below are what make a cap that DOES bite say so.
 Parameter MAXFINDINGS = 25;
 
 /// The `Finding` keys this tool will republish, from `contracts/healthscan.d.ts`.
@@ -117,8 +122,11 @@ Parameter FINDINGKEYS = {$listbuild(
 /// Pass `host` to narrow to one interoperability host, or omit it for the whole production.
 ClassMethod GetActiveFindings(host As %String = "") As %DynamicObject
 {
-    set out = { "host": null, "supplied": false, "count": null, "findings": null,
-        "asOf": null, "state": null, "sanitised": true }
+    // `count`, `total` and `truncated` all start null and stay null on every path that returns without
+    // reading a snapshot. `truncated: false` there would assert that a list nobody read is complete,
+    // which is §2.1's rule applied to a boolean: an unmeasurable value is not a small one.
+    set out = { "host": null, "supplied": false, "count": null, "total": null, "truncated": null,
+        "findings": null, "asOf": null, "state": null, "sanitised": true }
     // null when unfiltered, so "every host" and "a host whose name is the empty string" are
     // different payloads rather than the same one.
     if host '= "" {
@@ -150,21 +158,67 @@ ClassMethod GetActiveFindings(host As %String = "") As %DynamicObject
     // and the reason `count: 0` is not self-explanatory. See the note below.
     set out.state = $get(^||PGGuardian("chat", "state"), "")
     set findings = []
+    set matched = 0
     set iter = raw.%GetIterator()
     while iter.%GetNext(.index, .finding) {
         if '$isobject(finding) {
             continue
         }
+        // FILTER FIRST. The cap below tests `findings.%Size()`, which counts pushed MATCHES, so a
+        // non-matching finding does not consume cap budget wherever these two blocks sit -- #165 reads
+        // this as "capping first would return the first 25 of the production and then filter them",
+        // and that is not what these lines do. It IS what a cap on the ITERATION would do, so the
+        // order still carries the property: cap the filtered set, never the array.
         if (host '= "") && (finding.%Get("host") '= host) {
             continue
         }
+        // AFTER THE FILTER, and this is the line that would break quietly. `matched` sizes the filtered
+        // set; counted one line up instead it would size the production, and then `total` would answer
+        // about every host while `count` answered about one -- "3 of 31 shown" for a host with three
+        // findings, which is exactly the mis-scoping #186 fixed in `get_interface_path`. Pinned in
+        // `Test.FindingsTruncation`, which was checked against that mutation rather than assumed to
+        // catch it.
+        set matched = matched + 1
+        // `continue` rather than `quit`: the loop keeps counting past the cap, which is the only way
+        // `truncated` can be computed rather than guessed.
         if findings.%Size() >= ..#MAXFINDINGS {
-            quit
+            continue
         }
         do findings.%Push(..Republish(finding))
     }
     set out.findings = findings
     set out.count = findings.%Size()
+
+    // HOW MANY EXIST, AS AGAINST HOW MANY CAME BACK — and where that is unknowable, null rather than
+    // the number we happen to have (#165).
+    //
+    // `total` is scoped to the SAME filter as `count`, which is `get_interface_path`'s rule for
+    // `pathCount` and for the reason #186 gives there: a total describing the production while the
+    // list describes one host reads as "22 of 31 shown" about a host with four findings.
+    //
+    // The three cases, and only the third is null:
+    //
+    //   unfiltered            the stashed total is the engine's own pre-slice length, so it is exact
+    //                         and `count < total` catches a clip at EITHER stage
+    //   filtered, full stash  every finding that exists is in the stash, so the matches are all of
+    //                         them and `matched` is exact
+    //   filtered, clipped     the withheld findings were dropped before this method saw a host, so
+    //                         how many of them were on this one is not knowable here. `truncated`
+    //                         still answers, because "some were dropped" is known even when "how
+    //                         many of yours" is not
+    set stashTotal = $get(^||PGGuardian("chat", "total"), "")
+    if '$isvalidnum(stashTotal) {
+        // Absent or unreadable: the stash is all we know of, so treat it as whole. Only reachable
+        // from a node this build did not write, since `Ask()` kills the subtree on entry.
+        set stashTotal = raw.%Size()
+    }
+    set stashClipped = (stashTotal > raw.%Size())
+    if host = "" {
+        set out.total = stashTotal
+    } elseif 'stashClipped {
+        set out.total = matched
+    }
+    do out.%Set("truncated", $select(out.total = "": 1, 1: out.count < out.total), "boolean")
     // Said in the payload because the model cannot otherwise tell an unfiltered empty list from a
     // filtered one, and "no findings on Cloud API" and "no findings anywhere" support different
     // answers.
@@ -176,8 +230,29 @@ ClassMethod GetActiveFindings(host As %String = "") As %DynamicObject
     // list is the last one the engine could compute, which is old rather than wrong. Neither is
     // inferable from the array, so the tool says which it is rather than leaving the emptiness to
     // speak for itself.
-    if out.count = 0 {
-        set scope = $select(host = "": " on this production", 1: " on " _ host)
+    set scope = $select(host = "": " on this production", 1: " on " _ host)
+    if out.truncated {
+        // TESTED BEFORE `count = 0`, and the order is the correctness argument. A filtered call whose
+        // matches were all dropped upstream returns `count: 0`, and the plain note below would answer
+        // it with "no open findings on Cloud API at the instant this question was asked" — a false
+        // all-clear composed from a list nobody could see, which is the same defect as `supplied:
+        // false` wearing the shape of a successful answer.
+        //
+        // Phrased as an instruction rather than a fact for the reason the notes below are: the failure
+        // is not the model missing a flag, it is the model reporting `count` as the number of issues.
+        if out.total '= "" {
+            set out.note = "this list is INCOMPLETE: " _ out.count _ " of " _ out.total _
+                " open findings" _ scope _ " are shown, and the rest were dropped by a size cap " _
+                "before this tool could read them -- state " _ out.total _ " as the number of open " _
+                "findings and say that only " _ out.count _ " of them are described here"
+        } else {
+            set out.note = "this list is INCOMPLETE and the true number is NOT KNOWN here: the " _
+                "findings supplied with this question were capped across the whole production " _
+                "before they could be narrowed to " _ host _ ", so there may be open findings on " _
+                host _ " that are absent from this list -- treat " _ out.count _ " as a lower bound " _
+                "and never as a count, and do not conclude that " _ host _ " is clear"
+        }
+    } elseif out.count = 0 {
         if out.state = "warming" {
             set out.note = "the detection engine is still warming up, so its comparative rules are " _
                 "SILENT and no findings can be reported yet" _ scope _ " -- this is not evidence " _
