@@ -131,6 +131,9 @@ ClassMethod Investigate() As %Status
             // not, so they cannot both act on one reply.
             do ..DropPoolFixDuringOutage(parsed, findingHost)
             do ..DropStaleConnectivityClaim(parsed, findingHost)
+            // Independent of the two above -- it reads the audit log, not the error log, and touches
+            // only `evidence`, so it cannot interact with either.
+            do ..DropUnsupportedConfigAbsence(parsed, findingHost)
             // AFTER the two drop guards, deliberately: there is no point sizing a recommendation
             // that is about to be removed, and running it first would emit a `resizedAction` for an
             // action the response does not contain.
@@ -403,6 +406,94 @@ ClassMethod DropStaleConnectivityClaim(parsed As %DynamicObject, host As %String
     // Recorded, not silent -- same reasoning as droppedAction. A reviewer needs to see that the
     // model claimed something and that we refused it, or this looks like a model that behaved.
     set parsed.droppedRemediation = { "reason": "stale_connectivity_claim", "detail": (detail) }
+}
+
+/// Strip an evidence entry that reports configuration the audit log cannot report. Private.
+///
+/// WHY A GUARD AND NOT A BETTER PROMPT. Sixth time on this class, and the most thoroughly measured:
+/// `BuildGoal` forbids the claim in as many words, and two successive rewordings of that prohibition
+/// -- one offering a safe sentence to say instead, one supplying the literal text to copy -- each
+/// failed in a different direction on 20 live runs. The block above `BuildGoal`'s prohibition carries
+/// both results. The short version is that "no change was found" and the only safe thing to say about
+/// an empty list differ by one clause, so no wording separates them reliably.
+///
+/// THE NARROW CLAIM IT REFUTES, in the shape `DropStaleConnectivityClaim` set. Only an evidence entry
+/// attributed to `GetRecentConfigChanges`, and only when a fresh read of that tool returns no change
+/// at all for this host. Everything else the model says stands -- including a config entry that names
+/// a real change, which is the whole point of the tool and which six runs on the armed missing-folder
+/// scenario got right.
+///
+/// MATCHED ON `tool`, NOT ON PROSE, deliberately: the prohibition is about a claim of absence and any
+/// phrasing of one is refused, so there is no phrase list to keep current. `endsWith` rather than
+/// equality because the model sometimes reports the OpenAI-qualified name (`functions.` prefix,
+/// measured once in 20) and an entry is no less wrong for being labelled that way.
+///
+/// IT CHECKS THE FINDING'S HOST, so an absence claim about a DIFFERENT host is out of its reach. The
+/// tool takes a host argument and a model may call it for an upstream one; if the finding's host has a
+/// change and an upstream host does not, this guard stays quiet and the upstream absence claim
+/// survives. Left as a known limit rather than widened, because widening it means enumerating the
+/// hosts the model might have asked about and dropping an entry on a guess about which one an entry
+/// refers to -- prose recognition by another route. It matters more once #186 lands, which is the
+/// change that makes per-upstream tool calls routine.
+///
+/// THE WINDOW IS THE TOOL'S OWN DEFAULT, seven days, and it is deliberately the WIDE end. The reply
+/// does not say which window the model asked for, so this reads the widest one the tool offers by
+/// default and drops only when even that comes back empty. A narrower window here would delete
+/// entries legitimately describing an older change; this errs toward leaving the model's words alone,
+/// which is the line `DropUnapplicableAction` draws.
+///
+/// AND IT ONLY EVER REMOVES. The caveat that replaces the claim goes in `droppedEvidence`, not into
+/// `evidence` or `rootCause` -- same division as `droppedRemediation`. The dispatcher may refuse a
+/// claim; it may not become a second author of the narrative.
+///
+/// `droppedEvidence` REACHES THE AUDIT TRAIL AND THIS INSTANCE'S OWN REPLY, NOT THE API. Same reach as
+/// `droppedAction` and `droppedRemediation`, and worth stating rather than assuming: `investigate.ts`
+/// builds its response field by field from a parsed subset, so an extra key here is ignored rather
+/// than rejected -- no contract change, and no route to the dashboard either. Surfacing a refusal in
+/// the UI is a findings-API question and belongs in that contract, not in this class.
+ClassMethod DropUnsupportedConfigAbsence(parsed As %DynamicObject, host As %String) [ Private ]
+{
+    set evidence = parsed.%Get("evidence")
+    if '$isobject(evidence) || (host = "") {
+        quit
+    }
+
+    // The change list, read fresh rather than taken from the model's account of it -- the same reason
+    // `DropStaleConnectivityClaim` re-reads the error log. A model that misread an empty list would
+    // also misreport it.
+    set changes = ##class(ProductionGuardian.LabDemo.Tools.ChangeLog).GetRecentConfigChanges(
+        host, ##class(ProductionGuardian.LabDemo.Tools.ChangeLog).#DEFAULTWINDOW)
+    set list = changes.%Get("changes")
+    // A FAILED READ IS NOT AN EMPTY ONE. `changes` is null when the query or the namespace switch
+    // failed, and dropping on that would delete the model's words on the strength of our own error.
+    if '$isobject(list) || (list.%Size() > 0) {
+        quit
+    }
+
+    set kept = []
+    set dropped = 0
+    for i = 0:1:evidence.%Size() - 1 {
+        set entry = evidence.%Get(i)
+        set tool = $select($isobject(entry): entry.%Get("tool", ""), 1: "")
+        if $piece(tool, ".", $length(tool, ".")) = "GetRecentConfigChanges" {
+            set dropped = dropped + 1
+            continue
+        }
+        do kept.%Push(entry)
+    }
+    if 'dropped {
+        quit
+    }
+
+    set parsed.evidence = kept
+    // Recorded, not silent -- same reasoning as `droppedRemediation`. A reviewer needs to see that the
+    // model claimed something and that we refused it, and an operator needs to know the audit log was
+    // read, since the entry that used to say so is gone.
+    set parsed.droppedEvidence = { "reason": "unsupported_config_absence_claim", "entries": (dropped),
+        "detail": ("audit log read for " _ host _ ": no change attributable to this host in the last "
+            _ ##class(ProductionGuardian.LabDemo.Tools.ChangeLog).#DEFAULTWINDOW _ "h. Rows take tens "
+            _ "of seconds to become readable and a setting changed outside the Management Portal is "
+            _ "not audited at all, so this cannot rule a change out.") }
 }
 
 /// Invoke the governed write tool. Every guard is the tool's, not this class's.
@@ -842,12 +933,16 @@ ClassMethod BuildGoal(body As %DynamicObject) As %String [ Private ]
     // "if it fits". This directive removes the discretion about LOOKING, not about concluding, and
     // says so, because a model told it must call a tool will otherwise find something to say about
     // the result.
+    //
+    // AND THE EMPTY CASE NOW POINTS AT THE RULE BELOW rather than asking for silence. "Say nothing
+    // about it" was the wording here, which contradicted the attribution rule this method closes
+    // with -- see the block below for the measurement that contradiction produced.
     set g = g _ " You MUST also call GetRecentConfigChanges before concluding. A setting changed"
     set g = g _ " shortly before a finding is the likeliest cause of it, and the audit log is the only"
     set g = g _ " place that records one. If a change is relevant, report it in rootCause and as an"
     set g = g _ " evidence entry naming the setting, the old and new values and when it changed; if"
-    set g = g _ " nothing relevant comes back, say nothing about it -- the absence of a change is not"
-    set g = g _ " a finding."
+    set g = g _ " nothing relevant comes back, record the call under the rule below and draw no"
+    set g = g _ " conclusion from it -- the absence of a change is not a finding."
 
     // AND IT MUST NOT SAY THE OPPOSITE, WHICH IS WHAT IT DID (#171). "Say nothing about it" above was
     // already the instruction, and a live run on the armed missing-folder scenario returned
@@ -855,22 +950,72 @@ ClassMethod BuildGoal(body As %DynamicObject) As %String [ Private ]
     // the FilePath edit sat in the audit log, 16 seconds old and not yet flushed. So the model both
     // ignored a prohibition phrased as silence AND turned an empty list into a positive claim.
     //
-    // TELLING IT NOT TO IS NOT ENOUGH ON ITS OWN, so this names the field that settles it.
-    // `retention.newest` is the newest audited change the log can see, and it is in every payload:
-    // if that is older than the finding, the log has not caught up and an empty list means "cannot
-    // tell yet", not "nothing changed". Measured on this instance -- a row written at 10:50:04 first
-    // became queryable at +36s, and a HTTPPort edit in the same session at +24s. Tens of seconds,
-    // variable, and an agent turn sits inside it. `contracts/mcp-tools.md` §3.12 carries the
-    // measurement and made this a consumer rule; this is that rule reaching the model.
+    // TELLING IT NOT TO IS NOT ENOUGH ON ITS OWN. A PROHIBITION NEEDS A SANCTIONED ALTERNATIVE or the
+    // model invents one -- so the sentence it may say instead is now UNCONDITIONAL, and the two things
+    // that made the previous version's alternative unreachable are why (#189).
     //
-    // A PROHIBITION NEEDS A SANCTIONED ALTERNATIVE or the model invents one. Offering the "cannot yet
-    // tell" sentence is what stops it reaching for "no changes were found" to fill the same slot.
-    set g = g _ " NEVER state that no configuration change was found, or that nothing was changed."
-    set g = g _ " Audit rows take tens of seconds to become readable, so an empty changes list may"
-    set g = g _ " only mean the log has not caught up. Compare retention.newest with when this"
-    set g = g _ " finding began: if retention.newest is older, say that the audit log cannot answer"
-    set g = g _ " yet and give no verdict on configuration. Otherwise stay silent about"
-    set g = g _ " configuration entirely."
+    // THAT VERSION GATED THE ALTERNATIVE ON A COMPARISON, and told the model to stay silent whenever
+    // the comparison came out the other way: "compare retention.newest with when this finding began;
+    // if retention.newest is older, say the audit log cannot answer yet ... otherwise stay silent
+    // about configuration entirely." Both halves fail:
+    //
+    //   1. `retention.newest` CANNOT DECIDE THAT. `ChangeLog.Retention()` takes no host argument and
+    //      counts every `ModifyConfiguration` row, including the ones `changes` drops -- lifecycle
+    //      rows whose host parse comes back empty, settings off the allowlist (`suppressed`), and
+    //      saves that moved nothing (`noOpSaves`). Measured here: a `compose restart` alone left
+    //      `retention.newest` at 06:10:59 while the newest row in the UNFILTERED `changes` list was
+    //      two days older. So the field routinely reads "the log has caught up" on the strength of a
+    //      row the model is never shown, and the "cannot answer yet" branch is close to unreachable.
+    //   2. WHICH LEAVES SILENCE AS THE ONLY BRANCH, and silence is not a sanctioned alternative here,
+    //      because the attribution rule 20 lines below requires an evidence entry for every value
+    //      read with a tool and this call was made compulsory 30 lines above. The goal therefore
+    //      ordered the model to call the tool, to attribute what it read, and to say nothing about
+    //      the only thing the call returned. An empty list leaves one utterance that satisfies the
+    //      first two rules, and it is the one the first sentence forbids.
+    //
+    // MEASURED, 7 live `gpt-4o-mini` runs against one armed `queue_buildup` on `Cloud API` with an
+    // empty change list for that host and `retention.newest` newer than the finding -- the "stay
+    // silent" branch: the model called the tool in 2 runs and BOTH returned the forbidden claim as an
+    // `mcp_tool` entry ("No changes in the configuration found in the last hour."). The other 5 runs
+    // complied only by skipping a MUST. A rule with an 0/2 record on the path it governs is not a
+    // rule, and #171's fix reappearing as #189 is what that costs.
+    //
+    // AND THE WORDING IS NOT LEFT TO THE PROMPT AT ALL. `DropUnsupportedConfigAbsence` enforces it,
+    // for the reason every other guard on this class exists -- but the two prompt-only attempts are
+    // recorded here because each failed differently and the second failure is what chose the guard.
+    //
+    //   ATTEMPT 1, asking for the SENSE of a safe sentence ("the one thing you may say is that the
+    //   audit log shows no change attributable to this host in the window and cannot rule one out"):
+    //   20 live runs called the tool 20/20 -- up from 2/7, so pointing the empty case at a rule
+    //   instead of at silence is what makes the MUST hold, and that half is kept below. But 13 of the
+    //   20 still returned the forbidden claim, and the other 7 were no better in kind: "No changes in
+    //   the last hour.", "No configuration changes noted in the last hour.", and -- using the
+    //   sanctioned wording and dropping the only clause that mattered -- "No changes found
+    //   attributable to this host in the last hour." Any sentence about an empty list is a statement
+    //   of absence; the caveat is what separates the safe one from the forbidden one, and the caveat
+    //   is the part a model compresses away.
+    //
+    //   ATTEMPT 2, supplying the LITERAL text to copy: 20/20 called the tool and 20/20 reproduced the
+    //   string exactly, with no forbidden claim anywhere -- and it was still wrong, because the model
+    //   emitted it UNCONDITIONALLY. Six runs on the armed missing-folder scenario named the FilePath
+    //   edit correctly and then appended "audit log inconclusive: no change attributable to this
+    //   host..." next to it, 6/6. A verbatim string in a prompt gets reproduced; its guard clause does
+    //   not.
+    //
+    // So the prompt keeps only what it demonstrably achieves -- the call happening, and no verdict in
+    // `rootCause` (0 violations there across all 40 runs) -- and the claim itself is refused
+    // downstream where the change list is a fact rather than a request.
+    //
+    // The lag measurement stays -- `contracts/mcp-tools.md` §3.12 carries it and made it a consumer
+    // rule (a row written at 10:50:04 first became queryable at +36s, an HTTPPort edit in the same
+    // session at +24s) -- but it is now a REASON the list may be empty rather than a test the model
+    // has to run.
+    set g = g _ " NEVER state that no configuration change was found, or that nothing was changed:"
+    set g = g _ " an empty changes list is not evidence of anything. Audit rows take tens of seconds"
+    set g = g _ " to become readable, retention counts rows this tool cannot show you, and a setting"
+    set g = g _ " changed outside the Management Portal may never be audited at all. So an empty list"
+    set g = g _ " supports no conclusion in either direction: give no verdict on configuration in"
+    set g = g _ " rootCause and draw nothing from it."
     // `noOpSaves` exists because these rows used to reach the model AS changes, and it read
     // `HTTPPort changed from 52773 to 52773` as evidence for a fault nothing had reconfigured. The
     // tool now filters them, so this is the belt to that braces: a count is not a change, and a model
