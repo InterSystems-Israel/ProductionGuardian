@@ -163,7 +163,26 @@ Non-negotiable behaviours:
 
 **A reference baseline exempts a host+metric.** `thresholds.json` `referenceBaselines` states a
 normal that does not move; where one exists it wins over the rolling mean, and self-inflation
-cannot occur for that pair. Currently only `Cloud API` / `queued`, set to `0`.
+cannot occur for that pair. **Nine pairs since 2026-08-23** — all three reported hosts ×
+`queued`, `avgQueueingTime`, `avgProcessingTime` — not the single `Cloud API` / `queued` entry this
+line claimed until 2026-09-01. `thresholds.json`'s `_comment_referenceBaselines_extended` carries
+the values and the reason: the one pair covered `queue_buildup`'s ramp and left every other
+comparative metric self-inflating, which showed up live as `growing_queue_wait` going CRITICAL and
+then falling back to WARNING while the wait was still growing. Read the values there rather than
+here — a copied list is what went stale in the first place.
+
+Two consequences of the extension worth knowing before shrinking it back:
+
+- **`queued: 0` on `Cloud API` is what makes `queue_buildup` able to fire on a ramp at all.** The
+  `2n/(n+1)` closed form below is why. Removing an entry reopens a measured defect, not a
+  theoretical one.
+- **It makes Early Warning's `warming` state unreachable** for every host the endpoint reports, since
+  `effectiveBaseline()` returns the reference *instead of* the rolling mean and so is non-null on the
+  first poll — `insufficient_samples` covers the whole warm-up instead. `_comment_referenceBaselines`
+  predicted this ("skips the warm-up wait … a side effect rather than a feature") without following it
+  through to the contract, so `earlywarning-api.md` §4.2 still documents `warming` at the instant the
+  live stack returns `insufficient_samples`. Filed as #228; whether the prose or the config changes is
+  the open question there.
 
 **`messagesPerSec` is exempt everywhere, because its baseline is a MEDIAN, not a mean.**
 `ROBUST_METRICS` in `baseline/window.ts` carries the full argument and the measurements; the short
