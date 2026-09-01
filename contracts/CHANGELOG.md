@@ -4,6 +4,27 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — `evidence[]` is not the record of what was read (documentation only)
+
+**No field, type or shape changes.** `investigation-api.md` §3.2 gains a paragraph stating the limit of
+the guarantee already there. That section promises the forward direction — a `mcp_tool` bullet means the
+call is in the audit log — and a reader can easily take the converse, that every call produces a bullet.
+It does not, and the gap was measured rather than supposed: `GetInterfacePath` was called on five
+consecutive investigations, audited every time, and reached `evidence[]` in three (#192, @tanifgit).
+
+The paragraph says so, names `diagnostics.toolCalls` as the count of tools used rather than the length of
+the array, and states that the audit log is what adjudicates a disagreement — from the response the two
+cases are indistinguishable.
+
+**Documented rather than silently fixed** because the fix is prompt-side and probabilistic. The same PR
+adds a one-entry-per-tool-call rule to the per-request goal, measured 8 of 8 against 3 of 5 before it,
+which is a real improvement and not a shape the contract can promise. A consumer that needs certainty
+needs the audit log, and that is now written down where a consumer will read it.
+
+#192.
+
+---
+
 ## 2026-09-01 — `inboundRatePerSec` is derived from the TAIL slope, not the window slope
 
 **One file, one formula corrected and one field added.** `investigation-api.md` §2.2:

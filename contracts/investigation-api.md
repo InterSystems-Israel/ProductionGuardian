@@ -428,6 +428,16 @@ it came from §2.2, so the engine measured it. `llm` means the model asserted it
 right, and it is not evidence in the same sense. Render the distinction; do not flatten these into
 identical bullets.
 
+**The converse does not hold, so do not read `evidence[]` as the record of what was read.** A
+`mcp_tool` bullet proves the call happened; a call that happened need not produce a bullet. The agent
+authors this array, and it was measured reporting one entry per *conclusion* rather than one per call:
+`GetInterfacePath` was called on all of five consecutive investigations, audited every time, and
+appeared in `evidence[]` in three — its answer folded into the upstream-error bullets it fed, which
+also credited those bullets with topology the error tool does not return (#192). The per-request goal
+now requires one entry per call, so the two should agree; when they do not, the audit log is what
+adjudicates, and it is the only thing that can. **The count of tools used is
+`diagnostics.toolCalls`** — that comes from the runtime — not the length of this array.
+
 `evidence: []` with `state: "complete"` is valid and means the agent produced a narrative without
 citing anything. That is a weak investigation, and it should look weak in the UI rather than being
 padded from the snapshot by either side.

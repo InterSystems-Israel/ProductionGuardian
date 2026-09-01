@@ -159,6 +159,24 @@ the reply stayed schema-valid while claiming the model had reasoned out values i
 tools. State a requirement in the same breath as the instruction it applies to; do not point at
 another part of the prompt.
 
+**And a tool that gets CALLED is not a tool that gets REPORTED.** The corollary, measured on
+`GetInterfacePath` (#192): called on every one of five runs and audited every time, attributed in
+`evidence[]` in three. `BuildGoal`'s attribution clause is a **shaping** rule — what an entry looks
+like *given that one exists* — so folding three readings into one correctly-shaped entry satisfies it
+completely, and the model reports one entry per *conclusion* rather than per call. `GetInterfacePath`
+loses most often because its answer is never a conclusion on its own: it is the input to the upstream
+error reads, so it rides along inside them, and the resulting entry credits topology to
+`get_recent_errors`. So the third thing a new tool needs is **one evidence entry per call**, stated as
+an existence rule and not implied by the attribution rule. And when you state it, carve out any tool
+whose empty read is inconclusive rather than a measurement — `GetRecentConfigChanges` is one, per #190.
+
+**Reading the reply cannot tell you which of these happened**, which is why #192 is measured with
+`Audit.Entry` deltas taken around each investigation rather than from `evidence[]`. Uncalled and
+unreported look identical from the response; the audit table adjudicates. Note it has **no
+`requestId`** — correlate by timestamp or ID range. And one tool is still not measurable this way:
+`DropUnsupportedConfigAbsence` sets `droppedEvidence` on the reply, `investigate.ts` discards it, so a
+guard refusal and a model omission are indistinguishable from the API.
+
 **Governance is per-`%AI.ToolMgr` and held in memory — there is no setting.** So never construct a
 `%AI.ToolMgr` or call `%AI.Agent.UseToolSet` directly: both give you an ungoverned manager with no
 authorization check, no audit row, and `SetPoolSize` live. Go through
