@@ -191,6 +191,10 @@ ClassMethod DropUnapplicableAction(parsed As %DynamicObject) [ Private ]
         quit
     }
 
+    // Captured before the clear, for the audit row: the whole recommendation, not just its `action`,
+    // because a reviewer asking what we suppressed wants the confidence and the rationale that came
+    // with it too.
+    set refused = parsed.recommendedAction
     set parsed.recommendedAction = ""
     // Built before the literal: a concatenation inside a %DynamicObject constructor is #1021
     // "Expected right bracket". Only a parenthesised single expression is accepted there.
@@ -200,6 +204,7 @@ ClassMethod DropUnapplicableAction(parsed As %DynamicObject) [ Private ]
     // filter is indistinguishable from a model that behaved. The engine ignores unknown keys.
     set parsed.droppedAction = { "type": (action.%Get("type", "")), "host": (host),
         "reason": "not_whitelisted_host", "detail": (detail) }
+    do ..RecordRefusal("DropUnapplicableAction", host, refused, parsed.droppedAction)
 }
 
 /// Raise a pool recommendation that is at or below break-even. Private.
@@ -332,10 +337,12 @@ ClassMethod DropPoolFixDuringOutage(parsed As %DynamicObject, host As %String) [
         quit
     }
 
+    set refused = parsed.recommendedAction
     set parsed.recommendedAction = ""
     set detail = "a connectivity error occurred " _ freshest _ "s ago, so more workers would fail faster rather than drain the queue"
     set parsed.droppedAction = { "type": "set_pool_size", "host": (host),
         "reason": "downstream_unreachable", "detail": (detail) }
+    do ..RecordRefusal("DropPoolFixDuringOutage", host, refused, parsed.droppedAction)
 }
 
 /// Age in seconds of the newest CONNECTIVITY error in a get_recent_errors reply, or "". Private.
@@ -427,6 +434,10 @@ ClassMethod DropStaleConnectivityClaim(parsed As %DynamicObject, host As %String
     // Recorded, not silent -- same reasoning as droppedAction. A reviewer needs to see that the
     // model claimed something and that we refused it, or this looks like a model that behaved.
     set parsed.droppedRemediation = { "reason": "stale_connectivity_claim", "detail": (detail) }
+    // `manual` and not `parsed.manualRemediation`, which is now "". This is the one guard whose
+    // response field carries no trace of what was said -- `droppedRemediation` has a reason and a
+    // detail and no summary -- so the audit row is the only place the refused claim survives at all.
+    do ..RecordRefusal("DropStaleConnectivityClaim", host, manual, parsed.droppedRemediation)
 }
 
 /// Strip an evidence entry that reports configuration the audit log cannot report. Private.
@@ -467,11 +478,18 @@ ClassMethod DropStaleConnectivityClaim(parsed As %DynamicObject, host As %String
 /// `evidence` or `rootCause` -- same division as `droppedRemediation`. The dispatcher may refuse a
 /// claim; it may not become a second author of the narrative.
 ///
-/// `droppedEvidence` REACHES THE AUDIT TRAIL AND THIS INSTANCE'S OWN REPLY, NOT THE API. Same reach as
-/// `droppedAction` and `droppedRemediation`, and worth stating rather than assuming: `investigate.ts`
-/// builds its response field by field from a parsed subset, so an extra key here is ignored rather
-/// than rejected -- no contract change, and no route to the dashboard either. Surfacing a refusal in
-/// the UI is a findings-API question and belongs in that contract, not in this class.
+/// `droppedEvidence` REACHES THIS INSTANCE'S OWN REPLY AND NOT THE API. Same reach as `droppedAction`
+/// and `droppedRemediation`, and worth stating rather than assuming: `investigate.ts` builds its
+/// response field by field from a parsed subset, so an extra key here is ignored rather than rejected
+/// -- no contract change, and no route to the dashboard either. Surfacing a refusal in the UI is a
+/// findings-API question and belongs in that contract, not in this class.
+///
+/// The audit trail is reached SEPARATELY, by `RecordRefusal` below, and this comment claimed otherwise
+/// until #196. It said "reaches the audit trail and this instance's own reply" while nothing in
+/// `iris/**` wrote an `Audit.Entry` row for a guard refusal -- the two writers were both tool-level and
+/// both fire before the dispatcher ever sees the reply. So the field's only consumer discarded it and
+/// the refusal outlived nothing. A comment naming a reach the code does not have is worse than no
+/// comment: it sent the person who found this looking for a defect in `investigate.ts`.
 ClassMethod DropUnsupportedConfigAbsence(parsed As %DynamicObject, host As %String) [ Private ]
 {
     set evidence = parsed.%Get("evidence")
@@ -492,12 +510,17 @@ ClassMethod DropUnsupportedConfigAbsence(parsed As %DynamicObject, host As %Stri
     }
 
     set kept = []
+    // The removed entries, kept for the audit row. The response only ever learns HOW MANY were
+    // dropped, so without this the entries themselves are gone the moment the reply is written --
+    // which is the half of #196 that no response field could have fixed.
+    set removed = []
     set dropped = 0
     for i = 0:1:evidence.%Size() - 1 {
         set entry = evidence.%Get(i)
         set tool = $select($isobject(entry): entry.%Get("tool", ""), 1: "")
         if $piece(tool, ".", $length(tool, ".")) = "GetRecentConfigChanges" {
             set dropped = dropped + 1
+            do removed.%Push(entry)
             continue
         }
         do kept.%Push(entry)
@@ -515,6 +538,33 @@ ClassMethod DropUnsupportedConfigAbsence(parsed As %DynamicObject, host As %Stri
             _ ##class(ProductionGuardian.LabDemo.Tools.ChangeLog).#DEFAULTWINDOW _ "h. Rows take tens "
             _ "of seconds to become readable and a setting changed outside the Management Portal is "
             _ "not audited at all, so this cannot rule a change out.") }
+    // THIS ROW IS ALSO A MEASUREMENT FIX, not only a durability one. #192 could not count
+    // `GetRecentConfigChanges` at all, because from the API a guard refusal and a model omission are
+    // byte-identical -- the tool call audits, the evidence entry simply is not there, and nothing said
+    // which happened. A `dropped` row for this guard is what separates the two.
+    do ..RecordRefusal("DropUnsupportedConfigAbsence", host, removed, parsed.droppedEvidence)
+}
+
+/// Persist one guard refusal to the audit trail. Private.
+///
+/// EVERY GUARD ENDS WITH THIS CALL, which is `Tools.AuthPolicy.Deny`'s rule for a different event: a
+/// row written by four separate branches is one a fifth branch will forget. Kept as a one-line
+/// forwarder rather than calling `Audit.Entry` from each guard, so "did this guard record its refusal"
+/// is answerable by reading the last line of each method.
+///
+/// THE STORAGE DECISION IS NOT HERE. `Audit.Entry.RecordRefusal` chooses the disposition, swallows a
+/// failed write, and keeps the refusal out of the process-private handle -- all three matter and all
+/// three are explained there. Nothing in this class needs to know them.
+///
+/// NOT AUDITED: `RaiseUndersizedPool`. It is the one dispatcher method here that changes the model's
+/// recommendation instead of refusing it, so "the AI recommended X and we suppressed it" is not what it
+/// does -- and #196 scoped itself to the four refusals deliberately. Auditing a *modified* value is a
+/// good argument and a separate one, because the row would need a shape these four do not
+/// (`requested` and `applied`, not `refused`), and because an operator approving a raised
+/// recommendation is a different review question from one never shown a refused claim.
+ClassMethod RecordRefusal(guard As %String, host As %String, refused As %DynamicAbstractObject, record As %DynamicObject) [ Private ]
+{
+    do ##class(ProductionGuardian.LabDemo.Audit.Entry).RecordRefusal(guard, host, refused, record)
 }
 
 /// Invoke the governed write tool. Every guard is the tool's, not this class's.
