@@ -1743,6 +1743,14 @@ the edge this tool exists for, and would have looked correct.
 It is derived from the production **definition**, not from runtime state, which is what makes it usable
 here at all: an investigation runs when a host is broken, and a dead host is still in the map.
 
+**The SQL query is the surface, and the alternatives are internal.** `Ens.InterfaceMaps.Utils` also
+exposes `FindAllPaths` — whose own dictionary description opens with "Internal method", and which hands
+paths back byref as `$lb(Service,Processes,Rules,DTLs,Operations)` lists — and `FindSequentialPath`,
+which takes a JSON spec whose shape is not documented anywhere reachable. The query returns the same
+data already parsed into named columns and is what the portal's own list is built on, so it is the least
+internal of the three. None of them is a published API; this is a dependency on an internal utility
+either way, and that is the honest characterisation.
+
 **No second source of truth.** Root `CLAUDE.md` §6 makes the `<Item>` set in `Production.cls`
 authoritative; this reads IRIS's own derivation of it, so there is nothing here to go stale when the
 production changes.
@@ -1755,6 +1763,14 @@ idle upstream host as a cause. Pair it with the activity, event-log and findings
 which of these hosts is actually in trouble.
 
 #### `known: false` is not an all-clear
+
+**The match is on the config item name, exactly.** Worth stating because `known` carries a
+not-an-all-clear claim and the underlying query is a *term search*: `EnumeratePaths`'s first argument is
+`pSearchTerm`, searched across services, operations, processes, **rules and transforms**. The
+implementation passes it empty and filters rows by exact equality against the config item names on each
+path, so a host name that happens to be a substring of a rule or DTL class name cannot produce
+`known: true` (@Ari-Glikman, #185). "Appears in a path" means "is one of that path's hosts", not
+"occurs somewhere in that path's text".
 
 A host that appears in no path returns `known: false`, `paths: []`, and a `note` saying so explicitly.
 That may mean it is wired to nothing, or that it is referenced only in a way the map cannot resolve.

@@ -29,10 +29,19 @@ as a `<send>` inside a routing rule class. A topology hand-built from settings w
 exactly the edge the tool exists for, and would have looked correct. It is also derived from the
 production DEFINITION, so it still answers when a host is dead — which is when an investigation runs.
 
-Two surfaces of that utility were tried and rejected, and §3.14 records why: `FindAllPaths` returns a
-control-character-delimited string (an undocumented internal encoding, and #161 is open about raw
-control characters in source), and `FindSequentialPath` wants a JSON spec whose shape is not documented
-— passing it a path string returns `ERROR #5035 ... 'Parsing error'`.
+Two surfaces of that utility were tried and rejected, and §3.14 records why. `FindAllPaths` is an
+**internal method** — its own dictionary description opens with that word — returning a `%Status` with
+the paths handed back **byref** as `$listbuild` lists, `$lb(Service,Processes,Rules,DTLs,Operations)`,
+per that same description. `FindSequentialPath` wants a JSON spec whose shape is not documented
+anywhere reachable; passing it a path string returns `ERROR #5035 ... 'Parsing error'`.
+
+**An earlier draft of this entry said `FindAllPaths` returned a control-character-delimited string in
+an undocumented encoding. That was wrong** (@Ari-Glikman, #185): the `$c(12)`, `$c(11)` and `$c(1)`
+bytes measured at offsets in the value are `$list` length and type headers, not delimiters, and
+`$listget` reads it in one line — verified, `$listvalid` is 1 with five elements. Corrected here rather
+than quietly dropped, because a wrong-but-plausible rationale is the kind a later reader trusts instead
+of re-checking, and it would have told them the richer surface was undecodable when it is documented.
+"Internal method" is the firmer reason and does not depend on decoding anything.
 
 ### `trend.recentDirection`, and the deviation it works around
 

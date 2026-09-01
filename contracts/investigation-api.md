@@ -212,7 +212,7 @@ is a description of a slope now, not a prediction of a crossing.
 | `metric` | string | `HostProjection.metric`. Only `queued` in MVP 2. Open string. |
 | `slope` | number | Same fit and same units as `Projection.slope` — OLS over the trailing 300 s. **May be zero or negative here**, unlike in `earlywarning-api.md`, because a queue that is draining is a fact the agent should see rather than a forecast to withhold. |
 | `slopeUnit` | string | Spelled out, e.g. `items/minute`. Carried so the agent never has to infer the unit. |
-| `recentDirection` | string \| **null** | `rising` \| `falling` \| `steady`, from `earlywarning-api.md` §1.5 — the **sign** of the tail fit, measured. `null` when no direction is claimed. **This is the field that says a queue is draining**; see below for why `slope` does not. |
+| `recentDirection` | string \| **null** | `rising` \| `falling` \| `steady`, from `earlywarning-api.md` §1.5 — the **sign** of the tail fit, measured. `null` when no direction is claimed. **This is the field that says a queue is draining**; see below for why `slope` does not, and for the two conditions §1.5 attaches to it. |
 | `thresholdValue` | number | `Threshold.value` — `max(baseline * 5.0, 50)`. For this scenario the `absoluteFloor` arm of 50 wins, because Cloud API's queue baseline is near zero. |
 | `thresholdCrossed` | boolean | `queued >= thresholdValue`. **Normally `true`** on an investigated finding. Present so the agent never has to infer it from a null ETA. |
 | `secondsToThreshold` | integer \| null | Whole seconds, `> 0`. **`null` whenever `thresholdCrossed` is `true`**, which is the usual case — there is no crossing left to forecast. Never `0`, never negative. |
@@ -232,6 +232,25 @@ carries no forecast to mislabel — the same argument that lets `kind: 'projecti
 **The `slope` deviation is not fixed by this change and is tracked separately**: honouring it needs the
 window slope published or refitted, which is that contract's decision rather than this one's. Until
 then, read `recentDirection` and treat a `null` `slope` on a crossed threshold as expected.
+
+**`recentDirection` ARRIVES WITH §1.5's TWO CONDITIONS, and they bind harder here than there.** That
+section attaches both to the field, and this contract's consumer is a model — the one already measured
+recommending the maximum pool at 0.85 confidence off an incomplete picture (@Ari-Glikman, #185).
+
+- **It lags a turn by design.** The tail is a 120 s fit, so the sign changes once enough of the tail
+  has turned, not on the first sample that moves. Measured in §1.5 at **~35 seconds and 46 messages of
+  real drain** after a peak before it flipped. So for the opening ~35 s of a genuine drain an agent
+  reads `rising`, and a stale recommendation in that window is the field behaving as specified rather
+  than a defect. **#177 is narrowed by this change, not closed**: the indistinguishable window drops
+  from ~110 s to ~35 s.
+- **`falling` is "coming down", never "recovered".** A queue 200 deep and still above its threshold is
+  falling *and* a live problem. Nothing may conclude that no action is needed from the direction alone —
+  §2.2 carries the depth and the threshold for exactly that judgement, and a producer must weigh the
+  direction against them rather than instead of them.
+
+Both are stated here rather than left in the sibling contract because a consumer reading this object
+has no reason to open that one, and the failure they prevent is the failure this endpoint exists to
+avoid.
 
 `trend` is `null` when there is no usable fit at all — a warming baseline, or fewer than 12 samples
 in the fit window. `null` rather than a zero slope, because "not fitted" and "flat" are different
