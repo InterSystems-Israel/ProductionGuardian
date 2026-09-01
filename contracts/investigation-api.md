@@ -365,27 +365,43 @@ send can name the message it failed to send. That text is not safe to forward un
 no reliable way to sanitise arbitrary alert prose. So the engine does not accept those findings at
 all.
 
-### 2.4 Only one finding shape is accepted
+### 2.4 Two finding types are accepted, and `system_alert` is refused separately
 
-`POST /api/investigate` accepts a finding where **`type` is `queue_buildup` and `host` is
-`Cloud API`.** Anything else returns `200` with `state: "unavailable"` and a `note` saying so (§5).
+`POST /api/investigate` accepts a finding whose **`type` is `queue_buildup` or `dead_host`**.
+Anything else returns `200` with `state: "unavailable"` and a `note` saying which of the two reasons
+below applies (§5).
 
-> **This gate does not exist in the shipped engine, and reason 2 below is why that matters more than
-> a scope slip.** There is no type or host check in `investigate()`, in `index.ts`, or in the panel,
-> so the Investigate button renders on every finding and the finding is forwarded to the agent
-> verbatim — including a `system_alert` whose `message` is text IRIS wrote into `alerts.log`. That is
-> the one path §2.3 says is closed. **#206**, and it is a code fix rather than a wording fix.
+Two refusals, checked in this order, and **they are deliberately not the same list**:
 
-Two reasons, and both are load-bearing:
+1. **The data boundary.** `system_alert` is never forwarded, whatever else changes. §2.3 is the rule:
+   its `message` is text IRIS wrote into `alerts.log`, an alert about a failed send can name the
+   message it failed to send, and there is no reliable way to sanitise arbitrary alert prose.
+2. **Scope.** The remaining five types are refused because **no investigation exists for them** —
+   nothing about them is unsafe. An endpoint that accepts all eight implies eight investigations
+   exist.
 
-1. **Scope.** MVP 2 is one scenario end to end, not a general capability (root `CLAUDE.md` §2.1).
-   One finding type, one host, one action type. An endpoint that accepts all eight types implies
-   eight investigations exist.
-2. **Safety.** It is what makes §2.3's alert-text hole unreachable rather than merely discouraged.
+Ordering them this way is the point. Until #206 the boundary was *implied* by the accepted set, so
+widening scope would have reopened the alert path silently — which is how the gate came to be asserted
+in three places in prose and none in code. A refusal that is not derived from the scope list cannot be
+widened by widening scope, and `test/investigationScope.test.ts` pins the two lists as disjoint.
 
-The dashboard should not offer the Investigate button for other findings; the check here is the
-backstop, not the UI's contract. When a second scenario lands, widening this set is a contract change
-that must say what it does about `system_alert`.
+**Keyed on `type`, not on `(type, host)`.** This section named `Cloud API` until #206, because MVP 2
+had exactly one host. The host half buys nothing: the concern above is the provenance of
+`finding.message`, which is a property of the type, and the agent's read tools are host-agnostic. A
+host name in the engine or the panel would also be either of them tracking `Production.cls`'s config
+— what `apps/dashboard/CLAUDE.md` §9 forbids outright (#25).
+
+**Two types because two scenarios ship.** `queue_buildup` is MVP 2's throughput-bound operation;
+`dead_host` is MVP 3's service polling a directory that does not exist
+(`docs/production-guardian-mvp3.md` §2.3). This section still said "one finding shape" after the
+second landed, so enforcing it as literally written would have refused a shipped, specified scenario
+— the second thing #206 found, and the reason the fix was not the one that issue proposed.
+
+The dashboard should not offer the Investigate button for these types; the check here is the backstop,
+not the UI's contract. The panel duplicates the type list for that reason, and distinguishes the two
+refusals in its copy — a privacy boundary and an unbuilt feature should not read the same to an
+operator. A third scenario is a contract change to this section, and it must say what it does about
+`system_alert`.
 
 ## 3. The response
 
@@ -767,6 +783,12 @@ shapes, and both are prefixes with the underlying cause appended verbatim:
 |---|---|
 | `agent call failed: <message>` | Anything that stopped the call producing a reply — connection refused, reset, DNS, the 30 s deadline, an error from the agent, an LLM outage or a rate limit. The transport or agent message is appended as-is. |
 | `agent reply did not match the contract` | The agent answered and the payload failed validation (§4.4). |
+| `system_alert findings are not investigated: …` | §2.4's first refusal. **Nothing was sent** — this is decided before the request is built. |
+| `no investigation exists for <type> findings` | §2.4's second refusal. Also decided before anything is sent. |
+
+The last two name the finding **type** and never quote `finding.message`, deliberately: on the
+`system_alert` path the message is the thing that must not travel, and a `note` is rendered in a
+browser.
 
 **Render it, do not parse it.** This table describes what the strings look like today, not a
 vocabulary anything guarantees — the engine builds them by interpolation, so a new cause changes the
@@ -782,9 +804,12 @@ quietly dropped — the enum was the better design and the wrong claim, and re-e
 change with a schema change behind it, not a paragraph. A sixth, `malformed_agent_response`, is the
 second row and loses nothing.
 
-**The remaining two described conditions the engine does not reach at all**, which is a divergence in
-behaviour rather than in field names, so §5 and Q3 now say what actually happens: `finding_not_found`
-is a `400` (#207), and there is no `out_of_scope` check anywhere (#206).
+**The remaining two are the reverse case — a state the engine reaches with no field to name it.**
+`out_of_scope` is now two distinct refusals (§2.4, #206) and `finding_not_found` is a `400` (#207);
+both are divergences in behaviour rather than in field names, so §5 and Q3 say what actually happens
+and the notes above are how a consumer tells them apart. The last two rows of that table are the
+closest thing to the retired enum that ships, and they are prose, which is why §5 asks consumers to
+branch on `state` and `source` instead.
 
 ### 4.2 Timeouts and retries
 
@@ -879,7 +904,8 @@ that is the worst of the available outcomes. Validate the whole object or use no
 | Agent unavailable, no cache | `200`, `state: "unavailable"`, `source: "none"` as shipped. Specified as `200`, `state: "degraded"`, `source: "canned"`; `canned` is a boot-time mode rather than a fallback (§4.3) |
 | Agent unavailable, no cache, no fixture | `200`, `state: "unavailable"`, `source: "none"`, `note` set |
 | Finding cleared between the poll and the click | **`400`** as shipped — `{"error": "bad request: no current finding with id ..."}`. **Specified as `200` + `state: "unavailable"`, and the paragraph below is the argument for it.** The engine deliberately throws instead, on the reasoning that an unknown id is the caller being wrong; the two readings disagree about whether a *race* is a caller defect. #207 |
-| Finding outside §2.4 | **No check exists**, and §2.4 explains why that is a data-boundary hole and not only a scope slip. As shipped, any finding on any host is investigated against the live agent. Specified as `200` + `state: "unavailable"`. #206 |
+| `system_alert` finding | `200`, `state: "unavailable"`, `source: "none"`, `note` naming the type. **Nothing is sent to the agent** — §2.4's first refusal, and the one that closes §2.3's hole. #206 |
+| Finding of any other type outside §2.4 | `200`, `state: "unavailable"`, `source: "none"`, `note: "no investigation exists for <type> findings"`. Also refused before the request is built. #206 |
 | Malformed body — not JSON, no `findingId`, extra keys | `400` + `{"error":"..."}` |
 | Wrong method on the path | `405` |
 | Genuine server fault | `500` + `{"error":"..."}` |
@@ -927,7 +953,7 @@ an answer is an assumption rather than a fact.
 |---|---|---|
 | **Q1** | What does the dashboard send? | `{"findingId": "..."}` and nothing else (§2.1). Not negotiable — it is half the data-boundary argument. |
 | **Q2** | Is it synchronous? How long? | Synchronous. Hard deadline 30 s, so build the panel for a multi-second spinner, not an instant swap. No polling endpoint. |
-| **Q3** | Can I investigate any finding? | **Contractually no** — `queue_buildup` on `Cloud API` only (§2.4), and a consumer should hide the control elsewhere. **But nothing enforces it as shipped:** there is no scope check in the engine and no type gate in the panel, so a click on any finding reaches the live agent. The `200` + `out_of_scope` this row promised until #201 does not exist, and §2.4 records what it lets through. #206 |
+| **Q3** | Can I investigate any finding? | **No — `queue_buildup` or `dead_host`, keyed on type only** (§2.4). Anything else is `200` + `state: "unavailable"` with a `note` naming which of the two refusals applied, and **the agent is not called at all** — the refusal happens before the request is built. A consumer should hide the control for the other six, and distinguish `system_alert` (never forwarded, a data rule) from the rest (no investigation built yet) in its copy. This row promised `queue_buildup` on `Cloud API` and an `out_of_scope` failure reason; the host half is dropped and there is no such enum — see §2.4 and §4.1. #206 |
 | **Q4** | Is `rootCause` safe to render verbatim? | Yes, and it is authoritative — do not summarise or reflow it. Same rule as `Finding.message`. |
 | **Q5** | Is `evidence[]` strings or objects? | Objects. Render `detail` as the bullet; use `source` to mark what was tool-measured versus model-asserted (§3.2). **`tool` is provenance text, not an enum** — it carries the runtime ClassMethod name (`GetPoolSize`), sometimes with a provider prefix (`functions.GetPoolSize`), and never the snake_case titles in `mcp-tools.md` §1. Render it; do not validate it, and do not drop a bullet whose tool you do not recognise (§3.2). |
 | **Q6** | Can I bind the approve button straight to `recommendedAction`? | Yes when `action.type` is `set_pool_size` and `action.size` is within `bounds`. Otherwise disable it and render nothing (§3.3). **Send `recommendedAction.action` to `POST /api/resolve` as `action`, unmodified** — it is already that contract's exact shape, and reshaping it is the failure `resolve-api.md` §1.2 warns about. Applying is that endpoint, not this one. |
