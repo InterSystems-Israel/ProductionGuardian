@@ -746,6 +746,34 @@ ClassMethod SystemPrompt() As %String [ Private ]
     set p = p _ "errors. A host with a queue, a normal processing time and only stale errors is the "
     set p = p _ "pool case, not the connectivity case. "
 
+    // THE INTERFACE MAP, AND IT IS THE FIRST TOOL HERE THAT IS NOT ABOUT ONE HOST (#177).
+    //
+    // Named in the form the runtime accepts -- `GetInterfacePath` -- for the reason recorded above the
+    // activity tools: `%AI.ToolMgr` derives the tool name from the ClassMethod name, and the
+    // snake_case spelling in the contract's section titles is not callable. Naming a tool the model
+    // cannot call fails silently, looking like a model that chose not to call anything.
+    //
+    // WHAT IT FIXES. Every other read tool is host-scoped, and so is the snapshot, so the model had no
+    // way to know another host existed. Measured: an upstream `MissingFolder` fault was fixed, 281
+    // accumulated messages flushed through at once, `Cloud API` queued 296, and the Detective
+    // recommended pool 8 -- the maximum -- at 0.85 confidence on a queue that drained to zero unaided
+    // while it answered. Its own evidence read "No errors recorded in the last 60 minutes", true of
+    // `Cloud API` and false of the production: `EMR Source` had been erroring every poll for twenty
+    // minutes inside that window.
+    //
+    // THE WIRING/TRAFFIC DISTINCTION IS SPELLED OUT because it is the available misreading. The map is
+    // built from configuration, so "upstream" means "is configured to feed this host", not "is sending
+    // it anything now" -- and a model that conflated the two would report an idle upstream host as a
+    // cause.
+    set p = p _ "GetInterfacePath returns this production's interface map for one host: which hosts "
+    set p = p _ "feed it (upstream) and which it feeds (downstream), NEAREST FIRST, with the routing "
+    set p = p _ "rules and transformations on each path. It is derived from the production's "
+    set p = p _ "configuration, so it says how the production is WIRED and not what is flowing now: an "
+    set p = p _ "upstream host is one configured to feed this one, which is not evidence that it sent "
+    set p = p _ "anything. Use it whenever a finding could have been caused somewhere else, and use the "
+    set p = p _ "host names it returns as the argument to the other read tools -- that is how you look "
+    set p = p _ "at a host other than the one under investigation. "
+
     // SIZE THE POOL, DO NOT DOUBLE IT. The model reliably suggested `current + 1` -- 1 -> 2 -- which
     // on the demo scenario is EXACTLY break-even and therefore fixes nothing. Measured live at pool 2
     // with 2 msg/sec arriving and 1.01s of work each: queue 112, 112, 114 over 50 seconds. It was not
@@ -1022,6 +1050,85 @@ ClassMethod BuildGoal(body As %DynamicObject) As %String [ Private ]
     // that sees a non-zero number next to an empty list must not narrate it as one.
     set g = g _ " noOpSaves counts saves where the value did not move. It is NOT a change: never"
     set g = g _ " report it as one, and never treat a non-zero count as evidence of anything."
+
+    // A FOURTH MANDATORY CALL, AND IT IS MANDATORY FOR THE REASON THE OTHER THREE ARE (#177).
+    //
+    // `iris/CLAUDE.md` §7: register it, describe it, and name it in a MUST -- and the third is the one
+    // that keeps being skipped. Measured twice already, on `get_recent_errors` and then again on
+    // `GetRecentConfigChanges`, which was registered with its prompt paragraph verified present in the
+    // compiled routine and still went uncalled because the model had a satisfying answer after two
+    // calls and stopped.
+    //
+    // UNCONDITIONAL, rather than gated on the finding type or on the model's judgement -- the same
+    // argument the config-change directive above makes, arriving with more force. "Might this have been
+    // caused elsewhere?" is a judgement about the DIAGNOSIS, and the model cannot make it before
+    // gathering evidence, which is the circularity that leaves a tool uncalled. One bounded query,
+    // measured at 33.7 ms, against the one time it mattered and was skipped.
+    set g = g _ " You MUST also call GetInterfacePath on this host before concluding, to find out what"
+    set g = g _ " feeds it. Every other tool here answers about ONE host, so without this you cannot"
+    set g = g _ " tell whether the cause is upstream."
+
+    // AND THE REASONING IT IS FOR, which is the whole point of the tool and is stated as a QUESTION TO
+    // ANSWER rather than as a conclusion to reach. The failure being designed out is confident sizing
+    // arithmetic on a backlog that is already draining: measured at pool 4, queue 296 falling to 0
+    // unaided, and a recommendation of 8 at 0.85 confidence.
+    //
+    // POSITIVE EVIDENCE ONLY, and this is load-bearing. `DropPoolFixDuringOutage` in this class already
+    // establishes the rule -- it "only ever fires on POSITIVE evidence, never on absent evidence" --
+    // and the same discipline has to bind the model here, or a directive about transients becomes a
+    // reason to hedge on the ordinary sustained rise. That rise is the flagship scenario and #108's
+    // standing acceptance check; making the Detective timid about it would be a worse defect than the
+    // one being fixed.
+    //
+    // THE THREE SIGNALS ARE NAMED because "consider whether it is transient" is a description, and
+    // descriptions do not change behaviour. Each is already obtainable: the trend is in this goal, the
+    // upstream host names come from the tool above, and `secondsAgo` is already in `get_recent_errors`.
+    // AND THEN READ THE UPSTREAM HOST, AS ITS OWN MUST. This was one clause of a longer sentence in
+    // the first version and the model did exactly what §7 predicts: it called GetInterfacePath,
+    // correctly reported that `Lab Router` and `EMR Source` feed `Cloud API`, and then never looked at
+    // either of them. Measured on the armed transient -- `toolCalls: 4`, upstream named in evidence,
+    // and a recommendation to raise the pool 4 -> 6 on a queue falling 261 -> 181.
+    //
+    // Knowing the name and reading the host are different acts, and only the second is a MUST here.
+    set g = g _ " Having the upstream names is not enough: you MUST then call get_recent_errors with"
+    set g = g _ " sinceMinutes 60 on EACH host in the upstream list, nearest first, and read secondsAgo"
+    set g = g _ " on what comes back. An error on THIS host and an error on the host feeding it are"
+    set g = g _ " different faults with different fixes, and 'no errors' about this host says nothing"
+    set g = g _ " about the production."
+    // EACH, NOT THE NEAREST, and this is a measured correction rather than a thoroughness reflex. With
+    // "the nearest upstream host" the model read `Lab Router` -- which was genuinely clean -- and
+    // reached the right verdict by the weaker route of "no ongoing fault anywhere", never seeing that
+    // `EMR Source` two hops up had been in Error for twenty minutes and was fixed three minutes
+    // earlier. Same conclusion, but the diagnosis an operator needs is the second one, and on a
+    // scenario where the nearest host DID have a stale error the weaker route would have misread it.
+    //
+    // Bounded by `#MAXITERATIONS` (8) rather than by a cap here: the measured run used 5 of 8, so a
+    // second upstream read fits, and a chain long enough to exhaust the budget stops on its own.
+    set g = g _ " A fault two hops upstream is still the cause of your queue."
+
+    set g = g _ " Then decide whether this host is the CAUSE or the VICTIM, using evidence and never"
+    set g = g _ " assumption. A queue can build on a host that is keeping up perfectly, because"
+    set g = g _ " something upstream stopped and was then fixed, releasing a backlog that is now"
+    set g = g _ " draining THROUGH this host. Three things distinguish that from a genuine sustained"
+    set g = g _ " rise, and you must check all three: trend.recentDirection, where ""falling"" means"
+    set g = g _ " the queue is already coming down on the pool it already has; whether the upstream"
+    set g = g _ " host you just read has errors that have ENDED, which secondsAgo tells you; and"
+    set g = g _ " whether the pool was already enlarged shortly before now, which"
+    set g = g _ " GetRecentConfigChanges shows."
+    set g = g _ " If those say the backlog is draining through after an upstream fault that has ended,"
+    set g = g _ " say so in rootCause, name the upstream host, and set recommendedAction to null --"
+    set g = g _ " enlarging a pool that is already clearing its backlog fixes nothing and is a"
+    set g = g _ " configuration change nobody needed. Only conclude this on POSITIVE evidence: a queue"
+    set g = g _ " that is rising, or an upstream host with no ended fault, is the ordinary case and"
+    set g = g _ " still wants the pool sized properly. Absence of evidence is not evidence of a"
+    set g = g _ " transient."
+    // THE LAG IS STATED, because the field it points at has one. `earlywarning-api.md` §1.5 measured
+    // the tail fit taking ~35s to turn after a real peak, so a burst that has just landed still reads
+    // "rising" while it drains. A model told only "falling means draining" would read the inverse as
+    // "rising means growing" and reach the confident wrong answer faster.
+    set g = g _ " trend.recentDirection is fitted over the recent past and takes tens of seconds to"
+    set g = g _ " turn, so ""rising"" shortly after a burst arrived does not prove the queue is still"
+    set g = g _ " growing. Weigh it with the upstream errors rather than on its own."
 
     // ATTRIBUTION, RESTATED HERE, and it is a repair rather than a belt-and-braces addition. The
     // directive above cost the reply its evidence attribution: the first version closed with "report
