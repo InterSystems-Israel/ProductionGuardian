@@ -7,3 +7,54 @@
 Dockerfile text eol=lf
 *.ini text eol=lf
 *.conf text eol=lf
+
+# ---------------------------------------------------------------------------
+# Keep source diffs renderable even if a NUL byte gets into a file (#161).
+#
+# Git classifies any file with a NUL in its first 8000 bytes as binary and shows
+# `Bin 21868 -> 27238 bytes` instead of a diff. That happened to mockClient.ts, and it
+# hid a one-line disagreement between two adjacent functions across two PRs (#140, #144)
+# -- demo-mode host graphs had never worked and no reviewer could have seen why.
+#
+# `diff` is the attribute that fixes it, and `text` is NOT -- measured, because the obvious
+# guess is wrong:
+#
+#     *.ts text  ->  bad.ts | Bin 37 -> 46 bytes      (still unreviewable)
+#     *.ts diff  ->  bad.ts | 1 +                     (renders)
+#
+# `text` governs end-of-line normalisation; `diff` governs whether git diffs it as text.
+# Both are wanted here, for two different failures, so both are set:
+#   - `diff` keeps review working. Defence in depth behind the CI sweep in ci.yml, which
+#     rejects the NUL outright -- this only matters for the window before CI runs, and for
+#     anyone reading history that already contains one.
+#   - `text` makes normalisation independent of each developer's core.autocrlf, and applies
+#     it even to a file git would otherwise write off as binary. That is the second-order
+#     cost #161 records: autocrlf skips presumed-binary files, so mockClient.ts quietly
+#     accumulated 616 CRLF endings, and removing the NUL then produced a 616-line diff that
+#     had to be split into its own commit to keep a 3-line fix reviewable.
+#
+# No `eol=` on purpose. These are read by editors and toolchains on the host, not by a
+# shebang inside a container, so the checkout convention stays the platform default -- that
+# is what the four rules above exist to override, and only for files that need it.
+*.ts text diff
+*.tsx text diff
+*.js text diff
+*.mjs text diff
+*.cls text diff
+*.json text diff
+*.css text diff
+*.html text diff
+*.md text diff
+*.yml text diff
+*.py text diff
+
+# The genuinely binary files, declared rather than detected. All five are `docs/` source
+# material, which root CLAUDE.md §3 makes read-only, so this list changes about never.
+#
+# It is load-bearing for CI, not decoration: the NUL sweep skips exactly the files whose
+# `diff` attribute is unset, so this is what tells it "these NULs are legitimate". Adding a
+# real binary therefore means adding a line here, in a reviewed PR -- and a new file type
+# nobody declared gets swept, which is the direction that fails safe.
+*.png binary
+*.pptx binary
+*.docx binary

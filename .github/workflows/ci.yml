@@ -370,3 +370,77 @@ jobs:
           if [ "$RAN" -eq 0 ]; then
             echo "npm test reported zero tests — the glob matched nothing"; exit 1
           fi
+
+  # The only job here with no area guard, because the failure it catches is not confined to
+  # a directory. Cheap: a checkout and one git command, no toolchain.
+  #
+  # A NUL byte in a tracked file makes git classify it binary and print `Bin 21868 -> 27238
+  # bytes` in place of every diff of it, on the command line and on GitHub. Nothing else
+  # breaks — it compiles, tests pass, CI is green — and the only casualty is human review.
+  # #157 found a one-line disagreement between two adjacent functions that survived two PRs
+  # inside that blind spot (#140 introduced the NUL, #144 changed 5,370 bytes behind it):
+  # demo-mode host graphs served empty series for every host and had never worked.
+  #
+  # NUL specifically, and not "control characters" as #161's title has it, because NUL is the
+  # only one with this effect — measured, not assumed: a file containing \x01\x02\x08 diffs
+  # normally (`1 +`). Rejecting all control characters would reject things that cost nothing.
+  no-nul-bytes:
+    name: hygiene — no NUL bytes in tracked text files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # THE OBVIOUS ONE-LINER IS SILENTLY BROKEN, which is the only reason this is not one.
+      # Both plausible spellings fail, in opposite directions, and both look like a working
+      # check from the log. Verified on a scratch repo holding one NUL file and one clean file:
+      #
+      #   git grep -lIP '\x00'   ->  (nothing), exit 1   WRONG — misses it, reads as clean
+      #   git grep -lP  '\x00'   ->  bad.ts,    exit 0   correct
+      #   git grep -l $'\x00'    ->  BOTH files, exit 0  WRONG — false positive on everything
+      #
+      # `-I` means "skip binary files", and a NUL is exactly what makes git call a file binary,
+      # so -I excludes the only files that can match. It exits 1 like a clean run, so the
+      # `|| true` form filed on #161 would have been green forever. And the pattern must stay
+      # the literal four characters `\x00` for git's PCRE to expand: bash cannot hold a NUL in
+      # an argument, so $'\x00' collapses to the empty pattern, which matches every file.
+      - name: Sweep tracked files for NUL bytes
+        run: |
+          # git grep exits 0 = matches, 1 = no matches, >1 = git itself failed — e.g. a git
+          # built without PCRE, where -P is unavailable. Treating >1 as clean is how this
+          # check would come to pass without running, which is the failure mode every other
+          # guard in this file exists to prevent.
+          set +e
+          candidates=$(git grep -lP '\x00' -- .)
+          status=$?
+          set -e
+          if [ "$status" -gt 1 ]; then
+            echo "::error::git grep -P exited $status — the NUL sweep did not run, so this is not a pass"
+            exit 1
+          fi
+          # Genuinely binary files legitimately contain NULs. They are DECLARED `binary` in
+          # .gitattributes, which unsets `diff`, and that attribute is what is consulted here
+          # rather than a path list — a second copy of "which files are binary" is a thing that
+          # goes stale, and this repo has been bitten by a hardcoded list three times (#14, #92).
+          # An undeclared file type resolves to `unspecified` and IS swept: a type nobody has
+          # classified is the case to fail on, not the case to wave through.
+          #
+          # ONE `check-attr` invocation over the whole list via --stdin, not one per file. The
+          # per-file loop was written first and is unusable: ~250 tracked files means ~500
+          # process spawns, which did not finish in two minutes locally. `comm -23` over sorted
+          # lists to subtract, the same idiom the iris-compile copy step above uses for the
+          # same job, rather than `grep -vf` whose "no lines matched" exit 1 would need a
+          # `|| true` that also swallows a real grep failure.
+          declared=$(git ls-files | git check-attr --stdin diff | sed -n 's/: diff: unset$//p' | sort)
+          offenders=$(comm -23 <(printf '%s\n' "$candidates" | sed '/^$/d' | sort) <(printf '%s\n' "$declared" | sed '/^$/d'))
+          if [ -n "$offenders" ]; then
+            echo "::error::NUL byte in tracked text file(s) — git diffs these as binary, so every future change to them is unreviewable:"
+            printf '%s\n' "$offenders" | sed 's/^/  /'
+            echo "If a control character is genuinely wanted as a separator, write it as the escape \\u0000 — byte-identical at runtime and the file stays diffable. Both legitimate uses in this repo do that already: seriesKey in apps/dashboard/src/api/mockClient.ts and SEP in services/detection-engine/src/baseline/window.ts, both because a space is legal in a host name."
+            echo "If the file is a real binary, declare it in .gitattributes instead."
+            exit 1
+          fi
+          # Prints the denominator, like the fence counts in contracts/validate.mjs and the
+          # executed-test counts above: "found none" and "looked at nothing" are the same log
+          # line otherwise.
+          tracked=$(git ls-files | wc -l)
+          skipped=$(printf '%s\n' "$declared" | sed '/^$/d' | wc -l)
+          echo "$tracked tracked files, $skipped declared binary in .gitattributes and skipped — no NUL bytes in the other $((tracked - skipped))"
