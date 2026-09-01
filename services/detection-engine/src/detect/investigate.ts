@@ -147,7 +147,11 @@ function isoSeconds(ms: number): string {
  * whatever a future field carries — so every value is named. Adding a field here is a decision, and
  * a decision is the point.
  */
-function buildSnapshot(host: Host, projection: HostProjection | undefined): Record<string, unknown> {
+function buildSnapshot(
+  host: Host,
+  projection: HostProjection | undefined,
+  trend: Record<string, unknown> | null,
+): Record<string, unknown> {
   return {
     host: host.host,
     type: host.type,
@@ -162,7 +166,61 @@ function buildSnapshot(host: Host, projection: HostProjection | undefined): Reco
     // observations. The projection itself is deliberately NOT sent -- see buildTrend.
     thresholdValue: projection?.threshold?.value ?? null,
     thresholdBasis: projection?.threshold?.basis ?? null,
+    inboundRatePerSec: inboundRatePerSec(host, trend),
   };
+}
+
+/**
+ * Arrival rate at the queue — §2.2's one DERIVED field in an otherwise measured object.
+ *
+ * `messagesPerSec` is COMPLETIONS, and on the host this product exists to fix that is the wrong
+ * number: `Cloud API` at `PoolSize 1` against a ~1s downstream reads ~1/sec because ~1/sec is all it
+ * can clear, while ~2.9/sec is arriving. Little's law fed with throughput then says "one worker is
+ * enough" about a host that is 1.9/sec behind — so the sizing arithmetic the agent shows its working
+ * with was systematically undersized on exactly the bound host it was written for (#188).
+ *
+ * Completions plus the rate the queue is growing is the arrival rate. Nothing measures it — no metric
+ * exists — so it is derived, and §2.2 requires it be labelled that way wherever it is shown.
+ * `AgentDispatcher`'s prompt carries that label; this is the only consumer.
+ *
+ * FROM `trend.recentSlope`, NOT `trend.slope`, and §2.2 was amended to say so (CHANGELOG 2026-09-01).
+ * The contract originally specified the window slope, and measuring both scenarios — which #188 was
+ * explicit about requiring — is what found that wrong. Measured on the drain-through transient:
+ * `set_pool_size 1 -> 4` applied, `recentDirection` reporting `falling`, `messagesPerSec` reading 4
+ * because four workers are clearing a backlog.
+ *
+ *     messagesPerSec alone           4      -> the model recommended 4 -> 8
+ *     via `slope`, queue 94          4.57   -> the model recommended 4 -> 6
+ *     via `recentSlope`, queue 108   3.82   -> the model recommended nothing
+ *
+ * "Is growing" has to mean now. A five-minute fit still leaning up two minutes into a drain is the
+ * right answer to the ETA question and the wrong one to this: it pushed the estimate ABOVE the raw
+ * completion rate on an emptying queue — the one state where completions already overstate the load.
+ * (The two derived rows are separate runs a few polls apart; the transient is short. What decides the
+ * outcome is which side of `messagesPerSec` each estimate lands on.)
+ *
+ * NULL RATHER THAN A FALLBACK TO `messagesPerSec`, which the contract states outright and is the
+ * whole point: throughput standing in for inflow reads as "inflow equals throughput", which is
+ * precisely the conclusion a `queue_buildup` finding contradicts. #58's defect class again — a
+ * computed value presented as a measurement.
+ *
+ * DERIVED FROM THE TREND OBJECT, not from the projection a second time, so a present
+ * `inboundRatePerSec` always has a visible `trend.recentSlope` behind it — which is why that
+ * magnitude was added to the contract rather than left internal. §2.2 ties them together in as many
+ * words — null "including whenever `trend` is `null`" — and the alternative is a snapshot implying a
+ * slope the trend declines to show.
+ */
+function inboundRatePerSec(host: Host, trend: Record<string, unknown> | null): number | null {
+  const slope = trend?.['recentSlope'];
+  if (typeof slope !== 'number') return null;
+  // 2dp, in the units the field is named for. The terms are a 1dp rate and a 1dp-per-minute slope, so
+  // an unrounded sum is float noise (`2.9000000000000004`) presented to an LLM as precision.
+  const rate = Math.round((host.messagesPerSec + slope / 60) * 100) / 100;
+  // A NEGATIVE ARRIVAL RATE IS NOT A RATE. The two terms are measured over different spans, so a queue
+  // draining faster than the tail's completions were counted can put the sum below zero -- arithmetic
+  // noise, not a host receiving negative messages. Clamped to 0 rather than nulled: "nothing is
+  // arriving" is the honest reading of it, and null would say "no fit", which is false here.
+  return rate < 0 ? 0 : rate;
 }
 
 /**
@@ -195,9 +253,10 @@ function buildTrend(projection: HostProjection | undefined): Record<string, unkn
    * off `/api/earlywarning`, where §1.4 forbids it; this is the consumer §2.2 published it for.
    */
   const slope = projection.windowSlopePerMinute;
+  const recentSlope = projection.recentSlopePerMinute;
   const threshold = projection.threshold?.value ?? null;
   /*
-   * NULL WHEN EITHER HALF IS MISSING, which §2.2 states as "no usable fit at all — a warming
+   * NULL WHEN ANY PART IS MISSING, which §2.2 states as "no usable fit at all — a warming
    * baseline, or fewer than 12 samples in the fit window": a null threshold is the warming case and
    * a null slope is the sample-count case, so the contract's sentence is exactly this disjunction.
    *
@@ -205,8 +264,17 @@ function buildTrend(projection: HostProjection | undefined): Record<string, unkn
    * so `insufficient_samples` served a trend object whose only real content was a threshold. That
    * threshold is in `snapshot.thresholdValue` too, so nothing is lost by declining here, and the
    * agent gets one meaning for a present `trend` rather than two.
+   *
+   * `recentSlope` IS A THIRD ARM RATHER THAN AN IMPLIED ONE (#188), because the two fits share a
+   * sample-count gate but not their outcome: the tail refits over the trailing 120 s, so a poll gap
+   * -- the engine records nothing while the proxy is unreachable -- can leave one sample inside it
+   * while the 300 s window still holds twelve. The tail fit is then null, and so is `recentDirection`,
+   * which is derived from its sign. Without this arm `trend` would carry a window slope beside two
+   * nulls and a `snapshot.inboundRatePerSec` of null, which is the two-meanings object the `||` above
+   * exists to refuse; §2.2's `recentSlope` row promises "non-null whenever `trend` is non-null", and
+   * this is what makes that true rather than nearly true.
    */
-  if (slope === null || threshold === null) return null;
+  if (slope === null || recentSlope === null || threshold === null) return null;
   return {
     metric: projection.metric,
     slope,
@@ -223,6 +291,17 @@ function buildTrend(projection: HostProjection | undefined): Record<string, unkn
      * distinguish and the one a single number flattens.
      */
     recentDirection: projection.recentDirection,
+    /*
+     * THE TAIL SLOPE'S MAGNITUDE, beside the sign that was already here (#188).
+     *
+     * Added to the contract rather than kept internal because `snapshot.inboundRatePerSec` is derived
+     * from it, and the prompt asks the model to state its arithmetic. A term it cannot see is a term
+     * it either omits or invents — and the field it would reach for instead is `slope`, which is the
+     * wrong span for "what is arriving now" and was measured producing `4 -> 6` on a draining queue.
+     *
+     * Gated with `slope`, so both are non-null whenever this object exists.
+     */
+    recentSlope,
     thresholdValue: threshold,
     // The `threshold !== null` half of this test went with the gate above, which now guarantees it.
     // Leaving it would say a null threshold is reachable here, and a reader would believe it.
@@ -444,12 +523,15 @@ export async function investigate(
   // this investigation makes, which is how a reviewer ties an action back to the reasoning.
   const requestId = `inv-${finding.id}-${started}`;
 
+  // Built first and passed in: `snapshot.inboundRatePerSec` is derived from `trend.recentSlope`, and reading
+  // it off the trend the agent actually receives is what keeps the two from ever disagreeing (#188).
+  const trend = buildTrend(projection);
   const request: InvestigationRequest = {
     requestId,
     requestedAt: isoSeconds(started),
     finding,
-    snapshot: buildSnapshot(host, projection),
-    trend: buildTrend(projection),
+    snapshot: buildSnapshot(host, projection, trend),
+    trend,
   };
 
   let raw: unknown;

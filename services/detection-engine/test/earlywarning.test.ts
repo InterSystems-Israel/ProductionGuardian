@@ -732,8 +732,10 @@ describe('windowSlopePerMinute — measured for the agent, never published (§2.
        still imply a rate we declined to state — the thing §1.4 forbids. */
     const p = series(Array.from({ length: 60 }, (_, i) => i * 3));
     assert.ok('windowSlopePerMinute' in p, 'sanity: it is on the internal type');
+    assert.ok('recentSlopePerMinute' in p, 'sanity: so is the tail magnitude');
     const wire = publishedProjection(p);
     assert.ok(!('windowSlopePerMinute' in wire), 'a slope must not reach /api/earlywarning');
+    assert.ok(!('recentSlopePerMinute' in wire), 'nor the tail slope — §1.4 does not distinguish');
     // Every other §1.1 key survives. A whitelist that dropped a published field would be the
     // opposite defect and just as invisible from the stripping assertion alone.
     for (const key of [
@@ -751,5 +753,95 @@ describe('windowSlopePerMinute — measured for the agent, never published (§2.
       assert.ok(key in wire, `publishedProjection dropped ${key}`);
     }
     assert.equal(Object.keys(wire).length, 10, 'an internal field reached the wire shape');
+  });
+});
+
+/*
+ * `recentSlopePerMinute` — the TAIL magnitude, and why it had to be carried (#188).
+ *
+ * The sign has been published as `recentDirection` since #174. The magnitude was thrown away, and
+ * `investigation-api.md` §2.2 defined `snapshot.inboundRatePerSec` — the arrival rate the pool-sizing
+ * arithmetic depends on — as `messagesPerSec + trend.slope/60`, i.e. from the WINDOW fit.
+ *
+ * That is the wrong span, measured rather than argued. Two minutes into a drain the window still
+ * leans up, so the estimate lands ABOVE the raw completion rate on the one state where completions are
+ * already an overstatement: live, `messagesPerSec 4` became `4.69` and the agent recommended `4 -> 8`
+ * on a queue emptying without help. §2.2 was amended to read `trend.recentSlope` and this is the field
+ * behind it.
+ *
+ * INTERNAL on the same terms as the window slope: `earlywarning-api.md` §1.4 does not distinguish
+ * between the two spans, and "falling ~25/min" beside a withheld ETA is exactly what it forbids.
+ */
+describe('recentSlopePerMinute — the tail magnitude, for the agent only (§2.2 amended)', () => {
+  function series(values: readonly number[], cfg = config()) {
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    let at = T0;
+    for (const v of values) {
+      store.record(HOST, 'queued', v, at);
+      at += POLL;
+    }
+    return projectHost(HOST, raw(values.at(-1) ?? 0), store, cfg, at - POLL);
+  }
+
+  /** Rise to just under `peak` in fives, then drain by 3 a poll — the drain-through transient. */
+  function riseThenDrain(peak: number, drainSamples: number): number[] {
+    const values: number[] = [];
+    for (let v = 0; v < peak; v += 5) values.push(v);
+    let v = peak;
+    for (let i = 0; i < drainSamples; i += 1) {
+      v -= 3;
+      values.push(v);
+    }
+    return values;
+  }
+
+  it('DISAGREES IN SIGN with the window fit on the drain-through transient', () => {
+    /* The load-bearing test of the pair. Same series, opposite answers: +26.6/min over five minutes
+       and -25.6/min over the last two. Everything else in this describe is a boundary condition;
+       this is the measurement that says the two fields are not interchangeable. */
+    const p = series(riseThenDrain(150, 20));
+    assert.equal(p.projectionUnavailable, 'already_crossed', 'sanity: the investigated state');
+    assert.equal(p.windowSlopePerMinute, 26.6);
+    assert.equal(p.recentSlopePerMinute, -25.6);
+    assert.equal(p.recentDirection, 'falling', 'and the sign is the one already published');
+  });
+
+  it('agrees with the window fit when the whole series moves one way', () => {
+    // Both spans see the same thing on a pure ramp, which is why the flagship scenario does not
+    // distinguish them and the test above is the one that does.
+    const p = series(Array.from({ length: 40 }, (_, i) => i * 5));
+    assert.equal(p.recentSlopePerMinute, p.windowSlopePerMinute);
+    assert.equal(p.recentSlopePerMinute, 60);
+  });
+
+  it('carries the magnitude behind recentDirection, sign for sign', () => {
+    /* The invariant that keeps the two consistent: they are one measurement, not two. A row saying
+       `falling` beside a positive rate would be a contradiction the agent cannot resolve. */
+    for (const values of [
+      Array.from({ length: 40 }, (_, i) => i * 5),
+      riseThenDrain(150, 20),
+      Array.from({ length: 40 }, () => 80),
+    ]) {
+      const p = series(values);
+      const slope = p.recentSlopePerMinute;
+      assert.ok(slope !== null, 'sanity: fitted');
+      const expected = slope > 0 ? 'rising' : slope < 0 ? 'falling' : 'steady';
+      assert.equal(p.recentDirection, expected, `slope ${slope} vs ${p.recentDirection}`);
+    }
+  });
+
+  it('is null exactly where the window slope is null — one meaning for "no fit"', () => {
+    /* Gated identically on purpose: `investigate()` derives `inboundRatePerSec` from a trend object
+       that exists only when the window slope does, so a tail slope null under a non-null window
+       would silently drop the field with no reason a reader could name. */
+    for (const p of [series([0, 1, 2, 3, 5])]) {
+      assert.equal(p.windowSlopePerMinute, null);
+      assert.equal(p.recentSlopePerMinute, null);
+    }
+    const cfg = config();
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    const unmeasurable = projectHost(HOST, raw(null), store, cfg, T0);
+    assert.equal(unmeasurable.windowSlopePerMinute, null);
+    assert.equal(unmeasurable.recentSlopePerMinute, null);
   });
 });

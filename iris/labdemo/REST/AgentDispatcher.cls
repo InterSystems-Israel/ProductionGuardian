@@ -215,9 +215,24 @@ ClassMethod DropUnapplicableAction(parsed As %DynamicObject) [ Private ]
 /// does not, and the bound that actually protects the production is `Tools.Resolve`'s 2..8, not this.
 ///
 /// THE FLOOR IS BREAK-EVEN PLUS ONE, not a full drain target. Break-even is
-/// `messagesPerSec x avgProcessingTime`; one spare worker is the minimum that makes the backlog
+/// `arrival rate x avgProcessingTime`; one spare worker is the minimum that makes the backlog
 /// shrink at all, and choosing how FAST to drain is a judgement about how much capacity to spend,
 /// which is the model's to make. This guard only refuses the sizes that cannot work.
+///
+/// THE RATE IS `inboundRatePerSec`, NOT `messagesPerSec` (#188). `messagesPerSec` counts messages
+/// COMPLETED, so on a throughput-bound host it measures the throttle rather than the load: the
+/// flagship scenario clears ~1/sec while ~2.9/sec arrive, and break-even from 1 is 1.01 workers,
+/// giving a floor of 3 for a host that needs 4. The guard raised the model's answer and was still
+/// one short of a size that drains -- so it produced the exact outcome its own note describes, an
+/// approved change the operator watches do nothing. Arrival rate is completions plus the rate the
+/// backlog is growing NOW, which the engine derives from the tail fit behind `recentDirection` and
+/// sends as `inboundRatePerSec` (`contracts/investigation-api.md` §2.2, amended 2026-09-01).
+///
+/// It falls back to `messagesPerSec` when that field is null, which the contract forbids for the
+/// FIELD and not for a consumer: null means no usable trend fit, and on a queue that is not moving
+/// the two rates converge anyway. The distinction is that the field must not claim inflow it has
+/// not measured, whereas this guard's job is to refuse an unworkable size with whatever it has. The
+/// `detail` string names which rate was used, so the arithmetic on screen is the arithmetic run.
 ///
 /// SILENT WHEN IT CANNOT COMPUTE. An absent or zero rate, or an unmeasurable processing time, leaves
 /// the recommendation untouched -- a fabricated floor from missing inputs would be the
@@ -235,7 +250,13 @@ ClassMethod RaiseUndersizedPool(parsed As %DynamicObject, snapshot As %DynamicOb
         quit
     }
 
-    set rate = snapshot.%Get("messagesPerSec")
+    // Arrival rate where the engine could derive one, completions otherwise -- see the note above.
+    set rate = snapshot.%Get("inboundRatePerSec")
+    set rateLabel = "msg/sec arriving"
+    if (rate = "") || (+rate <= 0) {
+        set rate = snapshot.%Get("messagesPerSec")
+        set rateLabel = "msg/sec completed"
+    }
     set perMsg = snapshot.%Get("avgProcessingTime")
     // Both must be present AND positive. A zero rate means nothing is arriving, so there is no
     // break-even to compute; a zero service time means the work is free and no pool size is wrong.
@@ -260,7 +281,7 @@ ClassMethod RaiseUndersizedPool(parsed As %DynamicObject, snapshot As %DynamicOb
     // indistinguishable from a model that got it right, and the arithmetic is exactly what a
     // presenter wants to be able to point at.
     set detail = "break-even is " _ $fnumber(breakEven, "", 2) _ " workers ("
-        _ $fnumber(+rate, "", 2) _ " msg/sec x " _ $fnumber(+perMsg, "", 2) _ "s), so "
+        _ $fnumber(+rate, "", 2) _ " " _ rateLabel _ " x " _ $fnumber(+perMsg, "", 2) _ "s), so "
         _ asked _ " would hold the queue steady rather than drain it"
     set parsed.resizedAction = { "requested": (asked), "applied": (floor),
         "reason": "at_or_below_break_even", "detail": (detail) }
@@ -782,18 +803,49 @@ ClassMethod SystemPrompt() As %String [ Private ]
     // The arithmetic is Little's law and every term is already in the snapshot the goal carries, so
     // this needs no new tool:
     //
-    //     workers to keep up   = messagesPerSec x avgProcessingTime
+    //     workers to keep up    = inboundRatePerSec x avgProcessingTime
     //     workers to also drain = enough spare capacity to clear `queued` in a few minutes
+    //
+    // THE RATE IS `inboundRatePerSec`, AND NAMING IT IS THE WHOLE POINT (#188). The block below said
+    // `messagesPerSec`, which counts messages COMPLETED -- on a throughput-bound host that is the
+    // throttle, not the load, so the formula returned the size the host already effectively had.
+    // Measured: ~1/sec completed while ~2.9/sec arrived, break-even 1.01, "needs 2". The example
+    // sentence has always said "arriving", so the prose was right and the formula was not, which is
+    // the worst arrangement -- the model follows the formula. `iris/CLAUDE.md`'s rule about a tool
+    // that is described but never named in a MUST applies to snapshot fields inside a stated
+    // calculation for the same reason: the model uses the term the formula spells out.
     //
     // Stated as an explicit calculation rather than "choose a sensible size", because a model asked
     // for a judgement produces a round number and a model asked for a computation shows its working
     // -- and the working is what a presenter needs to justify the number on screen.
     set p = p _ "SIZE THE POOL FROM THE NUMBERS, never by simply doubling or adding one. Work it out: "
-    set p = p _ "workersToKeepUp = messagesPerSec x avgProcessingTime, which is the pool that merely "
+    set p = p _ "workersToKeepUp = inboundRatePerSec x avgProcessingTime, which is the pool that merely "
     set p = p _ "stops the queue growing -- at that size the backlog NEVER clears. Then add capacity "
     set p = p _ "to drain what is already queued within a few minutes, and round UP. So a host taking "
     set p = p _ "1s per message with 2 arriving per second needs 2 just to break even, and 4 to break "
     set p = p _ "even and drain a backlog at about 2 per second. "
+    set p = p _ "USE inboundRatePerSec AND NOT messagesPerSec FOR THIS. messagesPerSec counts messages "
+    set p = p _ "the host COMPLETED, which is the bottleneck rather than the load on a host that cannot "
+    set p = p _ "keep up, and is an OVERSTATEMENT of the load on a host that is clearing a backlog after "
+    set p = p _ "a fix. Sizing from it is wrong in both directions. inboundRatePerSec is the arrival "
+    set p = p _ "rate: it is DERIVED, not measured -- messagesPerSec plus trend.recentSlope per minute "
+    set p = p _ "divided by 60 -- so call it an estimate when you quote it, and quote trend.recentSlope "
+    set p = p _ "beside it when you show the arithmetic. If it is null there was no usable trend fit; "
+    set p = p _ "then use messagesPerSec, say that you did, and say that it understates the arrival rate "
+    set p = p _ "while a queue is building and overstates it while one is draining. "
+    // A SEPARATE DIRECTIVE FROM THE SIZING FORMULA, because the formula alone is satisfiable by a
+    // second increase. Measured on the live drain-through transient -- pool already 1 -> 4, queue
+    // falling, `recentDirection: falling` present in the payload -- the model recommended `4 -> 8`
+    // sizing from messagesPerSec alone, and still `4 -> 6` once inboundRatePerSec was derived from the
+    // WINDOW slope, because that estimate read 4.57 and so justified its own increase. Both halves now
+    // point the other way, and neither substitutes for the other: the tail-slope estimate stops the
+    // arithmetic being wrong, and this stops correct arithmetic being applied to a queue that needs no
+    // action at all. The directive cannot fire on an estimate that reads above messagesPerSec.
+    set p = p _ "AND IF THE QUEUE IS ALREADY DRAINING, RECOMMEND NOTHING. When trend.recentDirection is "
+    set p = p _ "'falling' and inboundRatePerSec is below messagesPerSec, the host is clearing its "
+    set p = p _ "backlog with the capacity it has: return recommendedAction null and say in rootCause "
+    set p = p _ "that the queue is recovering and how fast, however deep it still is. A depth above the "
+    set p = p _ "threshold is why the finding exists, not evidence that a further change is needed. "
     set p = p _ "State the arithmetic in rootCause or in an evidence entry, including the break-even "
     set p = p _ "figure, so a reader can see why that size and not a smaller one. "
     set p = p _ "If the computed size exceeds the permitted maximum, recommend the maximum and say in "

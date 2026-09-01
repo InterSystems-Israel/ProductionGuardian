@@ -4,6 +4,77 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — `inboundRatePerSec` is derived from the TAIL slope, not the window slope
+
+**One file, one formula corrected and one field added.** `investigation-api.md` §2.2:
+`snapshot.inboundRatePerSec` was defined as `messagesPerSec + trend.slope/60` and now reads
+`messagesPerSec + trend.recentSlope/60`; `trend` gains `recentSlope`, the signed magnitude whose sign
+has been published as `recentDirection` since #177.
+
+**Additive for `trend`, a genuine semantic change for `inboundRatePerSec`** — the same field name can
+now hold a different number for the same inputs. That is the honest description, and the reason this is
+a contract change rather than an implementation detail. It is nonetheless safe to land in one step,
+because the field had **never been populated by any engine build**: #188 found the only three mentions
+of it in the repo were in this contract. Nothing has consumed it, so nothing changes meaning underneath
+a consumer. The two things that will read it — `AgentDispatcher`'s prompt and `RaiseUndersizedPool` —
+are in the same PR.
+
+#188.
+
+### Why the original formula was wrong
+
+Arrival rate is completions plus the rate the backlog is growing, and **"is growing" has to mean now**.
+The window fit is 300 s. Minutes into a drain it still leans up, so the estimate lands *above* the raw
+completion rate on the one state where completions are already an overstatement.
+
+Measured on the live drain-through transient: `set_pool_size 1 -> 4` applied, `recentDirection`
+reporting `falling`, `messagesPerSec` reading 4 because four workers are clearing a backlog.
+
+| Arrival rate from | Value | Agent's recommendation |
+|---|---|---|
+| `messagesPerSec` alone | 4 | `set_pool_size 4 -> 8` |
+| `+ slope/60`, queue 94 | 4.57 | `set_pool_size 4 -> 6` |
+| `+ recentSlope/60`, queue 108 | **3.82** | **none** |
+
+The two derived rows are separate runs a few polls apart, not the same sample — the transient is short.
+What decides the outcome is which side of `messagesPerSec` each estimate lands on.
+
+So this is not a refinement of the original formula: it moved the number the wrong way. The flagship
+rise is the only scenario that ever exercised it, and there the two spans agree — which is exactly why
+the defect was invisible until #188 required both scenarios be measured.
+
+One caveat on attribution, because the table above would otherwise overclaim. The `none` outcome is
+produced by the corrected estimate **and** a new prompt directive that says to recommend nothing when
+`recentDirection` is `falling` and `inboundRatePerSec` is below `messagesPerSec`. Neither alone is
+sufficient: the directive cannot fire on an estimate that reads 4.57, and the estimate alone leaves the
+sizing formula free to justify a second increase. The contract change is the half that lives here.
+
+The field was ratified in the MVP 2 design, before either scenario existed to measure it against. That
+is not a criticism of the original spec; it is the argument for #188's instruction to re-measure both.
+
+### Why `recentSlope` is published rather than kept internal
+
+The prompt asks the model to state its sizing arithmetic. A term it cannot see is a term it either
+omits or invents — and the field it reaches for instead is `slope`, which is the wrong span. Measured
+under the *previous* prompt, which never named the derived field at all: the model read
+`inboundRatePerSec` off the snapshot JSON anyway and reported "Receiving approximately 4.69 messages
+per second", presenting a derived estimate as an observation. A number the model will use regardless is
+better named and caveated than hidden.
+
+It stays off `earlywarning-api.md` — §1.4's rule that no bare slope accompanies a withheld forecast does
+not distinguish the two spans, and `publishedProjection()`'s whitelist strips both.
+
+### Also corrected
+
+The §2.2 paragraph telling consumers to "treat a `null` `slope` on a crossed threshold as expected" was
+stale: #187 delivered `slope` as specified and did not update the prose. Both slopes are now populated
+on every investigation, and the section says so.
+
+`inboundRatePerSec` is now stated to clamp at `0`. The two terms span different windows, so a steep
+enough drain can put the sum negative; `null` would claim there was no fit.
+
+---
+
 ## 2026-09-01 — a tool for the interface map, and `trend` gains the field that says a queue is draining
 
 **Two files, both additive.** `mcp-tools.md` gains one read tool (§3.14, `get_interface_path`);

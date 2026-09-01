@@ -341,7 +341,7 @@ describe('write-origin allow-list (resolve-api.md §13.2)', () => {
  * calls it. The two are different claims — the route served `snapshot.projections` raw for the whole of
  * MVP 2, so a mapper that works and a mapper that is reached would have looked identical from there.
  *
- * The projection below is a literal on purpose: it carries `windowSlopePerMinute` set, so a route that
+ * The projection below is a literal on purpose: it carries BOTH internal slopes set, so a route that
  * forgot the whitelist publishes a bare slope beside a withheld forecast and this fails.
  */
 describe('/api/earlywarning publishes no bare slope (earlywarning-api.md §1.4)', () => {
@@ -357,9 +357,13 @@ describe('/api/earlywarning publishes no bare slope (earlywarning-api.md §1.4)'
     projection: null,
     projectionUnavailable: 'already_crossed',
     windowSlopePerMinute: 26.6,
+    // Opposite sign to the window on purpose — the live drain-through transient. A route leaking this
+    // one would put "falling 25.6/min" on the panel, which §1.4 forbids for the same reason as the
+    // other: a rate beside a withheld ETA implies the forecast was withheld arbitrarily.
+    recentSlopePerMinute: -25.6,
   };
 
-  it('strips windowSlopePerMinute from the wire payload', async () => {
+  it('strips BOTH internal slopes from the wire payload', async () => {
     snapshot = { hosts: [], findings: [], projections: [PROJECTION], state: 'ok', lastPollAt: Date.now() };
     const res = await fetch(`${base}/api/earlywarning`);
     assert.equal(res.status, 200);
@@ -368,6 +372,7 @@ describe('/api/earlywarning publishes no bare slope (earlywarning-api.md §1.4)'
     const [row] = rows;
     assert.ok(row !== undefined);
     assert.ok(!('windowSlopePerMinute' in row), 'a slope must not reach the panel');
+    assert.ok(!('recentSlopePerMinute' in row), 'nor the tail slope');
     // Nothing else may go missing with it: §1 makes an absent KEY a violation even where the value
     // would be null, so the count is asserted rather than a sampling of fields.
     assert.equal(Object.keys(row).length, 10);
