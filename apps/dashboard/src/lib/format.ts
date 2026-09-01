@@ -113,6 +113,25 @@ export function formatComparison(
   return `${sign}${formatDelta(Math.abs(delta))}`;
 }
 
+/**
+ * `functions.GetPoolSize` → `GetPoolSize`. Display only, for `evidence[].tool`.
+ *
+ * The model sometimes echoes OpenAI's tool namespacing back into its own JSON — measured at about
+ * 1 in 20 runs — so one ClassMethod can arrive under two names inside a single investigation and
+ * read as two different tools (#214). `investigation-api.md` §3.2 documents the prefix and says to
+ * "match on a suffix if you must match at all".
+ *
+ * Nothing is validated and nothing is dropped, which is the rest of §3.2: an unprefixed name passes
+ * through byte-for-byte, including one this directory has never heard of. Narrow on purpose — one
+ * known prefix matched exactly, rather than "everything before the last dot", because a tool name is
+ * a ClassMethod name and guessing that a future provider's prefix is dot-delimited is guessing.
+ */
+export function toolLabel(tool: string): string {
+  const stripped = tool.startsWith('functions.') ? tool.slice('functions.'.length) : tool;
+  // A prefix with nothing after it is not a name; show what actually arrived rather than nothing.
+  return stripped.length > 0 ? stripped : tool;
+}
+
 /** `queue_buildup` → `Queue buildup`. Used for finding types the UI doesn't know. */
 export function humanize(value: string): string {
   const spaced = value.replace(/[_-]+/g, ' ').trim();

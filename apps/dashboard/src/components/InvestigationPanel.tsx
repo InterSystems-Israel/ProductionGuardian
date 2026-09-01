@@ -32,7 +32,7 @@
  */
 
 import type { InvestigationView, ResolveActionView, ResolveMode, ResolveView } from '../types/mvp2';
-import { ABSENT } from '../lib/format';
+import { ABSENT, toolLabel } from '../lib/format';
 import { findingMeta, investigationScope } from '../lib/findingMeta';
 
 export interface InvestigationPanelProps {
@@ -213,7 +213,9 @@ export function InvestigationPanel({
                     <span className="pg-evidence__label">{item.label}</span>
                     <span className={`pg-evidence__source pg-evidence__source--${item.source}`}>
                       {SOURCE_LABEL[item.source] ?? item.source}
-                      {item.tool !== null && <span className="pg-facts__mono"> · {item.tool}</span>}
+                      {item.tool !== null && (
+                        <span className="pg-facts__mono"> · {toolLabel(item.tool)}</span>
+                      )}
                     </span>
                   </div>
                   <div className="pg-evidence__detail">{item.detail}</div>

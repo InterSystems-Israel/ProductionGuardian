@@ -37,6 +37,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChatExchange } from '../hooks/useChat';
+import { toolLabel } from '../lib/format';
 import { IconMessages } from './icons';
 
 export interface ActivityChatProps {
@@ -349,7 +350,7 @@ function ChatAnswer({ answer, onRetry, asking }: ChatAnswerProps): JSX.Element {
                   ) : (
                     <>
                       read from IRIS
-                      <span className="pg-facts__mono"> · {item.tool}</span>
+                      <span className="pg-facts__mono"> · {toolLabel(item.tool)}</span>
                     </>
                   )}
                 </span>
