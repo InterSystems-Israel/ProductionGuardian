@@ -106,7 +106,7 @@ other than `findingId`, is a `400` (§5) — not a best-effort parse.
 The engine builds this from its own in-memory state. It is a closed allowlist:
 `additionalProperties: false` at **every** level.
 
-```json
+```json validate=investigation.schema.json#/definitions/InvestigationRequest
 {
   "requestId": "inv-8a31f0",
   "requestedAt": "2026-08-18T09:14:22Z",
@@ -122,6 +122,7 @@ The engine builds this from its own in-memory state. It is a closed allowlist:
   },
   "snapshot": {
     "host": "Cloud API",
+    "type": "operation",
     "capturedAt": "2026-08-18T09:14:20Z",
     "status": "OK",
     "queued": 214,
@@ -134,6 +135,8 @@ The engine builds this from its own in-memory state. It is a closed allowlist:
     "avgQueueingTimeBaseline": 0.03,
     "errored": 0,
     "lastActivity": "2026-08-18T09:14:19Z",
+    "thresholdValue": 50,
+    "thresholdBasis": "absoluteFloor",
     "inboundRatePerSec": 3.04
   },
   "trend": {
@@ -172,6 +175,7 @@ per-host payload and the rolling baseline window:
 | Field | Type | Notes |
 |---|---|---|
 | `host` | string | Always equal to `finding.host`. |
+| `type` | string | The host kind, mirroring `Host.type` (`actor` already normalized to `process`). Open string. **Sent since MVP 2 and unlisted here until 2026-09-01** — see below. |
 | `capturedAt` | string | ISO 8601 UTC. The poll the snapshot came from, not the request time. |
 | `status` | string | As `healthscan-api.md` Q1. Open string. |
 | `queued` | integer \| null | `null` means **not measurable**, never zero (Q13). |
@@ -184,7 +188,18 @@ per-host payload and the rolling baseline window:
 | `avgQueueingTimeBaseline` | number \| null | |
 | `errored` | integer \| null | `null` means not measurable, never zero (Q13). |
 | `lastActivity` | string | ISO 8601 UTC, ±10 s (Q11). |
+| `thresholdValue` | number \| null | Early Warning's `Threshold.value`. An **observation**, not a forecast — which is why it may sit in `snapshot` while the projection may not. Duplicated in `trend.thresholdValue` when a trend exists, and present here when it does not. **Sent since MVP 2 and unlisted here until 2026-09-01.** |
+| `thresholdBasis` | string \| null | Which arm won: `absoluteFloor` or `baselineMultiplier`. Open string — a consumer branching on it should read `earlywarning-api.md`, where it is closed. **Sent since MVP 2 and unlisted here until 2026-09-01.** |
 | `inboundRatePerSec` | number \| null | **Derived, not measured** — see below. |
+
+**The three rows marked 2026-09-01 were arriving all along and this table did not say so** (#211). All
+three are legitimate — `type` is the host kind, and the two threshold fields are Early Warning
+*observations* the engine's own comments correctly distinguish from the forecast — but a consumer
+reading this section did not know they arrive, and `additionalProperties: false` above meant the honest
+reading of the old table was that they were forbidden. They are listed rather than removed because the
+agent uses them; what was wrong was the record, not the payload. The mirror-image drift — five fields
+specified here and never sent — is #211's other half and is **still open**: see the note at the end of
+this section.
 
 The baseline fields are not decoration. For this scenario the load-bearing one is
 `avgProcessingTime` against `avgProcessingTimeBaseline`: Cloud API's measured steady state is
@@ -260,7 +275,7 @@ is a description of a slope now, not a prediction of a crossing.
 | `slopeUnit` | string | Spelled out, e.g. `items/minute`. Applies to **both** slopes. Carried so the agent never has to infer the unit. |
 | `recentDirection` | string \| **null** | `rising` \| `falling` \| `steady`, from `earlywarning-api.md` §1.5 — the **sign** of the tail fit, measured. `null` when no direction is claimed. **This is the field that says a queue is draining**; see below for why `slope` does not, and for the two conditions §1.5 attaches to it. |
 | `thresholdValue` | number | `Threshold.value` — `max(baseline * 5.0, 50)`. For this scenario the `absoluteFloor` arm of 50 wins, because Cloud API's queue baseline is near zero. |
-| `thresholdCrossed` | boolean | `queued >= thresholdValue`. **Normally `true`** on an investigated finding. Present so the agent never has to infer it from a null ETA. |
+| `thresholdCrossed` | boolean \| **null** | `queued >= thresholdValue`. **Normally `true`** on an investigated finding. Present so the agent never has to infer it from a null ETA. **Nullable, amended 2026-09-01** — this row said `boolean` and the engine has always been able to send `null`, because `queued` may be null (not measurable, Q13) and `null` is the honest answer there rather than `false`. Found while writing the schema for this section. |
 | `secondsToThreshold` | integer \| null | Whole seconds, `> 0`. **`null` whenever `thresholdCrossed` is `true`**, which is the usual case — there is no crossing left to forecast. Never `0`, never negative. |
 
 **`recentDirection` exists because `slope` did not deliver what the row above promises, and the three
@@ -322,6 +337,26 @@ discriminator exists so a consumer cannot hold a forecast without holding the la
 one predictive field is `secondsToThreshold`, and it is `null` in the case this endpoint actually
 serves. **If a field from this object is ever hoisted alongside `snapshot`, or if `secondsToThreshold`
 starts arriving non-null, the discriminator comes back with it.**
+
+**This section is machine-checked as of 2026-09-01, and the engine does not yet satisfy it.** Both
+statements matter and they are not in tension.
+
+`investigation.schema.json` now carries `InvestigationRequest`, `InvestigationSnapshot` and
+`InvestigationTrend`, and the payload above is annotated so `npm run validate` checks it. Until then
+this half of the contract was **prose only** while §3's response half was validated against a captured
+live sample — and that asymmetry, not carelessness, is why §2.2 drifted in both directions for three
+MVPs while §4 stayed honest. The schema is where `additionalProperties: false at every level` stops
+being a sentence.
+
+What the schema states is the **agreed** shape, which the engine currently misses in one direction:
+`buildSnapshot()` does not send `capturedAt` or any of the four `*Baseline` fields (#211, half 1). That
+is a defect in the engine, not a licence in the schema, so the fields stay **required** here — and
+`validate.mjs` carries the engine's current snapshot as an explicit must-**reject** case, which is the
+same thing `healthscan.schema.json` does with the engine's `name`/`messagesErrored` host shape. There is
+deliberately **no `samples/investigation-request.json` yet**: a capture taken today would be
+schema-invalid, and committing one would either weaken the schema to match a defect or park a red
+fixture in `samples/`. It arrives with half 1, which needs a metered live run to confirm the
+`avgProcessingTime` evidence bullet becomes a comparison rather than an assertion.
 
 ### 2.3 The data boundary is part of the schema
 

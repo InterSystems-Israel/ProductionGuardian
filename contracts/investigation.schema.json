@@ -91,6 +91,206 @@
       }
     },
 
+    "InvestigationSnapshot": {
+      "description": "§2.2's `snapshot`. Every field is a value the engine already holds, and it is an ALLOWLIST -- the data boundary root CLAUDE.md §2.1 sets, stated where a validator can enforce it: metrics and configuration leave the instance, never message content. `additionalProperties: false` is therefore load-bearing rather than tidy. NO `poolSize`, deliberately: the engine reads metrics, not configuration, and PoolSize reaches the agent through the get_pool_size MCP tool so that the central evidence in this scenario is tool-measured rather than engine-asserted.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "type",
+        "capturedAt",
+        "status",
+        "queued",
+        "queuedBaseline",
+        "messagesPerSec",
+        "messagesPerSecBaseline",
+        "avgProcessingTime",
+        "avgProcessingTimeBaseline",
+        "avgQueueingTime",
+        "avgQueueingTimeBaseline",
+        "errored",
+        "lastActivity",
+        "thresholdValue",
+        "thresholdBasis",
+        "inboundRatePerSec"
+      ],
+      "properties": {
+        "host": {
+          "description": "Always equal to `finding.host`. That equality is NOT encoded -- draft-07 cannot compare two fields -- so it stays a prose promise in §2.2 rather than being half-expressed here.",
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "description": "The host kind, mirroring `healthscan.schema.json#/definitions/Host.type` (actor -> process already normalized). Open string, and NOT a $ref into Host: this is a copied value, not a shared type, and a $ref would say the wrong one. SENT SINCE MVP 2 AND UNSPECIFIED UNTIL 2026-09-01 -- see #211.",
+          "type": "string"
+        },
+        "capturedAt": {
+          "description": "The poll the snapshot came from, NOT the request time. `requestedAt` is not a substitute: without this the agent cannot tell how stale the reading is.",
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
+        },
+        "status": {
+          "description": "OPEN STRING, deliberately weaker than `Host.status`'s enum, because §2.2 says so in as many words ('As healthscan-api.md Q1. Open string.'). A new IRIS status must not make an investigation unvalidatable.",
+          "type": "string"
+        },
+        "queued": {
+          "description": "null means NOT MEASURABLE, never zero (Q13).",
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "queuedBaseline": { "type": ["number", "null"] },
+        "messagesPerSec": {
+          "description": "COMPLETIONS per second, which on a throughput-bound host is not the arrival rate -- see `inboundRatePerSec`.",
+          "type": "number"
+        },
+        "messagesPerSecBaseline": { "type": ["number", "null"] },
+        "avgProcessingTime": {
+          "description": "Seconds (Q6).",
+          "type": "number"
+        },
+        "avgProcessingTimeBaseline": {
+          "description": "The load-bearing baseline for MVP 2's scenario: ~0.05 s steady state against ~1.02 s under the downstream throttle is the ratio the '~1s per message' evidence bullet rests on. A snapshot without it forces the agent to ASSERT that number instead of comparing it.",
+          "type": ["number", "null"]
+        },
+        "avgQueueingTime": {
+          "description": "Seconds (Q6).",
+          "type": "number"
+        },
+        "avgQueueingTimeBaseline": { "type": ["number", "null"] },
+        "errored": {
+          "description": "null means not measurable, never zero (Q13).",
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "lastActivity": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
+        },
+        "thresholdValue": {
+          "description": "Early Warning's `Threshold.value` -- an OBSERVATION, not a forecast, which is why it may sit in `snapshot` while the projection may not. Duplicated in `trend.thresholdValue` when a trend exists, and present here even when it does not. SENT SINCE MVP 2 AND UNSPECIFIED UNTIL 2026-09-01 -- see #211.",
+          "type": ["number", "null"]
+        },
+        "thresholdBasis": {
+          "description": "Which arm won -- `absoluteFloor` or `baselineMultiplier`. Open like `earlywarning.schema.json`'s own `basis` is closed: there it is the field a consumer branches on, here it is context for a narrative. SENT SINCE MVP 2 AND UNSPECIFIED UNTIL 2026-09-01 -- see #211.",
+          "type": ["string", "null"]
+        },
+        "inboundRatePerSec": {
+          "description": "DERIVED, not measured, and the only such field in this object: `messagesPerSec + trend.recentSlope/60`. null when either term is unavailable, INCLUDING whenever `trend` is null -- never falling back to `messagesPerSec`, which would read as 'inflow equals throughput', the exact conclusion the finding contradicts. `minimum: 0` is the contract's clamp, not a coincidence: the two terms span different windows, so a collapsing queue can put the sum below zero, and 'negative messages arriving' is not a reading to hand a model.",
+          "type": ["number", "null"],
+          "minimum": 0
+        }
+      }
+    },
+
+    "InvestigationTrend": {
+      "description": "§2.2's `trend`. DELIBERATELY NOT Early Warning's `projection`: by the time a queue_buildup finding exists the queue has already crossed the threshold, and `earlywarning-api.md` publishes `projection: null` with `already_crossed` in exactly that state -- so reusing that shape would hand the investigation null for the one condition it is always invoked on. This reuses the field names and units and drops the forecast framing. Null as a whole when there is no usable fit.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric",
+        "slope",
+        "recentSlope",
+        "slopeUnit",
+        "recentDirection",
+        "thresholdValue",
+        "thresholdCrossed",
+        "secondsToThreshold"
+      ],
+      "properties": {
+        "metric": {
+          "description": "Open string. Only `queued` in MVP 2, and left open for the same reason as in earlywarning.schema.json.",
+          "type": "string",
+          "minLength": 1
+        },
+        "slope": {
+          "description": "OLS over the trailing 300 s, items/minute. MAY BE ZERO OR NEGATIVE here, unlike in `earlywarning.schema.json` where `slope` is exclusiveMinimum 0 -- a draining queue is a fact the agent should see rather than a forecast to withhold, and that difference between the two contracts is the whole reason this definition exists.",
+          "type": "number"
+        },
+        "recentSlope": {
+          "description": "OLS over the trailing 120 s tail, same unit, signed. Non-null whenever `trend` is non-null, which the engine's third gate arm makes true rather than nearly true. `snapshot.inboundRatePerSec` is derived from THIS and not from `slope`: the window fit puts arrivals above throughput while a queue is emptying, which was measured recommending 4 -> 6 on a draining queue.",
+          "type": "number"
+        },
+        "slopeUnit": {
+          "description": "Spelled out, e.g. `items/minute`. Applies to BOTH slopes, so the agent never infers a unit.",
+          "type": "string",
+          "minLength": 1
+        },
+        "recentDirection": {
+          "description": "The SIGN of the tail fit, measured. Closed here where `metric` is open, because a consumer branches on it. It lags a genuine drain by ~35 s by design (earlywarning-api.md §1.5).",
+          "enum": ["rising", "falling", "steady", null]
+        },
+        "thresholdValue": {
+          "description": "`max(baseline * 5.0, 50)`. Non-null: a null threshold is one of the three conditions that makes `trend` null as a whole.",
+          "type": "number"
+        },
+        "thresholdCrossed": {
+          "description": "`queued >= thresholdValue`, normally true on an investigated finding. NULLABLE, which §2.2's table said was `boolean` until 2026-09-01: `queued` may be null (not measurable, Q13), and null crossed is the honest answer there rather than false. Present so the agent never infers it from a null ETA.",
+          "type": ["boolean", "null"]
+        },
+        "secondsToThreshold": {
+          "description": "Whole seconds, > 0. Null whenever `thresholdCrossed` is true -- there is no crossing left to forecast -- which the if/then below enforces rather than only asserting.",
+          "type": ["integer", "null"],
+          "exclusiveMinimum": 0
+        }
+      },
+      "allOf": [
+        {
+          "description": "A crossed threshold leaves nothing to forecast. §2.2 states this as 'null whenever thresholdCrossed is true'; without it a request could carry both a crossing and an ETA to it, which is the shape that would make an agent narrate a future event that already happened.",
+          "if": {
+            "properties": { "thresholdCrossed": { "const": true } },
+            "required": ["thresholdCrossed"]
+          },
+          "then": { "properties": { "secondsToThreshold": { "type": "null" } } }
+        }
+      ]
+    },
+
+    "InvestigationRequest": {
+      "description": "§2.2. What the ENGINE sends the AGENT -- the half of this contract that had no schema until 2026-09-01, which is why §2.2 drifted in both directions (five fields specified and never sent, three sent and never specified) while §4 stayed honest under CI. #211.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requestId", "requestedAt", "finding", "snapshot", "trend"],
+      "properties": {
+        "requestId": {
+          "description": "Engine-generated, unique per agent call, echoed in the response and used to correlate with the AI Hub audit log. NOT a finding id.",
+          "type": "string",
+          "minLength": 1
+        },
+        "requestedAt": {
+          "description": "Whole seconds, matching `InvestigationResponse.investigatedAt` rather than the sub-second-tolerant host timestamps: both are minted by `isoSeconds()` in this engine, so tolerating a fraction here would permit a shape nothing produces.",
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+        },
+        "finding": {
+          "description": "A $REF, not a transcription, and here that IS right where earlywarning.schema.json's `host` deliberately is not: §2.2 says 'exactly healthscan.schema.json#/definitions/Finding, embedded verbatim', so this is a shared TYPE rather than an equal value. A second transcription of a ratified object drifts, and this object is the one place a drift would be invisible -- the agent would simply receive a field nobody specified.",
+          "$ref": "https://production-guardian/contracts/healthscan.schema.json#/definitions/Finding"
+        },
+        "snapshot": { "$ref": "#/definitions/InvestigationSnapshot" },
+        "trend": {
+          "description": "Null when there is no usable fit: a warming baseline, fewer than 12 samples in the 300 s window, or fewer than 2 in the 120 s tail. Any of the three, not all -- the engine's gate is a disjunction so that a present `trend` has one meaning rather than two.",
+          "oneOf": [{ "$ref": "#/definitions/InvestigationTrend" }, { "type": "null" }]
+        }
+      },
+      "allOf": [
+        {
+          "description": "No trend, no derived arrival rate. §2.2 makes this explicit ('including whenever trend is null') because the tempting fallback -- `messagesPerSec` -- reads as 'inflow equals throughput' on precisely the host where that is the false conclusion the finding exists to contradict.",
+          "if": {
+            "properties": { "trend": { "type": "null" } },
+            "required": ["trend"]
+          },
+          "then": {
+            "properties": {
+              "snapshot": {
+                "properties": { "inboundRatePerSec": { "type": "null" } }
+              }
+            }
+          }
+        }
+      ]
+    },
+
     "InvestigationResponse": {
       "type": "object",
       "additionalProperties": false,
