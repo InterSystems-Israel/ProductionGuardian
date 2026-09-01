@@ -10,6 +10,7 @@ import type { AddressInfo } from 'node:net';
 import { after, before, describe, it } from 'node:test';
 import { createFindingsServer } from '../src/api/server.ts';
 import type { EngineSnapshot } from '../src/detect/engine.ts';
+import type { HostProjection } from '../src/detect/earlywarning.ts';
 import type { Finding, Host } from '../src/types/healthscan.ts';
 
 const HOST: Host = {
@@ -330,5 +331,47 @@ describe('write-origin allow-list (resolve-api.md §13.2)', () => {
     });
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('access-control-allow-origin'), '*');
+  });
+});
+
+/*
+ * §1.4 IS ENFORCED BY THE ROUTE, NOT ONLY BY THE MAPPER (#187).
+ *
+ * `publishedProjection()` is unit-tested in `earlywarning.test.ts`; this asserts the endpoint actually
+ * calls it. The two are different claims — the route served `snapshot.projections` raw for the whole of
+ * MVP 2, so a mapper that works and a mapper that is reached would have looked identical from there.
+ *
+ * The projection below is a literal on purpose: it carries `windowSlopePerMinute` set, so a route that
+ * forgot the whitelist publishes a bare slope beside a withheld forecast and this fails.
+ */
+describe('/api/earlywarning publishes no bare slope (earlywarning-api.md §1.4)', () => {
+  const PROJECTION: HostProjection = {
+    host: 'Cloud API',
+    metric: 'queued',
+    currentValue: 90,
+    measuredAt: '2026-08-31T10:00:00Z',
+    fitSampleCount: 50,
+    fitSpanSeconds: 245,
+    recentDirection: 'falling',
+    threshold: { value: 50, basis: 'absoluteFloor', baselineValue: 0, findingType: 'queue_buildup' },
+    projection: null,
+    projectionUnavailable: 'already_crossed',
+    windowSlopePerMinute: 26.6,
+  };
+
+  it('strips windowSlopePerMinute from the wire payload', async () => {
+    snapshot = { hosts: [], findings: [], projections: [PROJECTION], state: 'ok', lastPollAt: Date.now() };
+    const res = await fetch(`${base}/api/earlywarning`);
+    assert.equal(res.status, 200);
+    const rows = (await res.json()) as Record<string, unknown>[];
+    assert.equal(rows.length, 1);
+    const [row] = rows;
+    assert.ok(row !== undefined);
+    assert.ok(!('windowSlopePerMinute' in row), 'a slope must not reach the panel');
+    // Nothing else may go missing with it: §1 makes an absent KEY a violation even where the value
+    // would be null, so the count is asserted rather than a sampling of fields.
+    assert.equal(Object.keys(row).length, 10);
+    assert.equal(row.projectionUnavailable, 'already_crossed');
+    assert.equal(row.recentDirection, 'falling');
   });
 });

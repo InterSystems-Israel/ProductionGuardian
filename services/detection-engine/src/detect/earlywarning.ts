@@ -70,6 +70,51 @@ export interface HostProjection {
   threshold: Threshold | null;
   projection: Projection | null;
   projectionUnavailable: ProjectionUnavailableReason | null;
+  /**
+   * The window fit's slope in `SLOPE_UNIT`, or null when there is no usable fit.
+   *
+   * **INTERNAL. Not part of `earlywarning-api.md`, and `publishedProjection()` strips it** — §1.4
+   * forbids a slope outside `projection` on that endpoint even where we decline to forecast, because
+   * "rising ~0.5/min" next to no ETA implies the forecast we withheld. That rule is not being bent
+   * here: the panel still cannot see this.
+   *
+   * It exists because `investigation-api.md` §2.2 ratifies the opposite decision for the *agent*:
+   * `trend.slope` "may be zero or negative here ... because a queue that is draining is a fact the
+   * agent should see rather than a forecast to withhold". Two contracts, two consumers, and the
+   * difference is deliberate on both sides — a panel renders to an operator who acts on a rate, and
+   * the model has already been measured recommending a bigger pool for a queue falling 261 -> 181
+   * because nothing in its input carried one (#187).
+   *
+   * Sourced from the SAME fit the ETA uses, computed once below. A second derivation of it is how
+   * the published rate and the agent's rate would come to disagree — #174's argument for the tail.
+   */
+  windowSlopePerMinute: number | null;
+}
+
+/**
+ * One projection as `earlywarning-api.md` §1.1 defines it, for the endpoint to serve.
+ *
+ * A WHITELIST rather than a delete, so the wire shape is decided here and an internal field added to
+ * `HostProjection` cannot reach the endpoint by forgetting about it. Publishing a new field becomes a
+ * deliberate edit to this function, which is the right amount of friction for a ratified contract.
+ * Typed as an `Omit` so a renamed field fails to compile rather than silently vanishing from the
+ * payload.
+ */
+export function publishedProjection(
+  p: HostProjection,
+): Omit<HostProjection, 'windowSlopePerMinute'> {
+  return {
+    host: p.host,
+    metric: p.metric,
+    currentValue: p.currentValue,
+    measuredAt: p.measuredAt,
+    fitSampleCount: p.fitSampleCount,
+    fitSpanSeconds: p.fitSpanSeconds,
+    recentDirection: p.recentDirection,
+    threshold: p.threshold,
+    projection: p.projection,
+    projectionUnavailable: p.projectionUnavailable,
+  };
 }
 
 /**
@@ -130,7 +175,16 @@ const DISCONTINUITY_FRACTION = 0.8;
 const RECENT_FIT_FRACTION = 0.4;
 
 const FINDING_TYPE = 'queue_buildup';
-const SLOPE_UNIT = 'items/minute';
+
+/**
+ * The unit of every slope this module produces, published and internal alike.
+ *
+ * Exported because `investigate.ts` labels `windowSlopePerMinute` with it and used to read
+ * `projection.slopeUnit` for that — a field that is null in the one state an investigation happens in
+ * (#187), so it fell back to a second copy of this literal. One constant, so the label cannot say
+ * something the arithmetic does not.
+ */
+export const SLOPE_UNIT = 'items/minute';
 
 /**
  * Least-squares slope in units per MILLISECOND, or null when it cannot be fitted.
@@ -343,6 +397,23 @@ export function projectHost(
           ? 'falling'
           : 'steady';
 
+  /*
+   * THE WINDOW FIT, COMPUTED ONCE AND USED TWICE (#187) — the same arrangement the tail fit above
+   * already has, and for the same reason.
+   *
+   * It used to be computed at step 6, below `already_crossed`, which is exactly the decline a
+   * `queue_buildup` investigation is always requested under. So `trend.slope` was null on every
+   * investigation the product has ever served, and `investigation-api.md` §2.2's stated reason for
+   * carrying a signed slope — a draining queue is a fact the agent should see — was never delivered.
+   *
+   * Hoisting it changes no projection: the ETA path reads this value instead of refitting, and by the
+   * time it does, `fitSampleCount >= minFitSamples` has already been checked, so it is the same
+   * number the same call produced before. Gated identically to the tail so "there is no usable fit"
+   * has one meaning across both.
+   */
+  const windowSlopePerMinute =
+    fitSampleCount >= ew.minFitSamples ? perMinute(fitSlopePerMs(samples)) : null;
+
   const base = {
     host,
     metric: METRIC as string,
@@ -351,6 +422,7 @@ export function projectHost(
     fitSampleCount,
     fitSpanSeconds,
     recentDirection,
+    windowSlopePerMinute,
   };
 
   const decline = (
@@ -376,8 +448,10 @@ export function projectHost(
   if (currentValue >= threshold.value) return decline('already_crossed', threshold);
 
   // Round to 1dp in the units we publish, and test the ROUNDED value: publishing slope 0.0
-  // alongside a finite ETA would be a projection the numbers do not support.
-  const slopePerMinute = perMinute(fitSlopePerMs(samples));
+  // alongside a finite ETA would be a projection the numbers do not support. Reads the fit measured
+  // above rather than repeating it (#187) — one computation, so the rate this endpoint publishes and
+  // the rate the investigation carries cannot drift apart.
+  const slopePerMinute = windowSlopePerMinute;
   if (slopePerMinute === null || slopePerMinute <= 0) return decline('not_rising', threshold);
 
   // RISING NOW, not merely on average across the window. The window slope above describes the

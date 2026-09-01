@@ -13,6 +13,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { EngineSnapshot } from '../detect/engine.ts';
+import { publishedProjection } from '../detect/earlywarning.ts';
 // The off-state payload, imported rather than written out here. It was inlined twice below and
 // gained a third field in #135; two literals that must match a type in another file is the
 // stale-copy shape, and both copies would have been silently short an `activating: {}`.
@@ -342,7 +343,13 @@ export function createFindingsServer(options: ServerOptions): Server {
           // state header could disagree with the first, and a consumer would have no rule for
           // which to believe -- the projections come from the same poll as the findings, so they
           // share its freshness by construction.
-          sendJson(res, 200, snapshot.projections, snapshot.state);
+          //
+          // MAPPED, not served raw: `HostProjection` carries one internal field the contract does not
+          // publish -- the measured window slope, which §1.4 keeps off this endpoint and
+          // `investigation-api.md` §2.2 requires for the agent (#187). `publishedProjection` is a
+          // whitelist, so the endpoint's shape is decided there rather than by whatever the type
+          // happens to hold.
+          sendJson(res, 200, snapshot.projections.map(publishedProjection), snapshot.state);
           return;
         case '/api/hostseries': {
           // `host` IS REQUIRED AND IS A 400, not an empty series. Every other read here answers
