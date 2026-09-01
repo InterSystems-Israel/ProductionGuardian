@@ -4,6 +4,31 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — `get_event_log_trend` documents `reason`, and one value of it means "the host may not exist"
+
+**No field, type or shape changes** — `reason` has been returnable from this tool since it shipped and
+was simply absent from §3.11's output list. `mcp-tools.md` §3.11 now lists it, and tabulates its two
+values against what they say about `buckets[]`.
+
+The row worth the paragraph is `host existence unverified`, which is **new behaviour in the same PR**
+(#156): the unknown-host guard's existence check tested `%SQLCODE >= 0` inside one `&&` chain, so a
+failed check made the whole condition false and fell through to a complete set of zero-filled buckets.
+This family inverts §2.1's sign — a log count of `0` is a measurement — so those zeros assert that the
+host was quiet, which is precisely the claim the guard exists to prevent for a host name a model
+invented. The fix separates the two tests and publishes `reason` instead of implying an all-clear.
+
+**Documented rather than left internal** because the resulting payload is the one shape in this tool
+that a consumer can read wrongly *while it is entirely correct*: the trend is true of the rows that
+exist, and it still is not evidence that the host does. So the contract now says a populated trend
+carrying that `reason` is not confirmation the host is real.
+
+`reason` and not `error`, per §4: the tool ran and the buckets are readable. That distinction is the
+same one §3.8 already draws between the two words.
+
+#156.
+
+---
+
 ## 2026-09-01 — `evidence[]` is not the record of what was read (documentation only)
 
 **No field, type or shape changes.** `investigation-api.md` §3.2 gains a paragraph stating the limit of

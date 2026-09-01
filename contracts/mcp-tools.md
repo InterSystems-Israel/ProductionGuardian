@@ -1375,7 +1375,8 @@ prefix boundary falling on a clean unit is the minute. Looked up in a fixed `$ca
 distinction is how a model asks for 1440 buckets of days. Out of range is refused:
 `{"error":"buckets must be an integer between 1 and 720","sanitised":true}`.
 
-**Output**: `host`, `resolution`, `buckets[]`, `sanitised`, `from`, `to`, `total`.
+**Output**: `host`, `resolution`, `buckets[]`, `sanitised`, `from`, `to`, `total`, and `reason` where it
+applies (below).
 
 `buckets[]`: `start`, `total`, and one count per severity — `assert`, `error`, `warning`, `info`,
 `trace`, `alert`. **All six keys are always present**, so a severity that did not occur reads as `0`
@@ -1401,6 +1402,28 @@ name look identical otherwise:
 { "host": "No Such Host", "resolution": "hours", "buckets": [], "sanitised": true,
   "error": "no event log rows exist for that host under any window -- call GetEventLogSummary to see which hosts have logged" }
 ```
+
+**`reason` says which of this payload's two reads failed, and the buckets stay readable in one of the
+two cases.** §3.8 draws the same line — `reason` instead of buckets when there is nothing to say,
+`error` when nothing could be read — and this tool has two independent queries, so it needs both words:
+
+| `reason` | What ran, what did not | `buckets[]` |
+|---|---|---|
+| `event log unreadable (SQLCODE n)` | the trend query itself failed | empty — there is nothing to publish |
+| `host existence unverified (SQLCODE n)` | the trend was read; the **existence check** before it failed | populated and correct |
+
+The second row is the interesting one and it is why `reason` is documented here rather than left as an
+implementation detail. Zeros in this family are a *measurement* (above), so a zero-filled trend asserts
+that the host was quiet — and for a host name a model invented, that assertion is false. The unknown-host
+`error` exists to stop exactly that. When the check behind it cannot run, the trend is still true of
+whatever rows exist, but nobody can be told whether the host is real, so the payload says so instead of
+implying an all-clear. **A consumer must not read a populated trend carrying this `reason` as
+confirmation that the host exists.**
+
+Before #156 that case silently produced the zero-filled payload with no `reason` at all: the guard's
+condition tested `%SQLCODE >= 0` as part of one `&&` chain, so a failed check made the whole test false
+and fell through to the buckets. Low likelihood, and a wrong answer rather than an absent one when it
+fires.
 
 ```jsonc
 // <- host "(production)", hours, 6. The two empty leading buckets are the point.
