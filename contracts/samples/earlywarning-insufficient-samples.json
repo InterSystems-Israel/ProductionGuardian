@@ -1,0 +1,53 @@
+[
+  {
+    "host": "Cloud API",
+    "metric": "queued",
+    "currentValue": 0,
+    "measuredAt": "2026-09-01T17:49:31Z",
+    "fitSampleCount": 5,
+    "fitSpanSeconds": 20,
+    "recentDirection": null,
+    "threshold": {
+      "value": 50,
+      "basis": "absoluteFloor",
+      "baselineValue": 0,
+      "findingType": "queue_buildup"
+    },
+    "projection": null,
+    "projectionUnavailable": "insufficient_samples"
+  },
+  {
+    "host": "EMR Source",
+    "metric": "queued",
+    "currentValue": 0,
+    "measuredAt": "2026-09-01T17:49:31Z",
+    "fitSampleCount": 5,
+    "fitSpanSeconds": 20,
+    "recentDirection": null,
+    "threshold": {
+      "value": 50,
+      "basis": "absoluteFloor",
+      "baselineValue": 0,
+      "findingType": "queue_buildup"
+    },
+    "projection": null,
+    "projectionUnavailable": "insufficient_samples"
+  },
+  {
+    "host": "Lab Router",
+    "metric": "queued",
+    "currentValue": 0,
+    "measuredAt": "2026-09-01T17:49:31Z",
+    "fitSampleCount": 5,
+    "fitSpanSeconds": 20,
+    "recentDirection": null,
+    "threshold": {
+      "value": 50,
+      "basis": "absoluteFloor",
+      "baselineValue": 0,
+      "findingType": "queue_buildup"
+    },
+    "projection": null,
+    "projectionUnavailable": "insufficient_samples"
+  }
+]

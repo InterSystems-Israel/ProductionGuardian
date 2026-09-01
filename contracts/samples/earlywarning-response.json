@@ -1,0 +1,61 @@
+[
+  {
+    "host": "Cloud API",
+    "metric": "queued",
+    "currentValue": 41,
+    "measuredAt": "2026-09-01T17:54:47Z",
+    "fitSampleCount": 60,
+    "fitSpanSeconds": 295,
+    "recentDirection": "rising",
+    "threshold": {
+      "value": 50,
+      "basis": "absoluteFloor",
+      "baselineValue": 0,
+      "findingType": "queue_buildup"
+    },
+    "projection": {
+      "kind": "projection",
+      "basis": "linear-least-squares",
+      "slope": 3.3,
+      "slopeUnit": "items/minute",
+      "secondsToThreshold": 164,
+      "projectedCrossingAt": "2026-09-01T17:57:31Z",
+      "message": "Queue depth 41 rising ~3.3/min; at this rate it crosses 50 in ~3 min."
+    },
+    "projectionUnavailable": null
+  },
+  {
+    "host": "EMR Source",
+    "metric": "queued",
+    "currentValue": 0,
+    "measuredAt": "2026-09-01T17:54:47Z",
+    "fitSampleCount": 60,
+    "fitSpanSeconds": 295,
+    "recentDirection": "steady",
+    "threshold": {
+      "value": 50,
+      "basis": "absoluteFloor",
+      "baselineValue": 0,
+      "findingType": "queue_buildup"
+    },
+    "projection": null,
+    "projectionUnavailable": "not_rising"
+  },
+  {
+    "host": "Lab Router",
+    "metric": "queued",
+    "currentValue": 0,
+    "measuredAt": "2026-09-01T17:54:47Z",
+    "fitSampleCount": 60,
+    "fitSpanSeconds": 295,
+    "recentDirection": "steady",
+    "threshold": {
+      "value": 50,
+      "basis": "absoluteFloor",
+      "baselineValue": 0,
+      "findingType": "queue_buildup"
+    },
+    "projection": null,
+    "projectionUnavailable": "not_rising"
+  }
+]

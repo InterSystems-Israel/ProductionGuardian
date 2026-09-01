@@ -438,7 +438,7 @@ absolute floor of 50 is the live arm.
 
 `200` · `X-Healthscan-State: ok`
 
-```json
+```json validate=earlywarning.schema.json#/definitions/EarlyWarningResponse
 [
   {
     "host": "Cloud API",
@@ -513,7 +513,7 @@ published; nothing else is.
 
 `200` · `X-Healthscan-State: warming`
 
-```json
+```json validate=earlywarning.schema.json#/definitions/EarlyWarningResponse
 [
   {
     "host": "Cloud API",
@@ -563,7 +563,7 @@ Five samples at a 5000 ms poll is a 20 s span, and the queue *is* rising in this
 
 `200` · `X-Healthscan-State: ok`
 
-```json
+```json validate=earlywarning.schema.json#/definitions/EarlyWarningResponse
 [
   {
     "host": "Cloud API",

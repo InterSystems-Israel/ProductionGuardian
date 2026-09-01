@@ -4,6 +4,107 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — `earlywarning.schema.json`: the last unchecked HTTP contract gets a schema, and the live stack disagrees with two of its three worked examples
+
+**One new schema, three new captured samples, three prose fences annotated.** No shape changed, and
+nothing the engine emits was altered — this describes what already ships (#219).
+
+`GET /api/earlywarning` was the fifth and last HTTP contract in this directory with no machine-readable
+form. The entry below closed the same gap for `POST /api/resolve`; this one finishes the set, so **every
+endpoint documented here now has a schema and at least one live sample.**
+
+### What landed
+
+| File | What changed |
+|---|---|
+| `earlywarning.schema.json` | **new** — `EarlyWarningResponse`, `HostProjection`, `Threshold`, `Projection` |
+| `samples/earlywarning-response.json` | **new** — the live projection, ETA 164 s |
+| `samples/earlywarning-insufficient-samples.json` | **new** — 25 s after engine start, five samples |
+| `samples/earlywarning-crossed.json` | **new** — `already_crossed` at depth 64 |
+| `earlywarning-api.md` | the three §4 fences annotated. **No prose changed** — see below |
+| `validate.mjs` | 3 samples, 14 rejects; the `CONTRACT_MD` comment corrected |
+| `README.md` | table rows, the definition list, and the two places that said this file had no schema |
+
+### The captures came first, and that is the whole reason to read this entry
+
+§1's shape was **not** the source. Six of the seven reason codes were driven out of the running stack
+across one `pool_bottleneck` cycle before a line of schema was written, and the three samples are three
+of those polls byte-for-byte. `disabled` was not captured — it needs `earlyWarning.enabled: false` — and
+is in the enum on the prose's authority alone, which the field's `description` says out loud.
+
+That order was not ceremony. **The captures disagree with two of §4's three worked examples**, and a
+schema written from §4 would have ratified the disagreement:
+
+- **§4.2 names the wrong reason.** Five samples in, 20 s span, `X-Healthscan-State: warming` — the state
+  reproduced exactly. The reason came back `insufficient_samples`, with a **non-null** threshold, not
+  `warming` with `threshold: null`.
+- **§4.3's `baselineValue` climbing 0.4 → 6.1 cannot happen.** It illustrates §1.3's self-inflating
+  rolling mean. `thresholds.json` pins a `referenceBaselines` entry for `queued` on all three reported
+  hosts and `effectiveBaseline()` prefers a reference over the mean, so `baselineValue` is `0` on every
+  host in every capture.
+
+Both have the same root: **`warming` is unreachable for every reported host on the shipped config.** It
+is returned only when `threshold` is null, which needs `effectiveBaseline()` to return null, which a
+reference baseline prevents. §2.3's stronger claim inherits the same defect — *"`X-Healthscan-State:
+warming` implies every entry carries `projection: null` with reason `warming`"* — and the `poll-04`
+capture is a `warming` header over three `insufficient_samples` rows.
+
+**Filed, not encoded, and no prose was corrected here.** Whether §4.2/§4.3/§2.3 should be rewritten or
+the `referenceBaselines` config changed is a product decision — the config is what makes `queue_buildup`
+able to fire on a ramp at all (`services/detection-engine/CLAUDE.md` §5.1) — and a schema is the wrong
+place to settle it. `warming` stays in the enum: the config is hot-reloadable and removing a reference
+baseline makes the state reachable again within one poll.
+
+### What the schema can hold that the prose could not
+
+§1.4 is this contract's central rule and it is **structural**: every computed number lives inside
+`projection`, every observed number outside it. That is enforced by where a field sits, which is exactly
+what a schema checks and a comment cannot. So `additionalProperties: false` on `HostProjection` is
+load-bearing — a top-level `slope` beside a declined forecast is now a validation failure, and §1.4 names
+that case in as many words: *"a visible 'rising ~0.5/min' next to no ETA still implies a forecast we
+refused to make."* The engine's in-memory object really does carry that field; the serialiser dropping it
+was the only thing between it and the wire.
+
+Eight `if/then` pairs encode the invariants the prose states and nothing could check:
+
+| Invariant | Where the prose says it |
+|---|---|
+| `projection` and `projectionUnavailable` are mutually exclusive — exactly one non-null, both directions | §2.1 |
+| a projection implies `recentDirection: "rising"` | §1.5, "the one invariant worth testing" |
+| `warming` / `metric_unmeasurable` ⇒ `threshold: null`; the other four reasons ⇒ non-null | §2.1's table |
+| `metric_unmeasurable` ⇒ `currentValue: null`, and `currentValue: null` ⇒ one of the first two reasons | §2.1 + §2.2's precedence |
+| `fitSampleCount < 2` ⇒ `fitSpanSeconds: 0` | §1 |
+
+Plus `kind: "projection"` as a `const`, `slope` and `secondsToThreshold` strictly positive (§1.4 forbids
+a zero ETA outright), and `message` matched against the substring **"at this rate"** — §1.4 already
+called that hedge "a testable invariant", and now something tests it.
+
+### What it deliberately does not constrain
+
+- **`secondsToThreshold <= 1800`.** The horizon is `thresholds.json` config and hot-reloadable; pinning
+  it would make a config change a contract violation.
+- **`Threshold.baselineValue` pinned to 0.** That is today's config, not the contract. The field stays a
+  plain number so the schema does not fail the moment a reference baseline is removed — which is the
+  change that would make §4.3 true again.
+- **`metric`, `Projection.basis`, `findingType`** stay open strings; only `Threshold.basis` is a closed
+  union, because it names which of two arms of one gate won and a third value would mean the threshold
+  arithmetic changed. §1 tells a consumer meeting an unknown `metric` to label the axis from
+  `slopeUnit`, an instruction that only makes sense if an unknown name can arrive.
+- **the alphabetical sort, and one-entry-per-reported-host.** Draft-07 cannot express either over object
+  items, so both remain §1 prose, checked by the captured samples.
+- **`host` is not `$ref`'d to `healthscan.schema.json`'s `Host.host`.** §1 says they are the same
+  *string*, which is an equal value rather than a shared type. A `$ref` would encode the wrong claim.
+
+### Timestamps are not pinned, unlike the other captured samples
+
+`investigation-response.json` and the resolve captures pin ids and timestamps so the fixtures do not
+move. These three do not, and there is a reason: there are no ids in this payload, and the timestamps are
+load-bearing arithmetic. `projectedCrossingAt` must equal `measuredAt + secondsToThreshold`, which is the
+one cross-field invariant draft-07 cannot express — `17:54:47Z + 164 s = 17:57:31Z` in
+`earlywarning-response.json` is the only check on it, and rewriting the timestamps would delete it.
+
+---
+
 ## 2026-09-01 — `ResolveRequest`: the request half of `POST /api/resolve` is checkable, and §1.1 turns out to require three things nothing sends
 
 **One new definition, one new captured sample, one existing sample corrected.** No response shape changed.
