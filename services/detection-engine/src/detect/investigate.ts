@@ -224,10 +224,9 @@ function buildTrend(projection: HostProjection | undefined): Record<string, unkn
      */
     recentDirection: projection.recentDirection,
     thresholdValue: threshold,
-    thresholdCrossed:
-      projection.currentValue !== null && threshold !== null
-        ? projection.currentValue >= threshold
-        : null,
+    // The `threshold !== null` half of this test went with the gate above, which now guarantees it.
+    // Leaving it would say a null threshold is reachable here, and a reader would believe it.
+    thresholdCrossed: projection.currentValue !== null ? projection.currentValue >= threshold : null,
     secondsToThreshold: projection.projection?.secondsToThreshold ?? null,
   };
 }
