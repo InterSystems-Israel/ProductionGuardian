@@ -28,10 +28,16 @@ ourselves — the write happens in IRIS behind RBAC, and this service is a calle
 what it asked for and what came back." The engine gained orchestration, not authority. Read §9
 before assuming otherwise.
 
-**No machine-readable artefact yet.** There is no `resolve.schema.json` and no `resolve.d.ts`,
-and no `samples/resolve-*.json`. The JSON in §11 is what Dev C mocks against until those land;
-committing them is a follow-up PR. `contracts` CI counts are unchanged by this document
-(15 accept / 19 reject / 7 capture claims) because it adds no sample for `validate.mjs` to check.
+**No machine-readable artefact yet, and that is why this file drifted.** There is no
+`resolve.schema.json` and no `resolve.d.ts`, and no `samples/resolve-*.json`. The JSON in §11 is what
+Dev C mocks against until those land; committing them is a follow-up PR — **still open as #202, which
+is also where five divergences found by diffing this document against the shipped path are recorded.**
+Three of them are corrected here (§2, §7, §8); two are open decisions. Every other MVP 2 contract has a
+schema and a captured sample, so this is the only one where prose is the sole normative form and
+nothing fails when it stops being true. `contracts` CI counts are unchanged by this document, because
+it adds no sample for `validate.mjs` to check. **The counts themselves are deliberately not quoted
+here** — this line carried "15 accept / 19 reject / 7 capture claims" and the reject count had reached
+26, a copied number staling exactly as §3's host lists do. `validate.mjs`'s own output is the count.
 Stated rather than quietly left off the table, the way `README.md` does for the two `samples/`
 files `CONTRIBUTING.md` §1 promised and nobody wrote.
 
@@ -144,7 +150,7 @@ renders from one type rather than from a status code.
     "actor": "guardian_resolve",
     "role": "Guardian_Resolve",
     "requestedBy": "presenter@laptop",
-    "tool": "set_pool_size",
+    "tool": "SetPoolSize",
     "recordedAt": "2026-08-18T14:06:43Z",
     "source": "live"
   },
@@ -166,14 +172,14 @@ renders from one type rather than from a status code.
 | `reversal` | object \| null | **A record of the prior value, not a request** — `{host, size, capturedFrom}`. `null` unless `outcome` is `applied`. It is not POSTable: `size` is the shipped value and §3 bounds `action.size` at `2..8`. See §4.1. |
 | `refusal` | object \| null | Non-null **iff** `outcome` is `refused`. See §5. |
 | `failure` | object \| null | Non-null **iff** `outcome` is `failed`. See §5.2. |
-| `confirmation` | object | Always present. `status: "not_applicable"` for everything except `applied`. See §7. |
+| `confirmation` | object \| null | Non-null **iff** `outcome` is `applied`. `null` for every other outcome — nothing changed, so there is nothing to watch for. See §7. |
 | `audit` | object | Always present, for every outcome including refusals and dry-runs. See §8. |
 | `requestedAt` / `completedAt` | string | ISO 8601 UTC, `Z`-suffixed, matching `healthscan-api.md`. |
 | `replayed` | boolean | `true` when this is a stored result returned for a repeated `requestId`. See §6. |
 
-Every field is always **present**. `before`, `after`, `reversal`, `refusal` and `failure` may be
-`null`; the others are always objects, strings or booleans. A missing key is a contract
-violation, a `null` value is not — same rule as `healthscan-api.md` §1, for the same reason.
+Every field is always **present**. `before`, `after`, `reversal`, `refusal`, `failure` and
+`confirmation` may be `null`; the others are always objects, strings or booleans. A missing key is a
+contract violation, a `null` value is not — same rule as `healthscan-api.md` §1, for the same reason.
 
 Advisory response header: `X-Resolve-Outcome`, carrying the same string as `outcome`. Advisory
 because the body is authoritative; a consumer may ignore the header entirely.
@@ -214,11 +220,20 @@ default in every serialization path — absent, `null`, `""`, `0`, and `"false"`
 "not a dry run" somewhere between a React state hook and `JSON.parse`. `"apply"` cannot be
 arrived at by accident.
 
-**A `dry_run` mutates nothing.** Guaranteed, and the guarantee is structural rather than
-promised: in `dry_run` the engine calls the **read** tool `get_pool_size` and the whitelist,
-bounds, production and RBAC checks — it never calls `set_pool_size`, so no code path exists that
-could write. The privileged tool is not invoked at all, which is a stronger statement than "it
-is invoked with a flag that makes it not write".
+**A `dry_run` mutates nothing.** Guaranteed, and the guarantee is structural rather than promised:
+`Tools.Resolve` runs the whitelist, bounds, production and RBAC checks and then **returns before the
+write**, `if dryRun { set out.outcome = "previewed" … quit out }` — commented in the class as
+"Guaranteed not to mutate, structurally: this returns before the write." There is no path from the
+preview branch to `%Save()`.
+
+**Corrected 2026-09-01 (#202). This paragraph previously said the dry-run path invokes a separate read
+tool `get_pool_size` and "never calls `set_pool_size`", calling non-invocation "a stronger statement
+than 'it is invoked with a flag that makes it not write'."** The shipped path is the second thing: the
+engine POSTs `{host, size, dryRun}` to the one write tool, which is why a preview audits as
+`SetPoolSize` with `{"dryRun":1,…}` (§8) and why `get_pool_size` appears nowhere in the audit table.
+The guarantee held throughout — an early `quit` before any write is as structural as a second tool —
+but a safety claim that names the wrong mechanism cannot be checked by the person it is written for:
+they go looking for a read tool and find that the privileged one ran.
 
 What a `dry_run` returns:
 
@@ -232,7 +247,7 @@ What a `dry_run` returns:
   `action.size` without a field that pretends to have been observed.
 - `reversal: null` — nothing changed, so there is nothing to reverse. Offering a reversal for a
   no-op invites a "restore" that writes a value nobody measured.
-- `confirmation.status: "not_applicable"`.
+- `confirmation: null` — see §7.
 - `audit` — **present**. Dry-runs are audited too (§8).
 
 RBAC is checked in `dry_run`. A preview that succeeds and an apply that then denies is the worst
@@ -387,7 +402,9 @@ Two further consequences:
 
 - **`before` is measured, never inherited.** It does not come from `precondition.poolSize`, from
   the finding's `currentValue`, or from the investigation payload — all three are claims made
-  earlier by something else. It comes from `get_pool_size` at the moment of the call.
+  earlier by something else. It is read off the live production definition (`+item.PoolSize`)
+  inside the write tool, at the moment of the call — not from a prior read tool's answer, which
+  would be a claim made earlier by something else too.
 - **There is no automatic rollback on failure**, hence `automatic: false`. A failed
   `Ens.Director.UpdateProduction()` may have already `%Save()`d the config, so the live state
   after a failure is genuinely unknown, and a blind rollback write is a second unverified
@@ -466,9 +483,9 @@ absence of `before`/`after`. Same endpoint, same status, same shape. Dev C mocks
 by changing two fields.
 
 The demo depends on this being real rather than cosmetic: MVP 2 §2.2 wants to show that "AI
-Detective can look without having permission to act". The read tools (`get_host_status`,
-`get_queue_depth`, `get_pool_size`, `get_recent_errors`, `get_processing_time`) are granted more
-broadly; only `set_pool_size` needs the privileged role. So an unauthorized caller can still get
+Detective can look without having permission to act". The read tools (`GetHostStatus`,
+`GetQueueDepth`, `GetPoolSize`, `GetRecentErrors`, `GetProcessingTime`) are granted more
+broadly; only the write tool needs the privileged role. So an unauthorized caller can still get
 a full `dry_run` refusal *with* `before` unavailable and a complete investigation — which is the
 point being demonstrated, not a degraded mode.
 
@@ -589,10 +606,19 @@ Therefore `confirmation` **hands the caller the observation path instead of a ve
 }
 ```
 
-| `status` | When |
+| `confirmation` | When |
 |---|---|
-| `pending` | `outcome: "applied"`. The write landed; clearing is now observed elsewhere. |
-| `not_applicable` | Every other outcome. Nothing was changed, so there is nothing to confirm. |
+| `{ "status": "pending", … }` | `outcome: "applied"`, and only then. The write landed; clearing is now observed elsewhere. `pending` is the only value `status` ever takes. |
+| `null` | Every other outcome. Nothing was changed, so there is nothing to confirm. |
+
+**Corrected 2026-09-01 (#202): a non-`applied` outcome carries `null`, not an object with
+`status: "not_applicable"`.** This section, the §3 field table and three §11 samples all promised the
+object form; the engine, the dashboard's guard and types, both mocks and two tests have all shipped
+`null` since MVP 2. The document was the only holdout, so it was the document that moved — and the
+`null` form is also the safer of the two, because a consumer that branches on presence rather than on
+`status` cannot then render a clearance countdown for a preview. A consumer must still not infer
+"nothing happened" from `confirmation: null` alone: `outcome` is the field to branch on, and a `failed`
+apply carries `null` here while having possibly written (§5.2).
 
 `clearsWhen` is authoritative human-readable text (same rule as `Finding.message`).
 `expectedWithinSeconds` is **advisory and explicitly not a promise** — MVP 2 §6 lists "pool
@@ -662,7 +688,7 @@ none."
   "actor": "guardian_resolve",
   "role": "Guardian_Resolve",
   "requestedBy": "presenter@laptop",
-  "tool": "set_pool_size",
+  "tool": "SetPoolSize",
   "recordedAt": "2026-08-18T14:06:43Z",
   "source": "live"
 }
@@ -674,7 +700,7 @@ none."
 | `actor` | **The authenticated IRIS principal, resolved server-side.** The identity the RBAC decision was made about. |
 | `role` | The role that authorized (or, on `not_authorized`, the role that was required). Lets the UI say *what* is missing. |
 | `requestedBy` | The request's advisory label, echoed. Recorded **next to** `actor`, never in place of it. |
-| `tool` | `set_pool_size` on an apply, `get_pool_size` on a dry-run. Which privileged tool was actually invoked, per §2. |
+| `tool` | **The runtime's own method name, `SetPoolSize`** — on an apply *and* on a dry-run, because the preview goes through the same write tool with `dryRun` set (§2). **PascalCase, and not the same string as `action.type`.** `action.type` is this contract's wire enum, `set_pool_size`; `tool` is what `Audit.Entry.Tool` stores, and reading it as a snake_case name is what #202 corrected here. Render it, never compare it to a literal. |
 | `recordedAt` | ISO 8601 UTC. |
 | `source` | `"live"` \| `"mock"`. |
 
@@ -700,8 +726,10 @@ tool lives in IRIS instead of in the engine.
 are audited by design (MVP 2 §2.2: "every MCP tool call, read and write"). And "who was probing
 the production, and when" is part of the same story as "who changed it" — an audit log with a
 hole where the reconnaissance was is a partial account. It is also not optional: the dry-run path
-invokes `get_pool_size` through the same governed tool path, so `%LogExecution` runs for it
-whether or not anyone wanted it to.
+invokes the write tool through the same governed path, so `%LogExecution` runs for it whether or not
+anyone wanted it to — and the row is indistinguishable from an apply except by its arguments,
+`{"dryRun":1,"host":"Cloud API","size":4}`. **A reviewer counting writes must read `Arguments`, not
+just `Tool`.**
 
 **Refusals are audited.** Including `not_authorized`. A denied attempt is the security-relevant
 event in the set — an audit trail that records only what succeeded cannot answer "did anything try
@@ -809,9 +837,10 @@ proven path is proven for a different job.
 - **One dedicated IRIS role gates `set_pool_size`.** Nothing else needs it, and no read tool has
   it. Least privilege, and it is what makes MVP 2 §2.2's demonstration real: AI Detective can
   look and cannot act.
-- **The read tools are granted more broadly** — `get_host_status`, `get_queue_depth`,
-  `get_pool_size`, `get_recent_errors`, `get_processing_time`. The dry-run path uses only
-  `get_pool_size` (§2).
+- **The read tools are granted more broadly** — `GetHostStatus`, `GetQueueDepth`, `GetPoolSize`,
+  `GetRecentErrors`, `GetProcessingTime`. **The dry-run path uses none of them**: it goes through the
+  write tool with `dryRun`, so it needs the privileged role, which is why RBAC is checked in `dry_run`
+  and why a preview is refused for an unauthorized caller (§2).
 - **The role name, its grants, and the tool catalogue belong to `contracts/mcp-tools.md`**, which
   MVP 2 §2.4 makes a separate contract. Dev C must render `audit.role` as an opaque string and
   never compare it to a literal — this contract deliberately does not fix its value, so that
@@ -954,20 +983,13 @@ Response `200`, `X-Resolve-Outcome: previewed`:
   "reversal": null,
   "refusal": null,
   "failure": null,
-  "confirmation": {
-    "status": "not_applicable",
-    "findingId": "f-1042",
-    "clearsWhen": "queue_buildup for Cloud API disappears from GET /api/healthscan/findings",
-    "observeVia": ["GET /api/healthscan/findings", "GET /api/healthscan/hosts"],
-    "expectedWithinSeconds": 60,
-    "directEvidence": "hosts[host=\"Cloud API\"].queued falling"
-  },
+  "confirmation": null,
   "audit": {
     "auditId": "pg-audit-44810",
     "actor": "guardian_resolve",
     "role": "Guardian_Resolve",
     "requestedBy": null,
-    "tool": "get_pool_size",
+    "tool": "SetPoolSize",
     "recordedAt": "2026-08-18T14:06:12Z",
     "source": "live"
   },
@@ -977,8 +999,10 @@ Response `200`, `X-Resolve-Outcome: previewed`:
 }
 ```
 
-Note `after: null` and `tool: "get_pool_size"` — the privileged tool was never invoked (§2). The
-UI renders "1 → 4" from `before.poolSize` and `action.size`.
+Note `after: null` and `confirmation: null` — nothing was written, so there is nothing to read back
+and nothing to watch for. `tool` still reads `SetPoolSize`: the write tool ran and returned before
+the write (§2), which is what the audit row records. The UI renders "1 → 4" from `before.poolSize`
+and `action.size`.
 
 ### 11.2 Apply — succeeded, with before and after
 
@@ -1037,13 +1061,13 @@ Same request as §11.2, from a caller without the write role. Response `200`,
     "checkedBy": "iris"
   },
   "failure": null,
-  "confirmation": { "status": "not_applicable", "findingId": "f-1042" },
+  "confirmation": null,
   "audit": {
     "auditId": "pg-audit-44813",
     "actor": "guardian_readonly",
     "role": "Guardian_Resolve",
     "requestedBy": "presenter@laptop",
-    "tool": "set_pool_size",
+    "tool": "SetPoolSize",
     "recordedAt": "2026-08-18T14:07:02Z",
     "source": "live"
   },
@@ -1090,13 +1114,13 @@ Response `200`, `X-Resolve-Outcome: refused`:
     "checkedBy": "engine"
   },
   "failure": null,
-  "confirmation": { "status": "not_applicable", "findingId": "f-1042" },
+  "confirmation": null,
   "audit": {
     "auditId": "pg-audit-44814",
     "actor": "guardian_resolve",
     "role": "Guardian_Resolve",
     "requestedBy": null,
-    "tool": "set_pool_size",
+    "tool": "SetPoolSize",
     "recordedAt": "2026-08-18T14:07:20Z",
     "source": "live"
   },

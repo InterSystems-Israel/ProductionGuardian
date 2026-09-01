@@ -650,10 +650,13 @@ ClassMethod Resolve() As %Status
                     "checkedBy": "iris"
                 },
                 "failure": null,
-                // §3 marks confirmation always present. `not_applicable` rather than null: nothing
-                // was written, so there is no clearance to wait for, and a null would read as
-                // "unknown" to a UI deciding whether to poll.
-                "confirmation": { "status": "not_applicable" },
+                // NULL, and §7 now says so (#202). This emitted `{"status": "not_applicable"}` on the
+                // strength of §3's "always present" -- a value nothing else in the stack has ever
+                // produced, and one the engine discards anyway: `resolve.ts` computes `confirmation`
+                // from `outcome` and never reads this field, so the object form reached no consumer.
+                // The contract moved to `null` because the dashboard branches on presence, not on
+                // `status`, and an object here would make a refusal promise a clearance.
+                "confirmation": null,
                 "audit": (audit)
             }
             write denial.%ToJSON()

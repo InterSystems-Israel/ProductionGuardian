@@ -426,14 +426,14 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
           `about a second per message, so it clears roughly 1 message/sec while inbound volume ` +
           `exceeds that. The host itself is healthy — it is outnumbered, not broken.`,
         evidence: [
-          { label: 'Configured pool size', detail: `${host} PoolSize = 1`, source: 'mcp_tool', tool: 'get_pool_size' },
+          { label: 'Configured pool size', detail: `${host} PoolSize = 1`, source: 'mcp_tool', tool: 'GetPoolSize' },
           {
             label: 'Queue depth',
             detail: queued === null ? 'queue depth not measurable' : `${queued} message(s) queued`,
             source: 'snapshot',
             tool: null,
           },
-          { label: 'Downstream latency', detail: 'average processing time ~1s per message', source: 'mcp_tool', tool: 'get_processing_time' },
+          { label: 'Downstream latency', detail: 'average processing time ~1s per message', source: 'mcp_tool', tool: 'GetProcessingTime' },
         ],
         confidence: 0.9,
         recommendedAction: actionable
@@ -477,7 +477,11 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
         actor: 'demo',
         role: 'Guardian_Resolve',
         requestedBy: 'dashboard',
-        tool: mode === 'apply' ? 'set_pool_size' : 'get_pool_size',
+        // THE RUNTIME'S OWN NAME, and the same one for both modes. A preview goes through the write
+        // tool with `dryRun`, so `Audit.Entry.Tool` reads `SetPoolSize` either way (#202). This used
+        // to branch on `mode` and emit the snake_case wire enum, which meant driving the UI's own
+        // path could never surface the real name -- the defect mock-first exists to prevent.
+        tool: 'SetPoolSize',
         recordedAt: at,
         source: 'mock',
       };

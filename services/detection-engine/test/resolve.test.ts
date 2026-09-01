@@ -367,7 +367,7 @@ const AUDIT = {
   auditId: 'pg-audit-42',
   actor: 'pg_service',
   role: 'Guardian_Resolve',
-  tool: 'set_pool_size',
+  tool: 'SetPoolSize',
   recordedAt: '2026-08-19T11:00:00Z',
   source: 'live',
 };
@@ -464,6 +464,10 @@ test('mockResolveTool emits an audit block marked source mock', async () => {
   // actions into one row.
   const second = await resolve({ mode: 'dry_run', action: { ...ACTION, size: 8 } }, deps);
   assert.notEqual(second.audit?.auditId, res.audit?.auditId);
-  // tool reflects what was actually invoked -- get_pool_size on a dry-run, per §8's table.
-  assert.equal(second.audit?.tool, 'get_pool_size');
+  // tool reflects what was actually invoked, and a dry-run invokes the WRITE tool with `dryRun`, so
+  // it is `SetPoolSize` in both modes (#202). This line asserted `get_pool_size` on a dry-run and
+  // cited §8's table for it -- a test pinning a name the runtime never had, which is why the
+  // divergence survived: the mock, the contract and the test all agreed with each other.
+  assert.equal(second.audit?.tool, 'SetPoolSize');
+  assert.equal(res.audit?.tool, 'SetPoolSize');
 });
