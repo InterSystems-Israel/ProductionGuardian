@@ -61,6 +61,12 @@ Property Roles As %String(MAXLEN = 512);
 /// `%LogExecution` payload: `call.name` is `"GetPoolSize"`. The contract's catalogue calls the same
 /// tool `get_pool_size`, so anything joining this column to the contract must map, and
 /// `Tools.AuthPolicy.#WRITETOOL` already depends on the method-name form.
+///
+/// ON A `dropped` ROW THIS IS A GUARD, NOT A TOOL -- `DropUnapplicableAction` and its three siblings.
+/// Still an ObjectScript method name, so the column stays one kind of thing and `ByTool` stays useful
+/// for "did this guard ever fire". But it means **counting tool calls from this table must filter on
+/// `Disposition`**, which the `Audit.Entry`-delta method in #192 did not have to do and any repeat of
+/// it now does.
 Property Tool As %String(MAXLEN = 128) [ Required ];
 
 /// The call's arguments as JSON.
@@ -76,9 +82,9 @@ Property Arguments As %String(MAXLEN = "");
 /// record alone rather than from the operator's memory.
 Property Result As %String(MAXLEN = "");
 
-/// `executed` | `denied`.
+/// `executed` | `denied` | `dropped`.
 ///
-/// TWO VALUES BECAUSE THERE ARE TWO WRITERS, and that is forced by the runtime rather than chosen.
+/// ONE VALUE PER WRITER, and each writer exists because the one before it could not see the event.
 /// `%AI.ToolMgr.ExecuteTool` checks authorization, then executes, then audits -- so an authorization
 /// denial THROWS `<%AICore>ToolAccessDenied` at step one and the audit hook is never reached.
 /// Measured, with a deny-all policy registered: 0 audit records written, `%LogExecution` never
@@ -88,13 +94,28 @@ Property Result As %String(MAXLEN = "");
 /// This is why `mcp-tools.md` §5.5 and `resolve-api.md` §8 both overpromise: a tool-level refusal
 /// (our bounds guard returning `outcome: "refused"`) IS audited, because the tool ran; an
 /// authorization refusal is not. The security-relevant one was the one missing.
+///
+/// `dropped` IS THE THIRD, and it arrived the same way (#196). `REST.AgentDispatcher`'s guards refuse
+/// a *claim in the model's reply* -- after every tool has already run and audited -- so neither writer
+/// above can see one, and the refusal used to live only on a response field the engine discards. A
+/// distinct value rather than reusing `denied`: a security review asking "what was refused for lack of
+/// privilege" and a demo review asking "what did we suppress in the narrative" are different
+/// questions, and one disposition answering both makes neither query correct. `refused` was rejected
+/// as the name because the `Disposition` paragraph above already spends it on a *tool-level* refusal
+/// that audits as `executed`; `dropped` is the word this codebase already uses for the event, in the
+/// guards' own method names and in the `droppedAction` / `droppedRemediation` / `droppedEvidence`
+/// fields they set.
 Property Disposition As %String(MAXLEN = 16) [ Required ];
 
-/// Populated on `denied` rows: the reason the authorization policy refused.
+/// Populated on `denied` and `dropped` rows: the reason the refusal happened.
 ///
-/// Names the rule and the missing privilege only. A refusal string crosses the same boundary as any
-/// other tool output (`Tools.AuthPolicy` keeps it free of instance data), and that discipline is
-/// worth preserving in storage too.
+/// On a `denied` row it names the rule and the missing privilege only. A refusal string crosses the
+/// same boundary as any other tool output (`Tools.AuthPolicy` keeps it free of instance data), and
+/// that discipline is worth preserving in storage too.
+///
+/// On a `dropped` row it is the guard's own `reason` token -- `not_whitelisted_host`,
+/// `downstream_unreachable`, `stale_connectivity_claim`, `unsupported_config_absence_claim` -- taken
+/// from the object the guard built rather than restated here, so the two cannot drift.
 Property DenialReason As %String(MAXLEN = 512);
 
 /// Milliseconds, as the runtime reports them.
@@ -134,7 +155,14 @@ Index ByTool On Tool;
 /// did happen -- the worst of both. So this reports "" and the caller records that it could not
 /// write; `resolve-api.md` §8 covers the consequence: `auditId: null`, and for an apply that is
 /// `failed`/`verify` rather than a silent success.
-ClassMethod Record(actor As %String, tool As %String, arguments As %String, result As %String, disposition As %String, durationMs As %Integer = "", statusText As %String = "", denialReason As %String = "") As %String
+/// `publishHandle` OFF MEANS "this row is not the call I just made". The process-private handle below
+/// answers exactly one question -- what did *this* process last execute -- and `Tools.Governance.Invoke`
+/// reads it unconditionally after `ExecuteTool`, including on the path where the tool's own audit write
+/// failed. So a writer whose rows nobody correlates must not touch it, or a `SetPoolSize` whose audit
+/// write failed would report a *guard refusal's* handle as its `auditId`. CSP reuses processes across
+/// requests, so "an investigation and a resolve in the same process" is the ordinary case, not a
+/// contrived one.
+ClassMethod Record(actor As %String, tool As %String, arguments As %String, result As %String, disposition As %String, durationMs As %Integer = "", statusText As %String = "", denialReason As %String = "", publishHandle As %Boolean = 1) As %String
 {
     set entry = ..%New()
     set entry.RecordedAt = ..NowUTC()
@@ -157,7 +185,44 @@ ClassMethod Record(actor As %String, tool As %String, arguments As %String, resu
     // here in a way that "the newest row for this actor and tool" is not -- two investigations
     // running concurrently would read each other's. Dev B's resolve endpoint needs `audit.auditId`
     // for the response and this is how it gets it without a query that can be wrong.
-    set ^||ProductionGuardian.Audit("last") = handle
+    if publishHandle {
+        set ^||ProductionGuardian.Audit("last") = handle
+    }
+    quit handle
+}
+
+/// Write one row for a dispatcher guard that refused a claim in the model's reply. Returns the handle,
+/// or "" if the write failed.
+///
+/// THE THIRD WRITER, and it lives here for the same reason the other two do: `Record` above takes
+/// already-extracted fields precisely so that writers recording different events can share the
+/// storage and nothing else. A guard refusal is a third kind of event -- see `Disposition`.
+///
+/// IT SWALLOWS ITS OWN FAILURE, and the four call sites therefore have no error handling. That is
+/// deliberate and it is `Tools.AuthPolicy.Deny`'s argument applied to a different failure: a refusal
+/// that could not be recorded is still a refusal, and a guard that let an audit-write error propagate
+/// would turn "we suppressed a bad recommendation and could not log it" into a 500 for the whole
+/// investigation -- restoring the bad recommendation's absence *and* losing the diagnosis. Wrapped
+/// here rather than at each call site so a fifth guard cannot forget it, which is the same reasoning
+/// that made `Deny()` the single deny path.
+///
+/// `refused` IS THE MODEL'S OWN CLAIM, verbatim, as it was removed. That is the point of the row --
+/// #196's complaint was that "the AI recommended X and we suppressed it" was not reconstructable, and
+/// `record` alone carries only our reason for the refusal, not the X. It stays inside the instance:
+/// this table is never sent anywhere, unlike a tool return value.
+ClassMethod RecordRefusal(guard As %String, host As %String, refused As %DynamicAbstractObject = "", record As %DynamicObject = "") As %String
+{
+    // Assigned, then quit AFTER the try. `quit <value>` inside a TRY is #1043 "QUIT argument not
+    // allowed" -- inside a block, QUIT means leave the block, so it cannot also carry a return value.
+    set handle = ""
+    try {
+        set arguments = {"host": (host)}
+        set payload = { "refused": (refused), "record": (record) }
+        set why = $select($isobject(record): record.%Get("reason", ""), 1: "")
+        set handle = ..Record($username, guard, arguments.%ToJSON(), payload.%ToJSON(), "dropped", , , why, 0)
+    } catch ex {
+        set handle = ""
+    }
     quit handle
 }
 

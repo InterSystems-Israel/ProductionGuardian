@@ -173,9 +173,15 @@ whose empty read is inconclusive rather than a measurement — `GetRecentConfigC
 **Reading the reply cannot tell you which of these happened**, which is why #192 is measured with
 `Audit.Entry` deltas taken around each investigation rather than from `evidence[]`. Uncalled and
 unreported look identical from the response; the audit table adjudicates. Note it has **no
-`requestId`** — correlate by timestamp or ID range. And one tool is still not measurable this way:
-`DropUnsupportedConfigAbsence` sets `droppedEvidence` on the reply, `investigate.ts` discards it, so a
-guard refusal and a model omission are indistinguishable from the API.
+`requestId`** — correlate by timestamp or ID range.
+
+**And a `dropped` row is not a tool call, so counting tool calls from that table now needs a
+`Disposition` filter.** Until #196 the table held only `executed` and `denied` rows and every row was a
+tool call, which is the assumption #192's delta method was built on. It no longer holds: the four
+dispatcher guards write a row apiece, under the guard's own method name. The upside is that
+`DropUnsupportedConfigAbsence` is finally measurable — it used to set `droppedEvidence` on a reply
+`investigate.ts` discards, so a guard refusal and a model omission were byte-identical from the API and
+that tool had to be excluded from #192's table outright.
 
 **Governance is per-`%AI.ToolMgr` and held in memory — there is no setting.** So never construct a
 `%AI.ToolMgr` or call `%AI.Agent.UseToolSet` directly: both give you an ungoverned manager with no
@@ -186,6 +192,15 @@ authorization check, no audit row, and `SetPoolSize` live. Go through
 denial throws before the audit hook. `Tools.AuthPolicy` writes that row itself. Anything that adds a
 new deny path must go through its `Deny()` helper or the refusal leaves no trace — which is the one
 event a security review actually asks about.
+
+**Nor does anything audit a guard that refuses a claim in the reply, so `REST.AgentDispatcher`'s guards
+write their own rows too — a new guard must end with `RecordRefusal()` (#196).** Same shape of hole as
+the sentence above and found the same way: the two writers there are both tool-level and both fire
+*before* the dispatcher inspects the reply, so a guard refusal reached no writer at all. It used to be
+recorded only on a response field whose only consumer discards it, which meant "the AI recommended X
+and we suppressed it" was unreconstructable an instant after the request ended. The row carries the
+model's claim verbatim, because our reason for refusing it is not the same information as the thing
+refused.
 
 **Tool return values reach an external LLM: metrics and configuration only, never message content
 or PHI** (root `CLAUDE.md` §2.1). `Ens_Util.Log` on this instance holds 61,772 rows carrying
@@ -200,7 +215,7 @@ returns PHI, it lands in `Audit.Entry.Result` in plain text.
 | Read tools return real evidence | met — six tools discovered, live values |
 | `set_pool_size` changes the live pool and is reversible | met — a real `1 → 4` against a queue held at its cap, drained to 0, `Reset()` restored pool 1 (#102). Reversal is *recorded* and correct; reversing **through the API** is blocked by #100 |
 | An unauthorized role is refused | met **by the fixture, not by the running system** — see below |
-| Every call appears in the audit log | met for executions and for authorization denials |
+| Every call appears in the audit log | met for executions, for authorization denials, and — since #196 — for the four dispatcher guard refusals |
 | RBAC roles and resources exist from a clean boot | met, and **verified from a real boot** rather than inferred: the four security objects were deleted and `docker compose restart iris` recreated them through step 9. `Audit/` compiled on the way through, including its SQL table, so the recursive load picks up a new subdirectory |
 | A principal can actually *use* the roles | needs `%DB_%DEFAULT` **as well**, from the invocation path — the `Guardian_*` roles stay minimal and grant only `PG_*`. Without it you get `<PROTECT>` before any policy is consulted |
 | LLM credential in the vault | met — `Setup.AIHub.CreateProvider()` provisions the wallet entry and the `AI.LLM.pgdetective` config from `PG_LLM_API_KEY` at boot (#106), verified on a cold-provisioned instance. **No key, no default:** absent, the boot says `SKIPPED` and AI Detective degrades to a labelled `source: "canned"` |
