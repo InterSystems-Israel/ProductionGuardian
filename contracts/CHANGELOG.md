@@ -4,6 +4,87 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — `InvestigationRequest`: the half of `investigation-api.md` that nothing checked, and the three fields it never admitted it was sending
+
+**Three new definitions, three fields added to a table, one type widened, one fence annotated.**
+Nothing the engine emits changed. This is #211's half 2 — the half that keeps #211 fixed.
+
+`investigation-api.md` §2.2 specifies the object the **engine sends the agent**. §3 specifies what comes
+back. §3 has been validated against a captured live sample since MVP 2; §2.2 was **prose only**, and the
+asymmetry is the whole story: §2.2 drifted in both directions for three MVPs while §4 stayed honest under
+CI. Five fields specified and never sent, three sent and never specified.
+
+### What landed
+
+| File | What changed |
+|---|---|
+| `investigation.schema.json` | **new** — `InvestigationRequest`, `InvestigationSnapshot`, `InvestigationTrend` |
+| `investigation-api.md` | §2.2's snapshot table gains `type`, `thresholdValue`, `thresholdBasis`; `trend.thresholdCrossed` widened to `boolean \| null`; the §2.2 fence annotated and given the three fields |
+| `validate.mjs` | 4 accepts, 11 rejects, and the fixture is **parsed out of the contract** rather than transcribed |
+| `README.md` | the `InvestigationRequest` gap struck off, definition list, fence counts |
+
+### The three fields were arriving all along
+
+`type` (the host kind), `thresholdValue` and `thresholdBasis` (Early Warning **observations**, which the
+engine's own comments correctly distinguish from the forecast) have been in every request since MVP 2.
+§2.2's table did not list them, and because that section declares `additionalProperties: false` **at every
+level**, the honest reading of the old table was that they were *forbidden*. They are now listed rather
+than removed: the agent uses them, so what was wrong was the record.
+
+`trend.thresholdCrossed` said `boolean`. The engine has always been able to send `null` — `queued` may be
+null (not measurable, Q13) and `null` crossed is the honest answer there rather than `false`. Found while
+writing the schema, which is the point of writing one.
+
+### The mirror-image drift is still open, and the schema says so by REJECTING it
+
+`buildSnapshot()` sends no `capturedAt` and none of the four `*Baseline` fields. That is #211 half 1, it
+needs a metered live run to confirm the `avgProcessingTime` evidence bullet becomes a comparison rather
+than an assertion, and it is **not** fixed here.
+
+So the schema states the **agreed** shape and keeps those five fields `required`, and `validate.mjs`
+carries the engine's current snapshot as an explicit must-**reject** case. That is not a workaround — it is
+the same device `healthscan.schema.json` already uses for the engine's `name`/`messagesErrored` host shape:
+a schema is a specification, and a shape the code has not caught up to is recorded as wrong rather than
+accommodated. When half 1 lands, that case is deleted and `samples/investigation-request.json` replaces it.
+
+**There is deliberately no request sample yet.** A capture taken today would be schema-invalid, and
+committing one would mean either weakening the schema to match a defect or parking a red fixture in
+`samples/`. This is the one thing that separates this entry from the two below it, which both landed with
+live captures.
+
+### What the schema holds that the prose could not
+
+- **`finding` is a `$ref` across schemas** to `healthscan.schema.json#/definitions/Finding`, because §2.2
+  says "embedded verbatim". Here that is right where `earlywarning.schema.json`'s `host` deliberately is
+  not a `$ref`: this is a shared **type**, that was an equal **value**. A reject case proves the cross-file
+  `additionalProperties: false` travels with it.
+- **`trend: null` ⇒ `snapshot.inboundRatePerSec: null`**, as an `if/then`. §2.2 states it in prose because
+  the tempting fallback — `messagesPerSec` — reads as "inflow equals throughput" on precisely the host
+  where that is the conclusion the finding exists to contradict.
+- **`thresholdCrossed: true` ⇒ `secondsToThreshold: null`**, likewise. Without it a request could carry
+  both a crossing and an ETA to it.
+- **`inboundRatePerSec` has `minimum: 0`** — the contract's clamp, not a coincidence.
+
+### Where this schema is deliberately WEAKER than `earlywarning.schema.json`
+
+Same field names, different rules, and the divergence is the entire reason `InvestigationTrend` exists
+rather than a `$ref` to the neighbouring contract. All three are pinned as must-**accept** cases so a
+future "unify the two slope definitions" tidy-up fails loudly:
+
+| Field | `earlywarning.schema.json` | here |
+|---|---|---|
+| `slope` | `exclusiveMinimum: 0` | any number — a draining queue is a fact the agent should see |
+| `status` | n/a | open string, weaker than `Host.status`'s enum, because §2.2 says so in as many words |
+| `thresholdCrossed` | n/a | `boolean \| null` |
+
+### The fixture is the published example
+
+`INVESTIGATION_REQUEST_BASE` is parsed out of §2.2's annotated fence at load time rather than transcribed
+into `validate.mjs`, so the fixture and the worked example cannot disagree — and if someone drops the
+`validate=` annotation, the `.find()` throws instead of quietly testing nothing.
+
+---
+
 ## 2026-09-01 — `earlywarning.schema.json`: the last unchecked HTTP contract gets a schema, and the live stack disagrees with two of its three worked examples
 
 **One new schema, three new captured samples, three prose fences annotated.** No shape changed, and

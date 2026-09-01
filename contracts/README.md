@@ -40,12 +40,14 @@ Two gaps left in that block, noted rather than left to be discovered:
 - **neither `investigation.d.ts` nor `resolve.d.ts` exists**, so unlike Health Scan there is no
   TypeScript transcription for a consumer to import — the engine and the dashboard each hand-maintain
   one for both shapes. `earlywarning.d.ts` does not exist either, and for the same reason
-- **`investigation-api.md` §2.2 has no `InvestigationRequest` definition** (#211). §2.2 states
-  `additionalProperties: false` at *every* level for the object the engine sends the agent, and nothing
-  enforces it — which is why §2.2 drifted in both directions (five fields specified and never sent,
-  three sent and never specified) while §4 stayed honest. `resolve.schema.json` gained its
-  `ResolveRequest` on 2026-09-01; this is the same job for the other endpoint, and it is the half of
-  #211 that keeps #211 fixed
+- **the two request-side shapes have no captured sample.** `resolve.schema.json`'s `ResolveRequest` has
+  `samples/resolve-request.json`; `InvestigationRequest` has none, and that absence is deliberate rather
+  than pending. `buildSnapshot()` still omits `capturedAt` and all four `*Baseline` fields (#211, half 1,
+  which needs a metered live run), so a capture taken today would be **schema-invalid** — and committing
+  one would mean either weakening the schema to match a defect or parking a red fixture in `samples/`.
+  What stands in for it: the schema keeps those five fields `required`, and `validate.mjs` carries the
+  engine's current snapshot as an explicit must-**reject** case, the same device this directory already
+  uses for the engine's `name`/`messagesErrored` host shape. Both flip when half 1 lands
 
 `resolve.schema.json` and the three captures closed the other gap on 2026-09-01 (#202): `POST
 /api/resolve` was the one MVP 2 endpoint nothing validated, which is why five field-level divergences
@@ -65,6 +67,17 @@ before the schema was written**, and they disagree with two of the three worked 
 `insufficient_samples` with a non-null threshold), and §4.3's climbing `baselineValue` cannot happen
 for the same reason. Both are filed rather than encoded — whether the prose or the config is what
 should change is a product decision, and a schema written from §4 would have settled it by accident.
+
+`InvestigationRequest`, `InvestigationSnapshot` and `InvestigationTrend` landed the same day (#211, half
+2), which makes **both directions of every endpoint machine-checked** — the request halves were the last
+prose-only shapes here, and `investigation-api.md` §2.2 is the one that shows why that mattered: it
+drifted in both directions for three MVPs (five fields specified and never sent, three sent and never
+specified) while §4, which had a schema and a captured sample, stayed honest. Two things to know before
+reading it. It is deliberately **weaker than `earlywarning.schema.json` over the same field names** —
+`slope` may be zero or negative here, because a draining queue is a fact the agent should see rather than
+a forecast to withhold — and all three such divergences are pinned as must-*accept* cases so a future
+"unify the two slope definitions" fails loudly. And its fixture is **parsed out of §2.2's annotated
+fence** rather than transcribed into `validate.mjs`, so the two cannot disagree.
 
 `samples/alerts.json` and `samples/proxy-response.json` were planned in `CONTRIBUTING.md` §1 and do
 not exist. Both are derivable without inventing anything — a real alerts capture is at
@@ -134,7 +147,9 @@ cd contracts && npm install && npm run validate
 It checks five things, and the middle two are what make the first mean anything:
 
 - each JSON sample against **one named definition** (`HostsResponse`, `FindingsResponse`,
-  `InvestigationResponse`, `ResolveResponse`, `ResolveRequest`, `EarlyWarningResponse`)
+  `InvestigationResponse`, `ResolveResponse`, `ResolveRequest`, `EarlyWarningResponse`).
+  `InvestigationRequest` is absent from that list on purpose — it has no sample yet, and is checked
+  through §2.2's annotated fence and its accept/reject cases instead (see the gap note above)
 - structural cases that must **pass** — `[]`, sub-second timestamps from any language, and the real
   proxy payloads including their `null`s
 - cases that must **fail** — a retired `Warning` status, an unknown finding type, a hosts array
