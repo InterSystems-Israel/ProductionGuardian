@@ -1,7 +1,9 @@
 # `contracts/` — the coordination point
 
-Two API contracts, their schemas, and the shared sample payloads. This directory is the only
-path all three developers read, which is why it is PR-gated.
+The API contracts, their schemas, and the shared sample payloads. This directory is the only
+path every developer reads, which is why it is PR-gated.
+
+**MVP 1 — Health Scan**
 
 | File | Owner | Consumer |
 |---|---|---|
@@ -9,6 +11,31 @@ path all three developers read, which is why it is PR-gated.
 | `healthscan-api.md`, `healthscan.schema.json`, `healthscan.d.ts` | Dev B | Dev C |
 | `samples/metrics-dump.txt` | Dev A | Dev B |
 | `samples/hosts-response.json`, `samples/findings-response.json` | Dev B | Dev C |
+
+**MVP 2 — Early Warning, AI Detective, Smart Resolve.** Added to this table on 2026-09-01: these had
+been landing here since MVP 2 opened without ever reaching it, which is how
+`samples/investigation-response.json` came to be described in `investigation-api.md` as "not captured
+yet" for the twelve days after it was captured (#201).
+
+| File | Owner | Consumer |
+|---|---|---|
+| `earlywarning-api.md` | Dev B | Dev B (dashboard) |
+| `investigation-api.md`, `investigation.schema.json` | Dev B | Dev B (dashboard) |
+| `samples/investigation-response.json` — a **live** `gpt-4o-mini` capture | Dev B | Dev B (dashboard) |
+| `resolve-api.md` | Dev B | Dev B (dashboard) |
+| `mcp-tools.md` | Dev A | Dev B |
+
+**The dashboard consumer is Dev B, not Dev C** — Dev C left on 2026-08-20 and `apps/dashboard/**`
+passed to Dev B (root `CLAUDE.md` §3). The MVP 1 rows above are left reading `Dev C` because that is
+who consumed them when they were ratified, and rewriting history in an owner column is not the same
+as recording who owns it now. It does mean the engine↔dashboard rows have the same name on both
+sides, which is the seam the root file's mock-first rule addresses directly: nothing forces a
+contract to be real when one author owns both ends of it.
+
+Two gaps in that block, both noted rather than left to be discovered: **`investigation.d.ts` does not
+exist**, so unlike Health Scan there is no TypeScript transcription for a consumer to import — the
+engine and the dashboard each hand-maintain one. And **`resolve-api.md` has no schema and no sample**,
+so `POST /api/resolve` is the one MVP 2 endpoint nothing validates (#202).
 
 `samples/alerts.json` and `samples/proxy-response.json` were planned in `CONTRIBUTING.md` §1 and do
 not exist. Both are derivable without inventing anything — a real alerts capture is at

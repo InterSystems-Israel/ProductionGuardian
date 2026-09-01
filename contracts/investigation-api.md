@@ -7,16 +7,26 @@ investigation produced by the AI Hub agent inside the `iris` container.
 
 **The detection engine orchestrates; it does not reason.** The narrative, the evidence and the
 recommendation all originate in the agent (`services/detection-engine/CLAUDE.md` §1.1). The engine
-adds a request envelope, a timeout, a state label and a cache. A `rootCause` string composed by the
-engine would be a contract violation even if it were accurate, because a consumer cannot tell it
-apart from the agent's.
+adds a request envelope, a timeout, a state label and — by design, though not yet in the shipped build
+(§4.3, #207) — a cache. A `rootCause` string composed by the engine would be a contract violation even
+if it were accurate, because a consumer cannot tell it apart from the agent's.
 
-Machine-readable: `investigation.schema.json` and `investigation.d.ts` are **not landed yet**. This
-document is normative until they are, and they must be derived from it rather than the reverse.
-`samples/investigation-response.json` is likewise **not captured yet** — noted rather than quietly
-left off `README.md`'s table. Until it exists, the payloads in §8 are the bytes to mock against, and
-they are illustrative: the numbers are plausible for the scenario but were **not** captured from a
-live run, unlike the Health Scan samples. Replace them with a capture before they become a fixture.
+**Machine-readable: `investigation.schema.json` landed 2026-08-20 and `contracts/validate.mjs`
+enforces it.** Where this file and the schema disagree, **the schema wins.** That is the reverse of
+what this paragraph said until 2026-09-01 — *"this document is normative until they are, and they
+must be derived from it rather than the reverse"* — and the reversal is the whole of #201: five
+field-level divergences reached `main` in §3.5 and §8, and all three §8 payloads failed the schema,
+because a reader was told the prose was the authority and had no reason to check. `investigation.d.ts`
+is still genuinely absent, so there is no TypeScript transcription to check against; the engine
+(`src/detect/investigate.ts`) and the dashboard (`src/types/mvp2.ts`) each carry their own, and both
+agree with the schema.
+
+**`samples/investigation-response.json` is captured from a live run and is the bytes to mock
+against** — `gpt-4o-mini`, `toolCalls: 5`, a real narrative, taken the day MVP 2 shipped. The
+payloads in §8 are **illustrative**: their numbers are plausible for the scenario rather than
+measured, so read §8 for shape and the sample for bytes. Nothing validated those payloads until
+#201; making `validate.mjs` check the fenced blocks in contract prose — which is what would have
+caught the divergence on the commit that introduced it — is #205.
 
 **ASCII inside payload strings, deliberately.** `1 -> 4`, not `1 → 4`. Prose in this file uses
 proper UTF-8 em dashes; payloads do not, because a sample is compared byte for byte and an arrow
@@ -24,14 +34,19 @@ that survives one editor and not another is how both of this project's encoding 
 
 **Two neighbouring contracts this one leans on.** `earlywarning-api.md` owns the queue-depth slope
 reused as `trend` in §2.2, and `mcp-tools.md` (Dev A) owns the read-tool names quoted in §3.2 and
-`diagnostics.toolCalls`. Tool names here are **not authoritative** — if that catalogue names them
-differently, it wins and this file is amended. `resolve-api.md` consumes `recommendedAction` (§3.3).
+carried in `evidence[].tool`. Tool names here are **not authoritative** — if that catalogue names
+them differently, it wins and this file is amended. `resolve-api.md` consumes `recommendedAction`
+(§3.3). **`diagnostics.toolCalls` used to be listed here as a third thing that catalogue owned, and
+it is not**: it is a count from the AI Hub runtime and carries no names at all (§3.5).
 
-**No LLM provider is configured on the instance yet** (`docs/mvp2-aihub-verified-api.md`): nothing
-has called an external model from it. So every claim in this contract about what the *agent* returns
-is a specification of what the engine will accept, not an observation of what an agent produced.
-That cuts both ways — it is why §4.4 discards a malformed agent response entirely rather than
-salvaging fields, and it is why the timings in §4.2 are labelled as chosen rather than measured.
+**The LLM provider has been live since MVP 2 shipped on 2026-08-20** — `gpt-4o-mini`, through the
+AI Hub wallet entry `Setup.AIHub.CreateProvider()` provisions (`docs/mvp2-aihub-verified-api.md`,
+`iris/CLAUDE.md`). So the claims here about what the *agent* returns are no longer only a
+specification of what the engine will accept: `samples/investigation-response.json` is one agent's
+actual output, and §3.2's note about `evidence[]` reporting one entry per conclusion rather than one
+per call is measured across five runs (#192). Two things are still unmeasured and stay labelled as
+such: the timings in §4.2 are chosen rather than observed (Q13), and §4.4's discard-entirely rule has
+never had to fire on a real malformed reply.
 
 ---
 
@@ -353,8 +368,13 @@ all.
 ### 2.4 Only one finding shape is accepted
 
 `POST /api/investigate` accepts a finding where **`type` is `queue_buildup` and `host` is
-`Cloud API`.** Anything else returns `200` with `state: "unavailable"` and
-`failureReason: "out_of_scope"` (§5).
+`Cloud API`.** Anything else returns `200` with `state: "unavailable"` and a `note` saying so (§5).
+
+> **This gate does not exist in the shipped engine, and reason 2 below is why that matters more than
+> a scope slip.** There is no type or host check in `investigate()`, in `index.ts`, or in the panel,
+> so the Investigate button renders on every finding and the finding is forwarded to the agent
+> verbatim — including a `system_alert` whose `message` is text IRIS wrote into `alerts.log`. That is
+> the one path §2.3 says is closed. **#206**, and it is a code fix rather than a wording fix.
 
 Two reasons, and both are load-bearing:
 
@@ -654,29 +674,57 @@ convention as `baselineValue` (Q3).
 
 ### 3.5 `diagnostics`
 
+**Exactly four keys, all four always present, and the schema refuses a fifth**
+(`additionalProperties: false`).
+
 ```json
 {
-  "durationMs": 8421,
-  "agentInvoked": true,
-  "model": "claude-sonnet-4-5",
-  "toolCalls": ["get_host_status", "get_queue_depth", "get_pool_size"],
-  "failureReason": null
+  "model": "gpt-4o-mini",
+  "toolCalls": 5,
+  "durationMs": 8472,
+  "note": null
 }
 ```
 
 | Field | Type | Notes |
 |---|---|---|
-| `durationMs` | integer | Engine-measured, end to end, including the LLM round trip. |
-| `agentInvoked` | boolean | `false` for `source: "cache"` and `"canned"`. The honest signal that no live investigation happened. |
-| `model` | string \| null | As reported by AI Hub. `null` when it does not report one. Configuration, not data. |
-| `toolCalls` | array of string | MCP tool **names only**, in call order. `[]` when none. |
-| `failureReason` | string \| null | `null` when `state` is `complete`. §4.1. |
+| `model` | string \| null | As reported by AI Hub. `null` when it does not report one, and `null` on every non-agent source. Configuration, not code (MVP 2 spec §2.2) — do not parse it. |
+| `toolCalls` | integer \| null | **A count, not a list.** How many MCP tool calls the AI Hub runtime made. `0` is meaningful and different from `null` — see below. |
+| `durationMs` | integer \| null | Engine-measured, end to end, including the LLM round trip. `null` when nothing was timed. |
+| `note` | string \| null | Free text, and the only place a failure reason appears. `null` on a `complete` investigation. §4.1. |
 
-**`toolCalls` carries names, never arguments and never results.** A tool result can contain data that
-has no business being re-exported to a browser, and an echo of it in a diagnostics blob is a leak
-through the back door. **The authoritative record is the AI Hub audit log**, which captures every
-read and write call with its arguments inside IRIS; this array is a convenience for the UI and for
-support, and it is not evidence of what happened.
+**`toolCalls` is a count from the runtime, and it never carried names.** Until #201 this table said
+`array of string`, *"MCP tool names only, in call order"*, and §8's payloads showed arrays — a shape
+no build has ever sent. `REST.AgentDispatcher` sets it from `stats."total_tool_calls"`, the engine
+accepts it only as a number, the dashboard renders `"5 tool calls"`, and the schema says
+`integer | null`. §3.2 of this same file had it right the whole time (*"the count of tools used is
+`diagnostics.toolCalls` — that comes from the runtime"*), so the file contradicted itself and this
+section was the stale side.
+
+**The reason it is a count rather than a list survives the correction, and it is not brevity.** A
+tool result can contain data that has no business being re-exported to a browser, and an echo of one
+in a diagnostics blob is a leak through the back door — so **no arguments and no results, ever**, and
+a count cannot carry either even by accident. **The authoritative record is the AI Hub audit log**,
+which captures every read and write call with its arguments inside IRIS. This number is a
+convenience for the UI and for support; it is not evidence of what happened, and it does not have to
+equal `evidence.length` (§3.2).
+
+**`toolCalls: 0` is a finding, not a blank.** It means the agent answered without reading anything, so
+every claim in `rootCause` is a model assertion — `0` next to `state: "complete"` is the shape of a
+fluent guess. The shipped panel prints it as a neutral `0 tool calls` tag, which is honest and easy to
+skim past; treating it as a warning is worth doing and is not yet done. `null` is the different
+statement that the runtime reported no count — treat it as unknown and do not render it as zero, the
+same rule `baselineValue` follows (Q3).
+
+**There is no `agentInvoked` and no `failureReason`.** Both appeared only in this file's prose, in
+every version of it up to #201; `grep -rn "agentInvoked\|failureReason"` outside `contracts/` returns
+nothing, and `additionalProperties: false` means the schema does not merely lack them — it rejects
+them, so they were unrepresentable rather than unimplemented. What each one *meant* is real and lives
+elsewhere: **`state` and `source` carry whether a live investigation happened** (§4.1), and **`note`
+carries why one did not.** A consumer that branched on `diagnostics.agentInvoked === false` would
+branch on `undefined === false`, which is `false` — so the check fails **open** and labels a canned
+investigation as live. That is the failure this file exists to prevent, arriving through the file
+itself.
 
 ## 4. Failure discipline: degraded, unavailable, and never invented
 
@@ -701,29 +749,42 @@ the numbers and could write a fluent paragraph, and doing so would make `source:
 
 `degraded` exists so the fallback is visible rather than silent. A cached investigation of the same
 condition is usually still true and is worth showing; presenting it as `complete` would hide that
-nothing was measured at request time. `source` and `investigatedAt` say which and how old, and
-`diagnostics.agentInvoked` is `false`. **The UI must label a `degraded` response** — an unlabelled
-cached explanation next to a live queue graph is how a stale conclusion gets acted on.
+nothing was measured at request time. **`state` and `source` are what say so** — `source: "cache"` or
+`"canned"` *is* "no live investigation happened", and `investigatedAt` says how old it is. **The UI
+must label a `degraded` response** — an unlabelled cached explanation next to a live queue graph is
+how a stale conclusion gets acted on. (This paragraph pointed at `diagnostics.agentInvoked: false`
+until #201, which is a key that cannot arrive; see §3.5.)
 
 `unavailable` is the shape that makes "never invent" enforceable: there is no field left to put a
 guess in. A response with `state: "unavailable"` and a non-null `rootCause` is invalid, and the
 schema should reject it.
 
-`failureReason` is set on `degraded` and `unavailable`:
+**`diagnostics.note` carries why, and it is free text rather than an enum.** It is set on
+`unavailable` and may be set on `degraded`; it is `null` on `complete`. The shipped engine emits two
+shapes, and both are prefixes with the underlying cause appended verbatim:
 
-| Value | Meaning |
+| `note` | Cause |
 |---|---|
-| `agent_unreachable` | The AI Hub agent did not answer at the transport level |
-| `agent_timeout` | The agent accepted the request and did not finish in time (§4.2) |
-| `agent_error` | The agent returned an error |
-| `llm_unavailable` | The agent reported that the external LLM could not be reached |
-| `llm_rate_limited` | The agent reported a rate limit |
-| `malformed_agent_response` | The agent answered but the payload failed validation (§4.4) |
-| `finding_not_found` | No finding with that id is currently active |
-| `out_of_scope` | The finding is outside §2.4 |
+| `agent call failed: <message>` | Anything that stopped the call producing a reply — connection refused, reset, DNS, the 30 s deadline, an error from the agent, an LLM outage or a rate limit. The transport or agent message is appended as-is. |
+| `agent reply did not match the contract` | The agent answered and the payload failed validation (§4.4). |
 
-Treat as an **open** string and render unknown values neutrally, per the project's convention for
-every other enum on the wire.
+**Render it, do not parse it.** This table describes what the strings look like today, not a
+vocabulary anything guarantees — the engine builds them by interpolation, so a new cause changes the
+text without changing the contract. A consumer that matched on them would break on a reworded log
+line; the shipped panel prints `note` under "could not investigate" and that is the intended use.
+
+**§4.1 listed an eight-value `failureReason` enum until #201, and no build ever sent it.** Five of
+those values (`agent_unreachable`, `agent_timeout`, `agent_error`, `llm_unavailable`,
+`llm_rate_limited`) are all folded into the first row above, which is a real loss of resolution:
+`agent unreachable` and `agent rate-limited` are different operator actions and the note only
+distinguishes them if the upstream message happens to. Recorded as a known coarseness rather than
+quietly dropped — the enum was the better design and the wrong claim, and re-earning it is a code
+change with a schema change behind it, not a paragraph. A sixth, `malformed_agent_response`, is the
+second row and loses nothing.
+
+**The remaining two described conditions the engine does not reach at all**, which is a divergence in
+behaviour rather than in field names, so §5 and Q3 now say what actually happens: `finding_not_found`
+is a `400` (#207), and there is no `out_of_scope` check anywhere (#206).
 
 ### 4.2 Timeouts and retries
 
@@ -741,12 +802,34 @@ every other enum on the wire.
   receives the same response. It does not start a second agent run. No `202`, no polling endpoint:
   the call is synchronous and the dashboard awaits it.
 
-**These numbers are not measured against a live agent.** They are chosen to be comfortably above a
-typical LLM round trip and below a demo's patience. They live in engine config, not in
-`thresholds.json` — ADR 0003 governs *detection* numbers, and a timeout is not one. Retuning them
-against the real agent is expected and is not a contract change unless the 30 s guarantee moves.
+**These numbers were chosen rather than measured, and one live run has since put them in context
+without validating them.** They were picked to sit comfortably above a typical LLM round trip and
+below a demo's patience; the committed capture is `durationMs: 8472`, which says the 20 s soft
+deadline is not being brushed on a good run and says nothing about a bad one. Neither deadline has
+fired against a real agent, so the fallback chain has only ever been entered from an *absent* agent,
+not a slow one. They live in engine config, not in `thresholds.json` — ADR 0003 governs *detection*
+numbers, and a timeout is not one. Retuning them against the real agent is expected and is not a
+contract change unless the 30 s guarantee moves.
 
 ### 4.3 Fallback order
+
+**Steps 2 and 3 are unbuilt, and step 3 ships as something else.** Stated before the list rather
+than after it, because a reader mocking this endpoint will otherwise build a cache-aware panel for
+responses that cannot arrive. As shipped:
+
+- **There is no cache.** `investigate.ts` holds no store of any kind, so **no response is ever
+  `state: "degraded"` and no response is ever `source: "cache"`** — including §8.2's, which is
+  schema-valid and unreachable. Step 1 either succeeds or the engine goes straight to step 4.
+- **`source: "canned"` exists but means the mock agent, not a fallback.** It is a *deployment mode*
+  chosen at boot from `AGENT_MODE` — with no live agent the engine answers every investigation from
+  `mockAgent()`, and reports `state: "complete"`, not `degraded`. The schema says the same thing in
+  one line (*"`canned` is the mock agent"*), so this was documented correctly in the machine-readable
+  half and wrongly here.
+
+What that costs is real: `degraded` is the label the whole of §4.1 argues for, and nothing produces
+it, so "the fallback is visible rather than silent" is currently true only of `unavailable`. #207
+decides whether the cache gets built or the chain gets amended. The order below is the design and
+is kept as the design.
 
 In order, stopping at the first that produces content:
 
@@ -765,16 +848,23 @@ condition clears and recurs, a new id is correct and reusing the old narrative w
 **The cache is in-memory and is dropped on restart**, consistent with ADR 0002's refusal to persist.
 A cold engine has no cache, so step 3 is what a fresh start falls back to.
 
-**The canned response is a fixture, and it is honest about being one.** It is `source: "canned"`, it
-is `degraded`, and its `investigatedAt` is the time it was captured, not now. It is the demo's
+**The canned response is a fixture, and `source: "canned"` is the whole of how it stays honest about
+being one.** Two of the other tells this section claimed are not there as shipped: it is `complete`
+rather than `degraded`, and `investigatedAt` is stamped **now** rather than at capture time, because
+it goes through the same `isoSeconds(finished)` as a live answer. So a canned investigation is
+indistinguishable from a live one on every field except `source` and `model` — which is exactly why
+`iris/CLAUDE.md`'s pre-demo check asserts `source: "agent"` and not the narrative. It is the demo's
 standby (MVP 2 spec §6) and it exists because a scripted fallback beats a blank panel on stage —
-but it is never dressed up as a live investigation. `agentInvoked: false` says so in the payload.
+but it is never dressed up as a live investigation. **`source: "canned"` and `model: null` are what
+say so in the payload** (§3.5), and `iris/CLAUDE.md`'s pre-demo check is the standing test that the
+demo is not quietly running on this branch.
 
 ### 4.4 A malformed agent response is a failure, not a partial success
 
 If the agent answers but the payload does not validate — unknown `recommendedAction.action.type`,
 `confidence` out of range, missing `rootCause` on a `complete` claim, extra properties — the engine
-**discards it entirely** and continues down §4.3 with `failureReason: "malformed_agent_response"`.
+**discards it entirely** and continues down §4.3 with
+`note: "agent reply did not match the contract"`.
 
 It does not salvage the fields that parsed. A half-validated investigation is one whose
 recommendation was rejected but whose narrative is still on screen next to an approve button, and
@@ -784,12 +874,12 @@ that is the worst of the available outcomes. Validate the whole object or use no
 
 | Situation | Response |
 |---|---|
-| Investigation succeeded | `200`, `state: "complete"` |
-| Agent slow / unreachable / rate-limited, cache available | `200`, `state: "degraded"`, `source: "cache"` |
-| Agent unavailable, no cache | `200`, `state: "degraded"`, `source: "canned"` |
-| Agent unavailable, no cache, no fixture | `200`, `state: "unavailable"`, `source: "none"` |
-| Finding cleared between the poll and the click | `200`, `state: "unavailable"`, `failureReason: "finding_not_found"` |
-| Finding outside §2.4 | `200`, `state: "unavailable"`, `failureReason: "out_of_scope"` |
+| Investigation succeeded | `200`, `state: "complete"`, `source: "agent"` — or `"canned"` when the deployment has no live agent (§4.3) |
+| Agent slow / unreachable / rate-limited, cache available | **Unreachable — there is no cache.** Specified as `200`, `state: "degraded"`, `source: "cache"`. §4.3, #207 |
+| Agent unavailable, no cache | `200`, `state: "unavailable"`, `source: "none"` as shipped. Specified as `200`, `state: "degraded"`, `source: "canned"`; `canned` is a boot-time mode rather than a fallback (§4.3) |
+| Agent unavailable, no cache, no fixture | `200`, `state: "unavailable"`, `source: "none"`, `note` set |
+| Finding cleared between the poll and the click | **`400`** as shipped — `{"error": "bad request: no current finding with id ..."}`. **Specified as `200` + `state: "unavailable"`, and the paragraph below is the argument for it.** The engine deliberately throws instead, on the reasoning that an unknown id is the caller being wrong; the two readings disagree about whether a *race* is a caller defect. #207 |
+| Finding outside §2.4 | **No check exists**, and §2.4 explains why that is a data-boundary hole and not only a scope slip. As shipped, any finding on any host is investigated against the live agent. Specified as `200` + `state: "unavailable"`. #206 |
 | Malformed body — not JSON, no `findingId`, extra keys | `400` + `{"error":"..."}` |
 | Wrong method on the path | `405` |
 | Genuine server fault | `500` + `{"error":"..."}` |
@@ -799,6 +889,15 @@ no tombstone (`healthscan-api.md` Q4). An operator reading a finding while it re
 *expected* lifecycle, not a client bug — the same reasoning that makes zero findings `200` + `[]`
 rather than `404` (`healthscan-api.md` Q7). The dashboard needs to render "this finding is no longer
 active", which is a state, and states travel in the body here.
+
+**The engine does the opposite, with its own reason written next to it**, and neither side knew the
+other existed until #201: `index.ts`'s `investigate` throws `bad request: no current finding with id
+…` and the comment says *"deliberately an error rather than an `unavailable` investigation: an
+unknown id is the CALLER being wrong, and dressing it as 'we could not investigate' would hide a bug
+in whatever built the request."* Both arguments are good and they are about different inputs — an id
+the dashboard never held is a caller defect, an id it held ten seconds ago is a race, and the engine
+cannot tell them apart. Left as it ships rather than changed here, because §5 is where the promise is
+recorded and #201 is a documentation fix; #207 decides it.
 
 **Bare `Q<n>` in this file means `healthscan-api.md`'s question list**, which was published first and
 is what "Q13" has meant in this directory since PR #3. §6 numbers its own questions and always names
@@ -828,19 +927,19 @@ an answer is an assumption rather than a fact.
 |---|---|---|
 | **Q1** | What does the dashboard send? | `{"findingId": "..."}` and nothing else (§2.1). Not negotiable — it is half the data-boundary argument. |
 | **Q2** | Is it synchronous? How long? | Synchronous. Hard deadline 30 s, so build the panel for a multi-second spinner, not an instant swap. No polling endpoint. |
-| **Q3** | Can I investigate any finding? | No. `queue_buildup` on `Cloud API` only (§2.4). Anything else is `200` + `out_of_scope`. Hide the button elsewhere. |
+| **Q3** | Can I investigate any finding? | **Contractually no** — `queue_buildup` on `Cloud API` only (§2.4), and a consumer should hide the control elsewhere. **But nothing enforces it as shipped:** there is no scope check in the engine and no type gate in the panel, so a click on any finding reaches the live agent. The `200` + `out_of_scope` this row promised until #201 does not exist, and §2.4 records what it lets through. #206 |
 | **Q4** | Is `rootCause` safe to render verbatim? | Yes, and it is authoritative — do not summarise or reflow it. Same rule as `Finding.message`. |
 | **Q5** | Is `evidence[]` strings or objects? | Objects. Render `detail` as the bullet; use `source` to mark what was tool-measured versus model-asserted (§3.2). **`tool` is provenance text, not an enum** — it carries the runtime ClassMethod name (`GetPoolSize`), sometimes with a provider prefix (`functions.GetPoolSize`), and never the snake_case titles in `mcp-tools.md` §1. Render it; do not validate it, and do not drop a bullet whose tool you do not recognise (§3.2). |
 | **Q6** | Can I bind the approve button straight to `recommendedAction`? | Yes when `action.type` is `set_pool_size` and `action.size` is within `bounds`. Otherwise disable it and render nothing (§3.3). **Send `recommendedAction.action` to `POST /api/resolve` as `action`, unmodified** — it is already that contract's exact shape, and reshaping it is the failure `resolve-api.md` §1.2 warns about. Applying is that endpoint, not this one. |
 | **Q7** | Can I gate the approve button on `confidence`? | **No.** It is an uncalibrated LLM self-report (§3.4). Display it; never branch on it. |
-| **Q8** | What is a nullable field? | `rootCause`, `confidence`, `recommendedAction`, `diagnostics.model`, `diagnostics.failureReason`, `evidence[].tool`. Every key is always present; `evidence` is `[]` rather than `null`. |
+| **Q8** | What is a nullable field? | `rootCause`, `confidence`, `recommendedAction`, `evidence[].tool`, and **all four of `diagnostics`** — `model`, `toolCalls`, `durationMs`, `note` (§3.5). Every key is always present; `evidence` is `[]` rather than `null`. The one exception is `manualRemediation` (§3.3a), which is optional as well as nullable: absent on an MVP 2 response, `null` when the agent recommended nothing manual, and **both mean the same thing to a renderer**. |
 | **Q9** | Does a failed investigation 404 or 500? | Neither. `200` + `state` (§5). `400` on a malformed body, `500` only on a genuine fault. |
-| **Q10** | How do I know a response is cached or canned? | `state: "degraded"`, plus `source`, `investigatedAt` and `diagnostics.agentInvoked: false`. **You must label it.** |
+| **Q10** | How do I know a response is cached or canned? | **`source`** — `"cache"` or `"canned"`, alongside `state: "degraded"` and `investigatedAt` for the age. **You must label it.** This answer named `diagnostics.agentInvoked: false` until #201, which is a key that cannot arrive: `undefined === false` is `false`, so the check a consumer wrote from this row would fail **open** and label a canned investigation as live — the exact defect the label exists to prevent. Branch on `source`. |
 | **Q11** | Do I need a CORS change? | Yes — this `POST` preflights where the GETs did not (§5). |
 | **Q12** | Is there a `question` field, ever? | No. That is Ask Guardian (§7). |
 | **Q15** | Why is it `trend` and not the `projection` from `earlywarning-api.md`? | Because Early Warning correctly publishes `projection: null` / `already_crossed` for exactly the condition this endpoint investigates, so reusing it would deliver `null` every time (§2.2). Same field names and units, no forecast framing. Read the two panels from their own endpoints; do not derive one from the other. |
-| **Q13** | *(assumption)* Is 30 s enough? | **Unverified against a live agent.** Chosen, not measured — an agent doing several MCP calls plus one LLM completion should land well inside it. Expect retuning; only the 30 s guarantee is contractual. |
-| **Q14** | *(assumption)* Does AI Hub report the model name? | Assumed yes, hence `diagnostics.model`. `null` is a valid answer, so a mock should exercise both. |
+| **Q13** | *(partly measured)* Is 30 s enough? | **So far, comfortably** — the one committed live capture is `durationMs: 8472` for five tool calls plus one completion, so the budget is roughly 3.5× a good run. What is still unverified is the *bound*: no timeout has been observed, so the fallback chain in §4.3 has never been entered from a slow agent rather than an absent one. Expect retuning; only the 30 s guarantee is contractual. |
+| **Q14** | ~~*(assumption)*~~ Does AI Hub report the model name? | **Yes, measured** — `samples/investigation-response.json` carries `model: "gpt-4o-mini"` from a live run. `null` is still a valid answer and is what every non-agent `source` sends, so a mock must exercise both. No longer an assumption as of 2026-08-20. |
 
 ## 7. What this is not
 
@@ -860,7 +959,12 @@ an answer is an assumption rather than a fact.
 
 ## 8. Worked examples
 
-Illustrative, not captured — see the note at the top of this file. ASCII inside payload strings.
+Illustrative, not captured — the one live capture is `samples/investigation-response.json`, and it is
+what to mock against for bytes (see the top of this file). ASCII inside payload strings.
+
+**All three payloads below were invalid against `investigation.schema.json` from the day it landed
+until #201**, each with the same four errors in `diagnostics`. They are hand-checked against
+`#/definitions/InvestigationResponse` now; nothing checks them on commit, which is #205.
 
 ### 8.1 `complete` — the pool-size scenario
 
@@ -920,11 +1024,10 @@ Illustrative, not captured — see the note at the top of this file. ASCII insid
     "summary": "increase Cloud API pool 1 -> 4"
   },
   "diagnostics": {
+    "model": "gpt-4o-mini",
+    "toolCalls": 4,
     "durationMs": 8421,
-    "agentInvoked": true,
-    "model": "claude-sonnet-4-5",
-    "toolCalls": ["get_host_status", "get_queue_depth", "get_pool_size", "get_processing_time"],
-    "failureReason": null
+    "note": null
   }
 }
 ```
@@ -935,12 +1038,24 @@ already carried. The two bullets that read most like a conclusion are the ones a
 
 `confidence: 0.86` is displayable and gates nothing. Approval is required regardless.
 
-The `model` string is a **placeholder shaped like a model id, not a chosen model.** No provider is
-configured on the instance yet, and the model is an AI Hub configuration rather than code (MVP 2 spec
-§2.2), so a mock must not treat this value as fixed — and a UI must not parse it. Exercise `null`
-too, per Q14.
+`toolCalls: 4` is a **count**, and it does not have to equal `evidence.length` — there are five
+bullets here and two of them are `source: "snapshot"`, which no tool call produced. The two numbers
+answer different questions, and #192 measured them disagreeing in the other direction as well (a
+tool called and audited on all five runs appeared in `evidence[]` on three). The audit log
+adjudicates; neither field is the record. This block held `toolCalls` as an array of tool names until
+#201 — see §3.5.
+
+`model: "gpt-4o-mini"` is **the model the instance actually runs**, and it is still not a fixed
+value: the model is AI Hub configuration rather than code (MVP 2 spec §2.2), so a mock must not treat
+it as constant and a UI must not parse it. It read `claude-sonnet-4-5` here until #201, from when no
+provider was configured and any plausible id would do. Exercise `null` too, per Q14.
 
 ### 8.2 `degraded` — LLM rate-limited, cached investigation served
+
+**Schema-valid and unreachable as shipped.** There is no cache, so nothing produces `state:
+"degraded"` or `source: "cache"` (§4.3, #207). Kept as the design's shape rather than deleted,
+because §4.1's argument for a visible fallback is the reason the two enum values exist and a mock
+should still exercise them — but do not read this block as something the running engine sends.
 
 `200`, `X-Investigation-State: degraded`
 
@@ -980,19 +1095,25 @@ too, per Q14.
     "summary": "increase Cloud API pool 1 -> 4"
   },
   "diagnostics": {
-    "durationMs": 20114,
-    "agentInvoked": false,
     "model": null,
-    "toolCalls": [],
-    "failureReason": "llm_rate_limited"
+    "toolCalls": 0,
+    "durationMs": 20114,
+    "note": "agent call failed: rate limited by the provider"
   }
 }
 ```
 
-`investigatedAt` is 09:14:31 while the request was made minutes later. `agentInvoked` is `false` and
-`toolCalls` is `[]` — nothing was measured for *this* request. `durationMs` of 20114 is the soft
-deadline being spent before the fallback. **The panel must say the investigation is cached and show
+`investigatedAt` is 09:14:31 while the request was made minutes later. **`source: "cache"` is what
+says no live investigation happened** — `model: null` and `toolCalls: 0` are consistent with it but
+are not the signal, because a live agent can also answer with no reads (§3.5). `durationMs` of 20114
+is the soft deadline being spent before the fallback, and `note` carries the reason in the engine's
+own free-text form rather than as an enum. **The panel must say the investigation is cached and show
 its age**, and it should be visibly the same recommendation rather than a fresh one.
+
+Note what this payload cannot tell you: that the cause was a rate limit specifically. The words in
+`note` come from whatever the transport reported, so a differently-worded upstream error is a
+differently-worded `note` for the same condition. §4.1 records that as the cost of dropping the
+enum.
 
 ### 8.3 `unavailable` — nothing to serve, and nothing claimed
 
@@ -1010,25 +1131,32 @@ its age**, and it should be visibly the same recommendation rather than a fresh 
   "confidence": null,
   "recommendedAction": null,
   "diagnostics": {
-    "durationMs": 30007,
-    "agentInvoked": true,
     "model": null,
-    "toolCalls": [],
-    "failureReason": "agent_timeout"
+    "toolCalls": null,
+    "durationMs": null,
+    "note": "agent call failed: agent timed out after 30000ms"
   }
 }
 ```
 
 Every content field is null or empty. There is nowhere to put a guess, which is the design. Render
-"could not investigate", offer a retry, and **do not** synthesise a root cause from the finding's own
-numbers — the engine has them and deliberately does not use them (§4).
+"could not investigate", show `note`, offer a retry, and **do not** synthesise a root cause from the
+finding's own numbers — the engine has them and deliberately does not use them (§4).
 
-`agentInvoked: true` with `toolCalls: []` is the honest report of a call that was made and did not
-come back with a usable answer. Whether the agent ran tools is in the AI Hub audit log, which is why
-this array is not evidence of anything (§3.5).
+**All three of `model`, `toolCalls` and `durationMs` are `null` here, not `0` and not `[]`**, and
+that is what the engine sends: `unavailable()` builds the block with the note and nothing else. The
+distinction is the same one `baselineValue` makes (Q3) — a call that never returned a usable answer
+measured nothing, and `toolCalls: 0` would state that the agent read nothing, which is a claim this
+response is in no position to make. Whether it ran tools before timing out is in the AI Hub audit
+log, which is why this field is not evidence of anything (§3.5).
 
-An out-of-scope or cleared finding has the same shape with `agentInvoked: false`, `durationMs` near
-zero, and `failureReason` of `out_of_scope` or `finding_not_found`.
+`durationMs: null` next to a `note` that names `30000ms` is not a contradiction: the number in the
+note is the **deadline that fired**, quoted from the error, and the field is a *measurement the
+runtime reported*. Nothing reported one, so nothing is claimed. Read the elapsed time off the request
+if you need it.
+
+A cleared finding does **not** have this shape as shipped — it is a `400`. See §5 and #207; this
+payload is what a timeout, a refused connection or a reply that failed validation produces.
 
 ---
 
@@ -1037,8 +1165,9 @@ zero, and `failureReason` of `out_of_scope` or `finding_not_found`.
 Never edit in place. A change is a PR to `contracts/` with a `CHANGELOG.md` entry, reviewed by every
 other developer. See `README.md` in this directory.
 
-Two developers remain since 2026-08-12, so in practice that is one other person — and GitHub will
-not let an author approve their own PR, which is the point.
+Two developers remain since **2026-08-20**, when Dev C left, so in practice that is one other person —
+and GitHub will not let an author approve their own PR, which is the point. (This line read
+`2026-08-12` until #201, which is not a date anyone left on; root `CLAUDE.md` §4 is authoritative.)
 
 **Two kinds of change here are heavier than their diff.** Estimate the cost from attached meaning,
 not from line count (`README.md`, "Estimating what a change costs"):
@@ -1052,5 +1181,11 @@ not from line count (`README.md`, "Estimating what a change costs"):
   additionally co-owned in effect: `resolve-api.md` refuses unknown keys inside it, so adding one
   here breaks that endpoint rather than this one.
 
-Everything else — a new `failureReason`, a new `evidence[].source` — is additive, and consumers
-already render unknown enum values neutrally, so it does not break a mock.
+Everything else — a new `evidence[].source`, a new `recommendedAction.action.type`'s *rejection* path
+— is additive, and consumers already render unknown enum values neutrally, so it does not break a
+mock.
+
+**A fifth key in `diagnostics` is not additive, though**, and this paragraph named one as its example
+of a safe change until #201. `investigation.schema.json` sets `additionalProperties: false` on that
+object, so adding a field is a schema change that must land in the same PR — which is precisely why
+`agentInvoked` and `failureReason` were documented here for months without ever being sendable.

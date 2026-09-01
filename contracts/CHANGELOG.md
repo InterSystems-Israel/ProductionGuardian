@@ -4,6 +4,85 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — `investigation-api.md`: `diagnostics` documented a block no build has ever sent
+
+**No wire change.** Every field named here already ships and is already in
+`investigation.schema.json`; what changes is the prose, which described a different object. So nothing
+downstream needs updating — the point is that a consumer implementing from this file was being told to
+read fields that cannot arrive, and one of those instructions failed **open**.
+
+`diagnostics` is, and has always been, exactly four keys: `model`, `toolCalls`, `durationMs`, `note`.
+
+### What §3.5 said, and what every implementation does
+
+| | `diagnostics` keys |
+|---|---|
+| §3.5, until today | `durationMs`, **`agentInvoked`**, `model`, `toolCalls` *(array of names)*, **`failureReason`** |
+| `investigation.schema.json`, since 2026-08-20 | `model`, `toolCalls` *(integer)*, `durationMs`, `note` — all required, `additionalProperties: false` |
+| `samples/investigation-response.json` (live capture) | the same four |
+| the engine, the dashboard, `REST.AgentDispatcher` | the same four |
+
+`agentInvoked` and `failureReason` existed **only** in this file. `additionalProperties: false` means
+the schema does not merely lack them, it rejects them — they were unrepresentable rather than
+unimplemented — and `grep -rn "agentInvoked\|failureReason"` outside `contracts/` returns nothing.
+
+### The one that would have caused real harm
+
+Q10 told a consumer to detect a cached or canned investigation with
+`diagnostics.agentInvoked === false`. That expression is `undefined === false`, which is `false`, so
+the check **fails open and labels a canned investigation as live** — the defect the label exists to
+prevent, arriving through the contract that mandates it. Q10, §4.1 and §4.3 now point at `state` and
+`source`, which is what the shipped panel already reads.
+
+### `toolCalls` is a count, and the reason it is a count survives
+
+§3.5 called it an array of MCP tool names in call order. It is `stats."total_tool_calls"` from the AI
+Hub runtime, an integer. **§3.2 of the same file had it right** — *"the count of tools used is
+`diagnostics.toolCalls` … not the length of this array"* — so the file contradicted itself and §3.5
+was the stale side. The rule that came with the wrong shape is kept, because it is the load-bearing
+part: **no arguments and no results, ever**, since a tool result can carry data that has no business
+being re-exported to a browser. A count cannot carry either even by accident.
+
+### Why five documentation defects sat in one section
+
+The preamble said *"this document is normative until [the schema and `.d.ts`] are [landed], and they
+must be derived from it rather than the reverse."* The schema landed on 2026-08-20 and that sentence
+did not change, so a reader had it in writing that checking the schema was unnecessary. It now says
+the schema wins. `investigation.d.ts` is still genuinely absent and still says so.
+
+Two other preamble claims were stale in the same way and are corrected: the live capture exists and is
+the bytes to mock against, and the LLM provider has been live since MVP 2 shipped — which downgrades
+several "specification, not observation" caveats, including Q14 (measured) and Q13 (partly measured).
+
+`README.md`'s table gained the five MVP 2 files, which had been landing in this directory since MVP 2
+opened without ever appearing in it. The sentence about the sample being *"noted rather than quietly
+left off `README.md`'s table"* was itself the only place the omission was recorded, and it is where the
+"not captured yet" claim outlived the capture by twelve days. The table also now says the dashboard
+consumer is Dev B rather than Dev C, and names the two remaining gaps: no `investigation.d.ts`, and no
+schema or sample for `resolve-api.md` (#202).
+
+**Nothing validated the three §8 payloads, which is why all three were invalid.** `validate.mjs`
+checks `samples/*.json` and does not look inside contract prose. Fixed by hand and re-checked with
+ajv against `#/definitions/InvestigationResponse`; making that a committed check needs a fence
+convention naming the definition, filed as **#205**.
+
+One unrelated correction, made because it is in a section this PR edits and it concerns who reviews a
+contract change: **§9 dated the drop to two developers `2026-08-12`**, which is not a date anyone left
+on. Dev C left `2026-08-20` (root `CLAUDE.md` §4).
+
+### Three behaviour divergences found on the way, documented but not fixed here
+
+This was a documentation PR and these are code decisions, so the contract now states what ships and
+names the issue rather than quietly asserting either side:
+
+- **§2.4's scope gate does not exist** — no type or host check anywhere, so a `system_alert` finding,
+  whose `message` is text IRIS wrote into `alerts.log`, can be forwarded to the external LLM. §2.3
+  names that as the hole §2.4 closes, and it does not. **#206**, and the most serious of the three.
+- **§4.3's fallback chain has no cache and `canned` is a boot mode, not a fallback**, so nothing ever
+  produces `state: "degraded"` and §8.2 is schema-valid but unreachable. **#207**
+- **A cleared `findingId` is a `400`**, not the `200` + `state: "unavailable"` §5 argues for at
+  length. Both sides wrote down a good reason; they are about different inputs. **#207**
+
 ## 2026-09-01 — `mcp-tools.md` §3.13: `get_active_findings` capped at 25 in silence — `total` and `truncated`
 
 **Two fields added to `get_active_findings`, and one field added to the request that feeds it.**
