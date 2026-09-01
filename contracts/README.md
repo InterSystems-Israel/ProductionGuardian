@@ -19,7 +19,8 @@ yet" for the twelve days after it was captured (#201).
 
 | File | Owner | Consumer |
 |---|---|---|
-| `earlywarning-api.md` | Dev B | Dev B (dashboard) |
+| `earlywarning-api.md`, `earlywarning.schema.json` | Dev B | Dev B (dashboard) |
+| `samples/earlywarning-response.json`, `earlywarning-insufficient-samples.json`, `earlywarning-crossed.json` — three **live** captures from one `pool_bottleneck` cycle | Dev B | Dev B (dashboard) |
 | `investigation-api.md`, `investigation.schema.json` | Dev B | Dev B (dashboard) |
 | `samples/investigation-response.json` — a **live** `gpt-4o-mini` capture | Dev B | Dev B (dashboard) |
 | `resolve-api.md`, `resolve.schema.json` | Dev B | Dev B (dashboard) |
@@ -34,15 +35,11 @@ as recording who owns it now. It does mean the engine↔dashboard rows have the 
 sides, which is the seam the root file's mock-first rule addresses directly: nothing forces a
 contract to be real when one author owns both ends of it.
 
-Three gaps left in that block, noted rather than left to be discovered:
+Two gaps left in that block, noted rather than left to be discovered:
 
 - **neither `investigation.d.ts` nor `resolve.d.ts` exists**, so unlike Health Scan there is no
   TypeScript transcription for a consumer to import — the engine and the dashboard each hand-maintain
-  one for both shapes
-- **`earlywarning-api.md` has no schema and no sample** (#219). It is the last MVP 2 endpoint in that
-  state, and since #205 the validator prints it as `0 annotated` on every run rather than leaving it to
-  be noticed. The three worked payloads in its §4 are unchecked by anything but reading — which is
-  exactly the position `investigation-api.md` was in for the twelve days of #201
+  one for both shapes. `earlywarning.d.ts` does not exist either, and for the same reason
 - **`investigation-api.md` §2.2 has no `InvestigationRequest` definition** (#211). §2.2 states
   `additionalProperties: false` at *every* level for the object the engine sends the agent, and nothing
   enforces it — which is why §2.2 drifted in both directions (five fields specified and never sent,
@@ -56,6 +53,18 @@ in `resolve-api.md` had to be found by reading rather than by CI. Two points in 
 **deliberately permissive** — `resolve-api.md` §4's `after` on a preview and §5's `confirmation`
 fields are open decisions, and the fields say so in their `description` — so for those two the prose
 is still the only statement of intent, and there isn't one yet.
+
+`earlywarning.schema.json` and three captures closed the last of them on 2026-09-01 (#219), so **all
+five HTTP contracts now have a schema and at least one live sample.** Two things about that one are
+worth knowing before reading it. First, its central rule is *structural* — `earlywarning-api.md` §1.4
+puts every computed number inside `projection` and every observed one outside it — so
+`additionalProperties: false` is doing the actual work: a top-level `slope` beside a declined forecast
+is now a validation failure, which is the exact case §1.4 names. Second, **the captures were taken
+before the schema was written**, and they disagree with two of the three worked examples in §4:
+`warming` is unreachable on the shipped `referenceBaselines` (§4.2's state comes back as
+`insufficient_samples` with a non-null threshold), and §4.3's climbing `baselineValue` cannot happen
+for the same reason. Both are filed rather than encoded — whether the prose or the config is what
+should change is a product decision, and a schema written from §4 would have settled it by accident.
 
 `samples/alerts.json` and `samples/proxy-response.json` were planned in `CONTRIBUTING.md` §1 and do
 not exist. Both are derivable without inventing anything — a real alerts capture is at
@@ -125,7 +134,7 @@ cd contracts && npm install && npm run validate
 It checks five things, and the middle two are what make the first mean anything:
 
 - each JSON sample against **one named definition** (`HostsResponse`, `FindingsResponse`,
-  `InvestigationResponse`, `ResolveResponse`, `ResolveRequest`)
+  `InvestigationResponse`, `ResolveResponse`, `ResolveRequest`, `EarlyWarningResponse`)
 - structural cases that must **pass** — `[]`, sub-second timestamps from any language, and the real
   proxy payloads including their `null`s
 - cases that must **fail** — a retired `Warning` status, an unknown finding type, a hosts array
@@ -153,8 +162,9 @@ It checks five things, and the middle two are what make the first mean anything:
   Opt-in because most fences here are deliberately *not* whole documents — request bodies, bare
   fragments, error shapes. The compensating rule: every run prints each file's annotated **and**
   unannotated counts, a malformed annotation **fails** rather than skips, and a file that drops to
-  `0 annotated` says so on every CI run. `earlywarning-api.md` is at `0` today because it has no
-  schema (#219); that is the gap being visible rather than absent
+  `0 annotated` says so on every CI run. `earlywarning-api.md` sat at `0` for as long as it had no
+  schema and is at `3 annotated, 0 unannotated` since #219 — the zero was the gap being visible
+  rather than absent, and the count moving is what closing it looks like
 
 **Do not replace this with an `ajv-cli` one-liner.** Three reasons, all learned the hard way on
 PR #3:

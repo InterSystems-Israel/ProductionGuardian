@@ -32,6 +32,7 @@ const SCHEMA_ID = 'https://production-guardian/contracts/healthscan.schema.json'
 const PROXY_SCHEMA_ID = 'https://production-guardian/contracts/proxy.schema.json';
 const INVESTIGATION_SCHEMA_ID = 'https://production-guardian/contracts/investigation.schema.json';
 const RESOLVE_SCHEMA_ID = 'https://production-guardian/contracts/resolve.schema.json';
+const EARLYWARNING_SCHEMA_ID = 'https://production-guardian/contracts/earlywarning.schema.json';
 
 /** Each sample is validated against ONE named definition, never "either". */
 const CASES = [
@@ -315,6 +316,153 @@ const RESOLVE_MUST_REJECT = [
     name: 'a requestId over §1.1\'s 64 characters — it keys an in-memory replay store (§6)',
     definition: 'ResolveRequest',
     data: { ...RESOLVE_REQUEST_BASE, requestId: 'rq-'.padEnd(66, 'x') },
+  },
+];
+
+/**
+ * Early Warning, the last of the five HTTP contracts to get a schema (#219).
+ *
+ * THREE samples, and the reason is the same one that made `resolve` need three: the shape is
+ * state-dependent and one poll cannot exercise it. `projection` is an object on exactly one of these
+ * three, `threshold` differs in nothing but the state it belongs to, and `recentDirection` is `null`
+ * on one, `"rising"` on one, `"steady"` on the third.
+ *
+ * ALL THREE ARE CAPTURED, byte-for-byte, from `GET http://localhost:3002/api/earlywarning` across one
+ * `pool_bottleneck` cycle on 2026-09-01 — poll 4 (25 s after engine start), poll 42 (the live
+ * projection, ETA 164 s), poll 46 (12 s later, crossed at 64). NOTHING IS PINNED, unlike the resolve
+ * and investigation samples: there are no ids in this payload, and the timestamps are load-bearing
+ * arithmetic rather than noise — `17:54:47Z + 164 s = 17:57:31Z` is the one cross-field invariant
+ * draft-07 cannot express (`Projection.projectedCrossingAt`), so rewriting them would delete the only
+ * check on it.
+ *
+ * The captures were taken BEFORE the schema was written, in that order and on purpose, and they
+ * disagree with two of the three worked examples in §4. See `earlywarning-insufficient-samples.json`
+ * against §4.2: same five samples, same 20 s span, different reason — `warming` is unreachable on the
+ * shipped `referenceBaselines`. That disagreement is filed, not encoded.
+ */
+const EARLYWARNING_CASES = [
+  { file: 'samples/earlywarning-response.json', definition: 'EarlyWarningResponse' },
+  { file: 'samples/earlywarning-insufficient-samples.json', definition: 'EarlyWarningResponse' },
+  { file: 'samples/earlywarning-crossed.json', definition: 'EarlyWarningResponse' },
+];
+
+/** The projecting `Cloud API` row from `earlywarning-response.json`, to mutate one field at a time. */
+const EW_PROJECTING = JSON.parse(
+  readFileSync(join(here, 'samples/earlywarning-response.json'), 'utf8'),
+)[0];
+
+/** The `already_crossed` `Cloud API` row from `earlywarning-crossed.json`. Same purpose. */
+const EW_DECLINED = JSON.parse(
+  readFileSync(join(here, 'samples/earlywarning-crossed.json'), 'utf8'),
+)[0];
+
+/**
+ * Early Warning rows that must FAIL.
+ *
+ * The first two are #219's own headline: `projection` and `projectionUnavailable` are mutually
+ * exclusive, and BOTH directions are tested because they fail differently. Both non-null makes two
+ * consumers of the same bytes disagree about whether a queue is about to cross; both null leaves one
+ * with nothing to render and no way to know why.
+ *
+ * The rest are each a rule the prose states and nothing could previously check — and every one of
+ * them is a shape a hand-written fixture produces naturally, which is the point. `slope` outside
+ * `projection` is the §1.4 violation the contract names in as many words; a reason paired with the
+ * wrong `threshold` nullability is what a fixture written from §2.1's table without §2.2's order
+ * gives you.
+ */
+const EARLYWARNING_MUST_REJECT = [
+  {
+    name: 'both projection and projectionUnavailable non-null — two consumers, two answers',
+    definition: 'HostProjection',
+    data: { ...EW_PROJECTING, projectionUnavailable: 'beyond_horizon' },
+  },
+  {
+    name: 'both null — no forecast and no reason, which §2.1 calls a contract violation outright',
+    definition: 'HostProjection',
+    data: { ...EW_DECLINED, projectionUnavailable: null },
+  },
+  {
+    // §1.4, verbatim: "slope is not published outside projection, even when we decline to forecast. A
+    // visible 'rising ~0.5/min' next to no ETA still implies a forecast we refused to make." The
+    // engine's in-memory object really does carry this field, so the serialiser dropping it is the
+    // only thing between it and the wire.
+    name: 'a top-level slope on a declining row — §1.4, and the engine holds this field internally',
+    definition: 'HostProjection',
+    data: { ...EW_DECLINED, slope: 0.5 },
+  },
+  {
+    name: 'secondsToThreshold 0 for a crossed queue — §1.4: zero reads as a measurement of now',
+    definition: 'HostProjection',
+    data: {
+      ...EW_PROJECTING,
+      projection: { ...EW_PROJECTING.projection, secondsToThreshold: 0 },
+    },
+  },
+  {
+    name: 'a message with the hedge "at this rate" removed — the one string rendered verbatim',
+    definition: 'HostProjection',
+    data: {
+      ...EW_PROJECTING,
+      projection: {
+        ...EW_PROJECTING.projection,
+        message: 'Queue depth 41 rising ~3.3/min; it crosses 50 in ~3 min.',
+      },
+    },
+  },
+  {
+    // §1.5's "one invariant worth testing". `falling` here is not a typo-shaped error: it is what a
+    // fixture author writes for "queue draining after the fix", and the projection path cannot be
+    // reached from it (§2.2.1's tail gate).
+    name: 'a projection with recentDirection "falling" — §2.2.1 cannot reach that path',
+    definition: 'HostProjection',
+    data: { ...EW_PROJECTING, recentDirection: 'falling' },
+  },
+  {
+    name: 'already_crossed with threshold null — nothing to have crossed',
+    definition: 'HostProjection',
+    data: { ...EW_DECLINED, threshold: null },
+  },
+  {
+    name: 'warming with a non-null threshold — no baseline means no target, §2.1',
+    definition: 'HostProjection',
+    data: { ...EW_DECLINED, projectionUnavailable: 'warming' },
+  },
+  {
+    // healthscan Q13's "null is not zero" reaching this endpoint: currentValue null is the definition
+    // of metric_unmeasurable, and §2.2 checks it second, so no later reason can be reported for it.
+    name: 'currentValue null reported as not_rising — a flat queue that was never read (§2.2)',
+    definition: 'HostProjection',
+    data: { ...EW_DECLINED, currentValue: null, projectionUnavailable: 'not_rising' },
+  },
+  {
+    name: 'metric_unmeasurable carrying a reading — the reason IS the absence of one',
+    definition: 'HostProjection',
+    data: { ...EW_DECLINED, projectionUnavailable: 'metric_unmeasurable', threshold: null },
+  },
+  {
+    name: 'one sample with a 20 s fitSpanSeconds — a span two samples never existed to measure',
+    definition: 'HostProjection',
+    data: { ...EW_DECLINED, fitSampleCount: 1, fitSpanSeconds: 20 },
+  },
+  {
+    // The unmeasured cousin of the above: `Threshold.basis` is the ONE closed union in this schema,
+    // and `absolute` / `floor` / `absoluteFloor` are the kind of near-miss a mock writes.
+    name: 'threshold.basis "absolute" — a two-armed gate has exactly two arms (§1.3)',
+    definition: 'HostProjection',
+    data: { ...EW_DECLINED, threshold: { ...EW_DECLINED.threshold, basis: 'absolute' } },
+  },
+  {
+    name: 'an eighth reason code — §2.2 fixes the set, and the engine refuses to add one',
+    definition: 'HostProjection',
+    data: { ...EW_DECLINED, projectionUnavailable: 'draining' },
+  },
+  {
+    name: 'a missing key rather than a null value — §1: null is legal, absent is not',
+    definition: 'HostProjection',
+    data: (() => {
+      const { recentDirection, ...rest } = EW_DECLINED;
+      return rest;
+    })(),
   },
 ];
 
@@ -784,16 +932,17 @@ const CAPTURE_CLAIMS = [
  * artefact — a consumer mocks against it exactly as they mock against `samples/` — and until now
  * nothing could disagree with it.
  *
- * This is **all five HTTP API contracts**, including `earlywarning-api.md`, which has no schema at
- * all — it is listed precisely so its `0 annotated, 3 unannotated` prints on every run instead of
- * being invisible by omission. `GET /api/earlywarning` is the one MVP 2 endpoint with no
- * machine-readable shape (#219).
+ * This is **all five HTTP API contracts**, and `earlywarning-api.md` is the one that shows what the
+ * table was for. It was listed here while it had no schema at all, purely so its `0 annotated, 3
+ * unannotated` printed on every run instead of being invisible by omission — and the zero is what
+ * #219 closed. All three of its §4 payloads are checked now.
  *
- * `mcp-tools.md` is deliberately absent, and not because it lacks a schema — so does earlywarning.
- * It documents MCP tool returns, a different protocol reached through a different boundary, and its
- * thirteen sections of unannotated fences would bury the single conspicuous zero this table exists
- * to show. Its divergences are real and measured (#218 found three in one section); the fix there is
- * a schema for the tool returns, not a line in this array.
+ * `mcp-tools.md` is deliberately absent, and NOT because it lacks a schema — that was the stated
+ * reason while earlywarning also lacked one, and earlywarning is why it was never the real one. It
+ * documents MCP tool returns, a different protocol reached through a different boundary, and its
+ * thirteen sections of unannotated fences would bury the counts this table exists to show. Its
+ * divergences are real and measured (#218 found three in one section); the fix there is a schema for
+ * the tool returns, not a line in this array.
  */
 const CONTRACT_MD = [
   'healthscan-api.md',
@@ -809,6 +958,7 @@ const SCHEMA_IDS_BY_FILE = {
   'proxy.schema.json': PROXY_SCHEMA_ID,
   'investigation.schema.json': INVESTIGATION_SCHEMA_ID,
   'resolve.schema.json': RESOLVE_SCHEMA_ID,
+  'earlywarning.schema.json': EARLYWARNING_SCHEMA_ID,
 };
 
 /**
@@ -860,6 +1010,11 @@ ajv.addSchema(JSON.parse(readFileSync(join(here, 'investigation.schema.json'), '
 // AFTER investigation.schema.json, which it $refs for `action` rather than transcribing ResolveAction
 // a second time. ajv resolves the cross-schema $ref out of this same instance, so the order matters.
 ajv.addSchema(JSON.parse(readFileSync(join(here, 'resolve.schema.json'), 'utf8')));
+// Order-independent, unlike the line above: this one $refs nothing outside itself, on purpose.
+// `host` is not joined to healthscan.schema.json's `Host.host` even though §1 says they are the same
+// string — a $ref would make that a shared *type*, which it is not; it is an equal *value*, and
+// draft-07 cannot express that. Encoding the wrong one is worse than leaving it in prose.
+ajv.addSchema(JSON.parse(readFileSync(join(here, 'earlywarning.schema.json'), 'utf8')));
 
 const validatorFor = (definition) => {
   const validate = ajv.getSchema(`${SCHEMA_ID}#/definitions/${definition}`);
@@ -882,6 +1037,12 @@ const investigationValidatorFor = (definition) => {
 const resolveValidatorFor = (definition) => {
   const validate = ajv.getSchema(`${RESOLVE_SCHEMA_ID}#/definitions/${definition}`);
   if (validate === undefined) throw new Error(`no such resolve definition: ${definition}`);
+  return validate;
+};
+
+const earlywarningValidatorFor = (definition) => {
+  const validate = ajv.getSchema(`${EARLYWARNING_SCHEMA_ID}#/definitions/${definition}`);
+  if (validate === undefined) throw new Error(`no such earlywarning definition: ${definition}`);
   return validate;
 };
 
@@ -934,6 +1095,18 @@ for (const { name, definition, data } of RESOLVE_MUST_ACCEPT) {
 
 for (const { name, definition, data } of RESOLVE_MUST_REJECT) {
   const validate = resolveValidatorFor(definition);
+  report(!validate(data), `rejects: ${name}`);
+}
+
+for (const { file, definition } of EARLYWARNING_CASES) {
+  const validate = earlywarningValidatorFor(definition);
+  const data = JSON.parse(readFileSync(join(here, file), 'utf8'));
+  report(validate(data), `${file} validates as ${definition}`);
+  if (validate.errors) console.log(JSON.stringify(validate.errors, null, 2));
+}
+
+for (const { name, definition, data } of EARLYWARNING_MUST_REJECT) {
+  const validate = earlywarningValidatorFor(definition);
   report(!validate(data), `rejects: ${name}`);
 }
 
@@ -1014,9 +1187,9 @@ for (const { name, re } of CAPTURE_CLAIMS) {
 
 console.log(
   failures === 0
-    ? `\nall checks passed (${CASES.length + INVESTIGATION_CASES.length + RESOLVE_CASES.length} samples, `
+    ? `\nall checks passed (${CASES.length + INVESTIGATION_CASES.length + RESOLVE_CASES.length + EARLYWARNING_CASES.length} samples, `
       + `${MUST_ACCEPT.length + PROXY_MUST_ACCEPT.length + RESOLVE_MUST_ACCEPT.length} accept, `
-      + `${MUST_REJECT.length + PROXY_MUST_REJECT.length + INVESTIGATION_MUST_REJECT.length + RESOLVE_MUST_REJECT.length} reject, `
+      + `${MUST_REJECT.length + PROXY_MUST_REJECT.length + INVESTIGATION_MUST_REJECT.length + RESOLVE_MUST_REJECT.length + EARLYWARNING_MUST_REJECT.length} reject, `
       + `${CAPTURE_CLAIMS.length} capture claims, ${fencesChecked} prose fences)`
     : `\n${failures} check(s) failed`,
 );

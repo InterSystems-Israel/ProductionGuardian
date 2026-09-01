@@ -1,0 +1,227 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://production-guardian/contracts/earlywarning.schema.json",
+  "title": "Production Guardian — Early Warning projection (MVP 2)",
+  "description": "`GET /api/earlywarning`, which had no machine-readable shape at all until #219 — the last of the five HTTP contracts in this directory to get one, and the one whose absence was already being printed on every `validate.mjs` run as `0 annotated, 3 unannotated`.\n\nThe reason it needed one is `earlywarning-api.md` §1.4, this contract's own central rule: **every computed number lives inside `projection`, every observed number lives outside it.** That rule is structural — it is enforced by where a field sits, not by a comment — which makes it exactly the kind of rule a schema can hold and prose cannot. `additionalProperties: false` on `HostProjection` is what makes a top-level `slope` a validation failure rather than a code review note, and §1.4 names a top-level slope specifically: *'a visible \"rising ~0.5/min\" next to no ETA still implies a forecast we refused to make.'*\n\nEVERY DEFINITION HERE WAS WRITTEN AGAINST LIVE CAPTURES, not against the prose. Six of the seven reason codes were driven out of the running stack on 2026-09-01 (`disabled` needs `earlyWarning.enabled: false` and was not); the three samples in `samples/` are three of those polls, byte-for-byte. That order was deliberate and it mattered: the captures disagree with two of the three worked examples in the prose, and a schema written from §4 would have ratified the disagreement instead of exposing it. Those divergences are FILED, NOT ENCODED — see the `projectionUnavailable` and `Threshold.baselineValue` descriptions.\n\nWhat this schema deliberately does NOT constrain: `secondsToThreshold <= 1800` (the horizon is `thresholds.json` config and hot-reloadable, so pinning it here would make a config change a contract violation), one-entry-per-reported-host, and the alphabetical sort — the last two are §1 guarantees about the array that draft-07 cannot express over object items.",
+  "definitions": {
+    "Threshold": {
+      "description": "The target a crossing is projected toward: `max(baseline * 5.0, 50)` per §1.3. Non-null exactly when a baseline exists, which is why `warming` is the reason paired with `threshold: null` — no baseline, no target, nothing to project toward.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "basis", "baselineValue", "findingType"],
+      "properties": {
+        "value": { "type": "number" },
+        "basis": {
+          "description": "CLOSED, unlike `metric` and `Projection.basis` below. §1.3 defines it as naming which arm of one two-armed gate won, and the gate has exactly two arms — a third value would mean the threshold arithmetic changed, which is a contract change rather than a new label. The distinction is load-bearing for a consumer: `absoluteFloor` is a fixed target and `baselineMultiplier` is a moving one whose ETA can *increase* while the queue rises (§1.3), so a reader that cannot trust this field cannot know whether a receding countdown is a bug.",
+          "enum": ["absoluteFloor", "baselineMultiplier"]
+        },
+        "baselineValue": {
+          "description": "NEVER NULL — §1.3's 'no baseline, no threshold' in schema form: if this were unknown, `Threshold` itself would be `null`.\n\nIt is `0` on all three hosts in all three captured samples, and that is NOT the rolling mean §1.3 describes. `thresholds.json` `referenceBaselines` pins `queued: 0` for every reported host, and `effectiveBaseline()` returns the reference in preference to the rolling mean whenever one exists, so the self-inflating mean §1.3 warns about is currently unreachable for this metric. §4.3's payload shows `baselineValue` climbing 0.4 -> 6.1 to illustrate exactly that inflation; on the shipped config it cannot. Left as a plain number here rather than pinned to 0: the pinning is config, the field is contract, and a schema that encoded today's config would fail the moment a reference baseline is removed — which is the change that would make §4.3 true again. Filed, not encoded.",
+          "type": "number"
+        },
+        "findingType": {
+          "description": "OPEN string, matching `metric` below and for the same reason: only `queue_buildup` has a projection in MVP 2, and a second finding type gaining one is an addition rather than a redefinition. It is also the key a consumer joins on to find the finding that `already_crossed` tells it to defer to, so an unrecognised value must reach the UI to be looked up rather than be rejected here.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "Projection": {
+      "description": "THE FORECAST, AND EVERY NUMBER IN IT IS COMPUTED. Its own object rather than five fields on `HostProjection`, which is §1.4's whole design: a consumer cannot pick up `secondsToThreshold` without also holding `kind: 'projection'`, so it cannot render a forecast as a measurement by accident. #58 is the defect class — a derived value published in a slot that promised an observed one, where nothing downstream could tell.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "basis",
+        "slope",
+        "slopeUnit",
+        "secondsToThreshold",
+        "projectedCrossingAt",
+        "message"
+      ],
+      "properties": {
+        "kind": {
+          "description": "Literal discriminator, and the one field in this file pinned to a value. §1.4: 'a consumer that has this object in hand cannot claim it did not know.' A `const` is how that stops being a promise.",
+          "const": "projection"
+        },
+        "basis": {
+          "description": "OPEN on purpose — `'linear-least-squares'` is the only fit in MVP 2, and a different fitting method is a legitimate future value rather than a contract break. Contrast `Threshold.basis`, which is closed: that one names which of two arms won, this one names an implementation choice a consumer only displays.",
+          "type": "string",
+          "minLength": 1
+        },
+        "slope": {
+          "description": "`exclusiveMinimum: 0` is §1.2's rule made checkable, and it is the rounding that makes it non-trivial: a slope that rounds to `0.0` is declined as `not_rising` rather than published as 'rising ~0.0/min', so a `0` here would mean the publish gate and the rounding disagree. A negative one would mean a draining queue was handed a crossing time.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "slopeUnit": {
+          "description": "Spelled out ('items/minute') rather than implied, because §1's `metric` is open: a consumer meeting an unknown metric is told to label the axis from this field instead of assuming items.",
+          "type": "string",
+          "minLength": 1
+        },
+        "secondsToThreshold": {
+          "description": "INTEGER AND STRICTLY POSITIVE. §1.4 forbids `0` outright — 'zero reads as a measurement of now', and the honest answer for a crossed threshold is `projection: null` with `already_crossed`. The engine guards this rather than trusting the arithmetic; this is the same guard, on the wire.",
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "projectedCrossingAt": {
+          "description": "`measuredAt + secondsToThreshold`, exactly. Not recomputable from the schema — draft-07 cannot add two sibling fields — so the cross-check lives in the samples, which are captured whole rather than assembled (`17:54:47Z + 164 s = 17:57:31Z` in `earlywarning-response.json`). Pattern rather than `format: date-time`, for `healthscan.schema.json`'s stated reason: `format` would accept the UTC offsets the rest of this contract forbids.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
+        },
+        "message": {
+          "description": "THE HEDGE IS IN THE PATTERN, and §1.4 already calls it 'a testable invariant': `message` must contain the substring 'at this rate'. This is the one string the dashboard renders verbatim and is told not to reconstruct, so it is the one place the projection's uncertainty is visible to a human — a message that lost the hedge would read as a schedule.",
+          "type": "string",
+          "pattern": "at this rate"
+        }
+      }
+    },
+    "HostProjection": {
+      "description": "One entry per reported host, present whether or not that host has a projection — §3's 'entries are never omitted to signal absence', because a dropped entry leaves a consumer unable to tell 'not projecting' from 'host gone'.\n\n`additionalProperties: false` IS THE POINT OF THIS DEFINITION, and not for tidiness: §1.4 forbids publishing `slope` out here even when a forecast is declined, and the engine's internal shape carries exactly that — `windowSlopePerMinute` and `recentSlopePerMinute` live on the in-memory object and are dropped by the serialiser. This closes the wire against them. All eleven keys are `required`: §1's rule is that a missing key is a contract violation while a `null` value is not, so nullability is spelled as `oneOf … null` throughout rather than as absence.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "metric",
+        "currentValue",
+        "measuredAt",
+        "fitSampleCount",
+        "fitSpanSeconds",
+        "recentDirection",
+        "threshold",
+        "projection",
+        "projectionUnavailable"
+      ],
+      "properties": {
+        "host": {
+          "description": "Exactly equal to some `Host.host` from `healthscan-api.md` — same string, same case. Not enumerated here, and never will be: root CLAUDE.md §6 makes `iris/labdemo/Production.cls` the only authoritative host list, and a copied one is what went stale when `FHIR Transform` was removed.",
+          "type": "string",
+          "minLength": 1
+        },
+        "metric": {
+          "description": "OPEN. Only `'queued'` in MVP 2, and §1 tells a consumer meeting an unknown name to label the axis from `projection.slopeUnit` rather than assume items — an instruction that only makes sense if an unknown name can arrive, so an enum here would contradict the field's own documentation.",
+          "type": "string",
+          "minLength": 1
+        },
+        "currentValue": {
+          "description": "MEASURED. `null` means the metric is not measurable for this host and NEVER means zero — healthscan Q13's rule, and the reason it has its own reason code (`metric_unmeasurable`) rather than being reported as a flat queue.",
+          "type": ["number", "null"]
+        },
+        "measuredAt": {
+          "description": "The engine's poll clock, not the request clock (EW-Q3). That is also how staleness is visible in the body: on `X-Healthscan-State: stale` the payload is last-known and this field does not advance.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
+        },
+        "fitSampleCount": {
+          "description": "Measured, so present even when `projection` is null — it is the number a reader uses to tell 'we declined' from 'we had nothing'. Integer and non-negative; deliberately NOT bounded below by `minFitSamples`, since every value from 1 upward was captured live during warm-up.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "fitSpanSeconds": {
+          "description": "First to last sample in the fit window. `0` when `fitSampleCount < 2` — see the `allOf` below, where that is enforced rather than described. One sample has no span, and a non-zero span under one sample would be a fabricated duration.",
+          "type": "number",
+          "minimum": 0
+        },
+        "recentDirection": {
+          "description": "MEASURED, which is why it sits out here beside `currentValue` rather than inside `projection` (§1.5). It is the SIGN of the tail fit and never its magnitude — publishing a second rate would put two slopes in one payload with no way to know which one `message` was built from.\n\n`null` is 'no claim', not 'steady': the tail is only signed once the window behind it has cleared `minFitSamples`, so `warming` and `insufficient_samples` rows always carry `null` here. Both captured `insufficient_samples` samples do.",
+          "enum": ["rising", "falling", "steady", null]
+        },
+        "threshold": {
+          "description": "See the `allOf` below: which reasons force this to `null` and which force it non-null is §2.1's table, and it is enforced here because a mock getting it wrong is invisible until Dev B's fixtures disagree with live in ways that look like bugs.",
+          "oneOf": [{ "$ref": "#/definitions/Threshold" }, { "type": "null" }]
+        },
+        "projection": {
+          "oneOf": [{ "$ref": "#/definitions/Projection" }, { "type": "null" }]
+        },
+        "projectionUnavailable": {
+          "description": "The seven reasons of §2.1, CLOSED — and this is the one closed union in this file that constrains behaviour rather than describing it. §2.2 fixes both the set and the precedence between them because a mock that picks a different reason for the same state is the failure mode the whole section exists to prevent. The engine itself refuses to add an eighth: `earlywarning.ts` routes an unfittable tail to `not_rising` with the note that the contract fixes the seven.\n\nSix were captured live on 2026-09-01. `disabled` was not — it requires `earlyWarning.enabled: false` — and is in the enum on the prose's authority alone.\n\n`warming` IS CURRENTLY UNREACHABLE FOR EVERY REPORTED HOST, and that is not encoded here. It is returned only when `threshold` is null, which happens only when `effectiveBaseline()` returns null, which cannot happen while `thresholds.json` pins a `referenceBaselines` entry for `queued` on all three hosts. So the state §4.2 illustrates — 25 s after engine start, no baseline, reason `warming` — came back live as `insufficient_samples` with a non-null threshold, and `samples/earlywarning-insufficient-samples.json` is that poll at the same five samples §4.2 uses. The member stays in the enum: the config is hot-reloadable and removing a reference baseline makes the state reachable again within one poll. Filed, not encoded — whether §4.2 should be corrected or the config changed is a product decision, not a schema one.",
+          "enum": [
+            "disabled",
+            "metric_unmeasurable",
+            "warming",
+            "insufficient_samples",
+            "already_crossed",
+            "not_rising",
+            "beyond_horizon",
+            null
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "description": "THE HEADLINE INVARIANT, half one: no projection means a reason. §2.1 states it as 'both null is a contract violation', and it is the half that fails safe in the wrong direction if unchecked — a consumer seeing `projection: null` with no reason has nothing to render and no way to know why.",
+          "if": { "properties": { "projection": { "type": "null" } }, "required": ["projection"] },
+          "then": { "properties": { "projectionUnavailable": { "type": "string" } } }
+        },
+        {
+          "description": "THE HEADLINE INVARIANT, half two: a projection means NO reason. Both non-null is the more dangerous violation of the pair, because a UI that checks `projectionUnavailable` first would hide a live ETA, and one that checks `projection` first would show it — two consumers of the same bytes disagreeing about whether a queue is about to cross.",
+          "if": {
+            "properties": { "projection": { "type": "object" } },
+            "required": ["projection"]
+          },
+          "then": { "properties": { "projectionUnavailable": { "type": "null" } } }
+        },
+        {
+          "description": "§1.5's 'one invariant worth testing': where a projection exists, `recentDirection` is ALWAYS `rising`. The projection path cannot be reached with a non-positive tail — §2.2.1's gate reads the same measured value this field publishes, so one computation feeds both and they cannot disagree. The converse deliberately does not hold, and is not encoded: `rising` with `projection: null` is normal and means already over the threshold, beyond the horizon, or the defensive decline at the end of §2.2.1.",
+          "if": {
+            "properties": { "projection": { "type": "object" } },
+            "required": ["projection"]
+          },
+          "then": { "properties": { "recentDirection": { "const": "rising" } } }
+        },
+        {
+          "description": "§2.1: `warming` and `metric_unmeasurable` carry NO threshold. Both are the same statement — there is no target to project toward — reached two different ways: no baseline, or no reading to compare to one. `disabled` is excluded from this pair on purpose: §2.1's table says its threshold 'may be non-null', and although the engine passes `null` on that path, encoding the implementation here would narrow the contract to it.",
+          "if": {
+            "properties": {
+              "projectionUnavailable": { "enum": ["warming", "metric_unmeasurable"] }
+            },
+            "required": ["projectionUnavailable"]
+          },
+          "then": { "properties": { "threshold": { "type": "null" } } }
+        },
+        {
+          "description": "§2.1, the other four rows: each of these reasons means 'there IS a target, and here is why we still will not forecast toward it'. A null threshold under any of them would make the reason unreadable — `already_crossed` with nothing to have crossed, `beyond_horizon` with no horizon.",
+          "if": {
+            "properties": {
+              "projectionUnavailable": {
+                "enum": ["insufficient_samples", "already_crossed", "not_rising", "beyond_horizon"]
+              }
+            },
+            "required": ["projectionUnavailable"]
+          },
+          "then": { "properties": { "threshold": { "type": "object" } } }
+        },
+        {
+          "description": "§2.1: `metric_unmeasurable` means `currentValue` is null, by definition — the reason IS the absence of a reading. Stated in this direction as well as the one below because they catch different mistakes: this one catches a mock that pairs the reason with a plausible number, which is precisely the 'null is not zero' error healthscan Q13 exists for.",
+          "if": {
+            "properties": { "projectionUnavailable": { "const": "metric_unmeasurable" } },
+            "required": ["projectionUnavailable"]
+          },
+          "then": { "properties": { "currentValue": { "type": "null" } } }
+        },
+        {
+          "description": "§2.2's PRECEDENCE, in the only form draft-07 can hold it: `metric_unmeasurable` is checked second, so no reason below it in the order can be reported for an unreadable metric. A row with `currentValue: null` and reason `not_rising` claims a queue is flat when nothing was read at all — and it is the shape a fixture written from the §2.1 table alone will produce, because that table lists the reasons without the order.",
+          "if": { "properties": { "currentValue": { "type": "null" } }, "required": ["currentValue"] },
+          "then": {
+            "properties": {
+              "projectionUnavailable": { "enum": ["disabled", "metric_unmeasurable"] }
+            }
+          }
+        },
+        {
+          "description": "§1: `fitSpanSeconds` is 0 when `fitSampleCount < 2`. A span needs two samples to exist; a positive one under a single sample is a fabricated duration, which is the same class of error as #58's fabricated timestamp — well-formed, plausible, and describing history that was never observed. Captured live: `fitSampleCount: 1` came back with `fitSpanSeconds: 0`.",
+          "if": {
+            "properties": { "fitSampleCount": { "maximum": 1 } },
+            "required": ["fitSampleCount"]
+          },
+          "then": { "properties": { "fitSpanSeconds": { "const": 0 } } }
+        }
+      ]
+    },
+    "EarlyWarningResponse": {
+      "description": "The whole response body: a bare array, one entry per reported host, sorted alphabetically by `host` and stable. `[]` is legal and means no hosts yet or the production is stopped — §3 makes it a `200` in every empty case and forbids `404` for an empty result. Note what this cannot say: neither the sort nor the one-entry-per-host guarantee is expressible over object items in draft-07, so both remain prose (§1) checked by the captured samples.",
+      "type": "array",
+      "items": { "$ref": "#/definitions/HostProjection" }
+    }
+  }
+}
