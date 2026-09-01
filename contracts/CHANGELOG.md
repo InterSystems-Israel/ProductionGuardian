@@ -4,6 +4,80 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-01 — a tool for the interface map, and `trend` gains the field that says a queue is draining
+
+**Two files, both additive.** `mcp-tools.md` gains one read tool (§3.14, `get_interface_path`);
+`investigation-api.md` §2.2 gains one nullable field on `trend` (`recentDirection`). No existing field
+changes type or meaning, nothing is removed, and a consumer that ignores both behaves as before.
+
+#177, and the topology source was @tanifgit's suggestion: IRIS's own Interface Maps feature.
+
+### Why a tool at all
+
+Every read tool in `mcp-tools.md` is scoped to ONE host, and so is the snapshot §2.2 sends. So AI
+Detective could describe the host it was asked about in detail and had no way to know another host
+existed. Measured: an upstream fault was fixed, 281 accumulated messages flushed through at once,
+`Cloud API` queued 296, and the Detective recommended the MAXIMUM pool of 8 at 0.85 confidence on a
+queue that drained to zero unaided while it answered — its own evidence reading "No errors recorded in
+the last 60 minutes", true of `Cloud API` and false of the production.
+
+### Why IRIS's map rather than reading config
+
+`Ens.InterfaceMaps.Utils` resolves ROUTING RULES, and that is the whole reason. On this production
+`EMR Source -> Lab Router` is a `TargetConfigNames` setting, and `Lab Router -> Cloud API` exists only
+as a `<send>` inside a routing rule class. A topology hand-built from settings would have been missing
+exactly the edge the tool exists for, and would have looked correct. It is also derived from the
+production DEFINITION, so it still answers when a host is dead — which is when an investigation runs.
+
+Two surfaces of that utility were tried and rejected, and §3.14 records why. `FindAllPaths` is an
+**internal method** — its own dictionary description opens with that word — returning a `%Status` with
+the paths handed back **byref** as `$listbuild` lists, `$lb(Service,Processes,Rules,DTLs,Operations)`,
+per that same description. `FindSequentialPath` wants a JSON spec whose shape is not documented
+anywhere reachable; passing it a path string returns `ERROR #5035 ... 'Parsing error'`.
+
+**An earlier draft of this entry said `FindAllPaths` returned a control-character-delimited string in
+an undocumented encoding. That was wrong** (@Ari-Glikman, #185): the `$c(12)`, `$c(11)` and `$c(1)`
+bytes measured at offsets in the value are `$list` length and type headers, not delimiters, and
+`$listget` reads it in one line — verified, `$listvalid` is 1 with five elements. Corrected here rather
+than quietly dropped, because a wrong-but-plausible rationale is the kind a later reader trusts instead
+of re-checking, and it would have told them the richer surface was undecodable when it is documented.
+"Internal method" is the firmer reason and does not depend on decoding anything.
+
+### `trend.recentDirection`, and the deviation it works around
+
+§2.2 has always specified `slope` as "may be zero or negative here ... because a queue that is draining
+is a fact the agent should see", and its §4 example carries a non-null slope beside
+`thresholdCrossed: true`. **The engine has never delivered that.** It reads `slope` from Early Warning's
+`projection`, which is `null` for `already_crossed` — i.e. for every condition this endpoint is called
+about. So the one fact needed to tell a recovery from a runaway was specified, documented, and absent.
+
+`recentDirection` (from `earlywarning-api.md` §1.5) is the half fixable without reopening that
+contract's §1.4 prohibition on publishing a bare slope beside a withheld forecast: a direction is not a
+rate, so it carries no forecast to mislabel. **The `slope` deviation itself is NOT fixed here** and is
+filed separately — honouring it needs the window slope published or refitted, which is
+`earlywarning-api.md`'s decision rather than this one's.
+
+### Verified end to end, live agent
+
+Same armed scenario, before and after:
+
+| | Before | After |
+|---|---|---|
+| tool calls | 4 | 6 |
+| upstream hosts read | none | both, via `get_recent_errors` |
+| recommendation | `set_pool_size` -> 6 (conf 0.9) | **null** |
+| root cause | "pool size 4 is insufficient" | "`EMR Source` errors #5021, 229 s ago, since ended — backlog draining through" |
+
+And the ordinary rising case still recommends a pool increase (`1 -> 2`, conf 0.9), which is #108's
+standing check and the thing a directive about transients could most easily have broken.
+
+### Consumer impact
+
+**None required.** Both changes are additive. A consumer already handling a `null` `slope` — which is
+what has always arrived — needs no change; `recentDirection` is the field to read instead.
+
+---
+
 ## 2026-08-31 — Early Warning publishes `recentDirection`, so a recovering queue stops reading like a runaway one
 
 **`earlywarning-api.md` only.** Additive: one nullable field on `HostProjection`, plus a

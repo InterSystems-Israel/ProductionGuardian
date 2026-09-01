@@ -61,6 +61,7 @@ silently disagrees with its neighbour is worse than one that is wrong out loud:
 | `get_event_log_trend` | `PG.Tools.EventLog` | read | `PG_Read` | `PG_Read` | `Ens_Util.Log`, bucketed, **no text** — §3.11 |
 | `get_recent_config_changes` | `PG.Tools.ChangeLog` | read | `PG_Read` | `PG_Read` | `%SYS.Audit`, `ModifyConfiguration` rows, **allowlisted** — §3.12 |
 | `get_active_findings` | `PG.Tools.Findings` | read | `PG_Read` | `PG_Read` | **nothing in IRIS** — the snapshot supplied with the request — §3.13 |
+| `get_interface_path` | `PG.Tools.Topology` | read | `PG_Read` | `PG_Read` | `Ens.InterfaceMaps.Utils` — the production's own interface map — §3.14 |
 | `set_pool_size` | `PG.Tools.Resolve` | **write** | `PG_Read` | **`PG_Resolve`** | `Ens.Config.Production` + `Ens.Director.UpdateProduction()` |
 
 ### The names in this column are section titles, not callable names
@@ -1682,6 +1683,146 @@ answer. §2.1 governs: an unmeasurable value is not a small one, and here the "v
       "message": "Queue depth 486 is 32x baseline" }
   ],
   "asOf": "2026-08-30T09:39:50Z", "state": "ok", "sanitised": true
+}
+```
+
+### 3.14 `get_interface_path` — read, added in MVP 3, and the only tool about RELATIONSHIPS
+
+**Runtime name `GetInterfacePath`.** The production's interface map for one host: which hosts feed it,
+which it feeds, and the routing rules and transformations on each path between them.
+
+**Input**: `host` (optional — omit for every path in the production).
+
+**Output**: `host`, `production`, `known`, `upstream[]`, `downstream[]`, `paths[]`, `pathCount`,
+`pathsReturned`, `truncated`, `basis`, `note`.
+
+`paths[]` entries carry `service`, `processes[]`, `operation`, `rules[]`, `transforms[]`, `hops[]` and
+`position` (`service` | `process` | `operation` — where the requested host sits). `hops[]` is the same
+path in flow order, service first, so a consumer reads neighbours off one sequence rather than
+recomposing them from three columns.
+
+#### Why it exists
+
+**Every other read tool in this family is scoped to one host, and so is the snapshot
+`investigation-api.md` §2.2 sends.** So AI Detective could describe the host it was asked about in
+detail and had no way to know another host existed.
+
+Measured on a live run: an upstream `MissingFolder` fault was fixed, 281 accumulated messages flushed
+through at once, `Cloud API` queued 296, `queue_buildup` fired, and the Detective recommended raising
+the pool to 8 — the maximum of its bounds — at 0.85 confidence, on a queue that drained to zero unaided
+while it answered. Its own evidence read *"No errors recorded in the last 60 minutes"*, which was true
+of `Cloud API` and false of the production: `EMR Source` had been erroring on every poll for twenty
+minutes inside that same window.
+
+A host-scoped tool cannot be *wrong* about another host. It can only be silent, and a model reads
+silence as absence.
+
+#### `upstream` and `downstream` are NEAREST FIRST
+
+For `Cloud API` on the LABDEMO production that is `["Lab Router", "EMR Source"]` — the host that feeds
+it, then the one that feeds that. Ordered because the consumer's question is "who handed me this work",
+and an unordered set makes the immediate feeder indistinguishable from something three hops away. The
+payload's own `note` states the order, since an array's order is not self-describing.
+
+#### It resolves ROUTING RULES, which is the whole reason to use it
+
+This tool computes nothing. It reads `Ens.InterfaceMaps.Utils` — the utility behind the Management
+Portal's Interface Maps page — whose `EnumeratePaths` query returns one row per end-to-end path.
+
+That matters because on this production the two links are declared in completely different places:
+
+```
+EMR Source -> Lab Router     a TargetConfigNames setting on the service
+Lab Router -> Cloud API      a <send target="Cloud API"/> inside RoutingRule.cls
+```
+
+The second is **invisible to anything that reads settings.** The utility walks routing rules, DTLs and
+BPL diagrams to find it. A topology hand-built from `TargetConfigNames` would have been missing exactly
+the edge this tool exists for, and would have looked correct.
+
+It is derived from the production **definition**, not from runtime state, which is what makes it usable
+here at all: an investigation runs when a host is broken, and a dead host is still in the map.
+
+**The SQL query is the surface, and the alternatives are internal.** `Ens.InterfaceMaps.Utils` also
+exposes `FindAllPaths` — whose own dictionary description opens with "Internal method", and which hands
+paths back byref as `$lb(Service,Processes,Rules,DTLs,Operations)` lists — and `FindSequentialPath`,
+which takes a JSON spec whose shape is not documented anywhere reachable. The query returns the same
+data already parsed into named columns and is what the portal's own list is built on, so it is the least
+internal of the three. None of them is a published API; this is a dependency on an internal utility
+either way, and that is the honest characterisation.
+
+**No second source of truth.** Root `CLAUDE.md` §6 makes the `<Item>` set in `Production.cls`
+authoritative; this reads IRIS's own derivation of it, so there is nothing here to go stale when the
+production changes.
+
+#### WIRING, NOT TRAFFIC — the available misreading
+
+`upstream` means "is configured to feed this host". It is **not** a claim that the host is sending
+anything, has sent anything recently, or is healthy. A consumer that conflates the two will report an
+idle upstream host as a cause. Pair it with the activity, event-log and findings tools to find out
+which of these hosts is actually in trouble.
+
+#### `known: false` is not an all-clear
+
+**The match is on the config item name, exactly.** Worth stating because `known` carries a
+not-an-all-clear claim and the underlying query is a *term search*: `EnumeratePaths`'s first argument is
+`pSearchTerm`, searched across services, operations, processes, **rules and transforms**. The
+implementation passes it empty and filters rows by exact equality against the config item names on each
+path, so a host name that happens to be a substring of a rule or DTL class name cannot produce
+`known: true` (@Ari-Glikman, #185). "Appears in a path" means "is one of that path's hosts", not
+"occurs somewhere in that path's text".
+
+A host that appears in no path returns `known: false`, `paths: []`, and a `note` saying so explicitly.
+That may mean it is wired to nothing, or that it is referenced only in a way the map cannot resolve.
+**It is not evidence that the host is healthy or that nothing feeds it** — §2.1's rule, applied to a
+map instead of a metric.
+
+#### Truncation is reported, never silent
+
+`#MAXPATHS` is 50. `pathsReturned` is what came back, `pathCount` is the true total **of paths this
+host sits on** — including any the cap withheld — and `truncated` says whether they differ. Stated
+because the opposite choice is an open defect elsewhere in this contract (#165): a tool that capped
+silently and published a count of the *capped* list, leaving a consumer unable to tell a small
+production from a clipped one.
+
+**Both counts are scoped to the host asked about**, never to the production. Spelled out because "the
+true total" alone reads just as naturally as production-wide, and that is the reading the first
+implementation shipped (@Ari-Glikman, #186); LABDEMO cannot catch it, because one path collapses both
+readings to `1`.
+
+#### Two things measured, and one that is not
+
+**Cost: 33.7 ms** on this production. The utility walks rules and transforms, so that number describes
+three hosts and one path and says nothing about a fifty-host production. A consumer on a large
+production should expect this to be the slowest read in the family.
+
+**The `Processes` separator for a chain of two or more processes is UNVERIFIED.** LABDEMO has exactly
+one business process, so no path in it has two, and the utility's row-building source is not shipped.
+The implementation splits defensively — any control character, or a comma-space — and getting it wrong
+degrades to one unsplit name in `upstream`, not a wrong answer about who is upstream of whom. Stated
+rather than implied, because a caveat that is discovered later reads as a defect.
+
+**The data boundary is not at risk here** the way it is for `get_recent_errors` (§3.4). Every value is
+a config item name, a rule class name or a DTL class name — configuration, per §6. Rule and transform
+class names are included because "which transform runs between these two hosts" is diagnostic; their
+contents are never read.
+
+```jsonc
+// <- host "Cloud API"
+{
+  "host": "Cloud API", "production": "ProductionGuardian.LabDemo.Production", "known": true,
+  "upstream": ["Lab Router", "EMR Source"],
+  "downstream": [],
+  "paths": [
+    { "service": "EMR Source", "processes": ["Lab Router"], "operation": "Cloud API",
+      "rules": ["ProductionGuardian.LabDemo.RoutingRule"],
+      "transforms": ["ProductionGuardian.LabDemo.Transform.HL7ToPID"],
+      "hops": ["EMR Source", "Lab Router", "Cloud API"],
+      "position": "operation" }
+  ],
+  "pathCount": 1, "pathsReturned": 1, "truncated": false,
+  "basis": "Ens.InterfaceMaps.Utils",
+  "note": "upstream and downstream are NEAREST FIRST: ... This describes how the production is WIRED, from its configuration, not what is flowing through it now ..."
 }
 ```
 
