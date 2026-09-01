@@ -130,6 +130,12 @@ const RESOLVE_CASES = [
   { file: 'samples/resolve-response.json', definition: 'ResolveResponse' },
   { file: 'samples/resolve-preview.json', definition: 'ResolveResponse' },
   { file: 'samples/resolve-refusal.json', definition: 'ResolveResponse' },
+  // The request that produced `resolve-refusal.json`, captured as a matched pair. Sent as a
+  // §1.1-COMPLIANT apply -- `requestId` and `origin.findingId` present -- which the original capture
+  // was not: all three responses carried `requestId: null`, two of them on an `apply`, so the samples
+  // collectively taught the opposite of what §1.1 requires. `size: 9` is refused by the governed tool
+  // before any write, so this pair costs one audit row and moves nothing.
+  { file: 'samples/resolve-request.json', definition: 'ResolveRequest' },
 ];
 
 /** A valid `applied` response, mutated per case below so each rejection isolates one field. */
@@ -165,11 +171,43 @@ const RESOLVE_BASE = {
 };
 
 /**
+ * A §1.1-complete `apply` request, mutated per case below. Deliberately not the captured sample:
+ * `RESOLVE_BASE` is not the captured response either, and a base that doubles as a fixture makes a
+ * failing rejection ambiguous between "the schema changed" and "the capture changed".
+ */
+const RESOLVE_REQUEST_BASE = {
+  requestId: 'rq-6f2c1e',
+  mode: 'apply',
+  action: { type: 'set_pool_size', host: 'Cloud API', size: 4 },
+  origin: { findingId: 'f-1042', investigationId: 'inv-8801' },
+  precondition: { poolSize: 1 },
+  requestedBy: 'presenter@laptop',
+};
+
+/**
  * `RESOLVE_BASE` itself, asserted valid. Every rejection below is `RESOLVE_BASE` with one field
  * changed, so a base the schema already refuses would make all six pass while testing nothing.
+ * `RESOLVE_REQUEST_BASE` is here for the same reason, and the two extra accepts after it are
+ * asserting that the request's conditional requireds and its open root are both deliberate.
  */
 const RESOLVE_MUST_ACCEPT = [
   { name: 'the unmutated applied base the rejections are derived from', definition: 'ResolveResponse', data: RESOLVE_BASE },
+  { name: 'the unmutated apply request the request rejections are derived from', definition: 'ResolveRequest', data: RESOLVE_REQUEST_BASE },
+  {
+    // The `if/then` must NOT fire here. §1.1 makes `requestId` and `origin` required for `apply`
+    // only: a dry run has nothing to replay and nothing to confirm.
+    name: 'a dry_run request with no requestId and no origin',
+    definition: 'ResolveRequest',
+    data: { mode: 'dry_run', action: { type: 'set_pool_size', host: 'Cloud API', size: 4 } },
+  },
+  {
+    // §1.1's asymmetry, asserted rather than assumed: unknown keys at the top level are IGNORED,
+    // unknown keys inside `action` are REFUSED. Without this case, `additionalProperties: true` on
+    // the request root reads as an oversight, and someone tightens it and breaks a caller.
+    name: 'an unknown TOP-LEVEL request field — §1.1 ignores these, and only `action` is closed',
+    definition: 'ResolveRequest',
+    data: { ...RESOLVE_REQUEST_BASE, approvedInTabId: 'tab-7' },
+  },
 ];
 
 /**
@@ -222,6 +260,61 @@ const RESOLVE_MUST_REJECT = [
     name: 'an undocumented top-level field — the whole reason this file has additionalProperties: false',
     definition: 'ResolveResponse',
     data: { ...RESOLVE_BASE, resizedAction: { requested: 2, applied: 4 } },
+  },
+
+  // --- requests (§1.1). The first three are the requirement the shipped parser does not enforce
+  // (#222): these cases hold the contract while the server is lenient, which is the point of having
+  // a request schema at all.
+  {
+    name: 'an apply with no requestId — §1.1 requires the replay key for apply, and §6 is built on it',
+    definition: 'ResolveRequest',
+    data: (() => {
+      const { requestId, ...rest } = RESOLVE_REQUEST_BASE;
+      return rest;
+    })(),
+  },
+  {
+    name: 'an apply with no origin — the confirmation would name no finding to watch clear (§7)',
+    definition: 'ResolveRequest',
+    data: (() => {
+      const { origin, ...rest } = RESOLVE_REQUEST_BASE;
+      return rest;
+    })(),
+  },
+  {
+    name: 'an apply whose origin omits findingId — origin present is not the requirement, the id is',
+    definition: 'ResolveRequest',
+    data: { ...RESOLVE_REQUEST_BASE, origin: { investigationId: 'inv-8801' } },
+  },
+  {
+    name: 'an unknown key INSIDE action — §1.1 refuses these, and the shipped parser agrees',
+    definition: 'ResolveRequest',
+    data: { ...RESOLVE_REQUEST_BASE, action: { ...RESOLVE_REQUEST_BASE.action, clamp: true } },
+  },
+  {
+    name: 'no mode — no default exists, because either default is the wrong one to guess',
+    definition: 'ResolveRequest',
+    data: (() => {
+      const { mode, ...rest } = RESOLVE_REQUEST_BASE;
+      return rest;
+    })(),
+  },
+  {
+    // `previewed` is the OUTCOME and `X-Resolve-Outcome: previewed` is the header, so "preview" is
+    // the plausible wrong guess for the mode rather than an arbitrary bad string.
+    name: 'mode "preview" — the outcome is `previewed`, the mode is `dry_run`, and they are not the same word',
+    definition: 'ResolveRequest',
+    data: { ...RESOLVE_REQUEST_BASE, mode: 'preview' },
+  },
+  {
+    name: 'a fractional action.size — §1.1 says integer, and PoolSize 4.5 is not a thing IRIS has',
+    definition: 'ResolveRequest',
+    data: { ...RESOLVE_REQUEST_BASE, action: { ...RESOLVE_REQUEST_BASE.action, size: 4.5 } },
+  },
+  {
+    name: 'a requestId over §1.1\'s 64 characters — it keys an in-memory replay store (§6)',
+    definition: 'ResolveRequest',
+    data: { ...RESOLVE_REQUEST_BASE, requestId: 'rq-'.padEnd(66, 'x') },
   },
 ];
 

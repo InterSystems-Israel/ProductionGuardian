@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://production-guardian/contracts/resolve.schema.json",
-  "title": "Production Guardian — Smart Resolve response (MVP 2)",
-  "description": "The response half of `POST /api/resolve`, which had no machine-readable form until #202. The request half is already covered: `investigation.schema.json#/definitions/ResolveAction` is the `action` object and `validate.mjs` carries must-reject cases for it. Every divergence #202 found was invisible because nothing here could disagree with the prose — the only tests over this path pin the implementation while citing '§3 + §7' as their authority. Two of those divergences are open decisions (§4 `after` on a preview, §5 `confirmation.directEvidence` and `clearsWhen`); this schema is deliberately PERMISSIVE at exactly those two points and says so on the fields, so it holds the decided shape without quietly settling the undecided one.",
+  "title": "Production Guardian — Smart Resolve request and response (MVP 2)",
+  "description": "`POST /api/resolve`, which had no machine-readable form at all until #202. The response half landed then; `ResolveRequest` followed after #205's fence pass, which is worth recording because the original text here read 'the request half is already covered' on the strength of `ResolveAction` alone — true of the `action` object and of nothing else in §1.1, and a good example of a partial check reading as a complete one. Every divergence #202 found was invisible because nothing here could disagree with the prose — the only tests over this path pin the implementation while citing '§3 + §7' as their authority. Two of those divergences are open decisions (§4 `after` on a preview, §5 `confirmation.directEvidence` and `clearsWhen`); this schema is deliberately PERMISSIVE at exactly those two points and says so on the fields, so it holds the decided shape without quietly settling the undecided one.",
   "definitions": {
     "PoolShape": {
       "description": "`before` and `after` are the same one-key object. Its own definition rather than two copies, because the pair is read side by side and a schema that let them diverge would be describing a UI bug as legal.",
@@ -88,6 +88,67 @@
         "recordedAt": { "type": ["string", "null"] },
         "source": { "type": ["string", "null"] }
       }
+    },
+    "ResolveRequest": {
+      "description": "The REQUEST half of `POST /api/resolve`, from §1.1. Added after #205's fence pass, because the four request payloads in this contract's prose were the only ones left that nothing could disagree with — and the fence pass had just found two divergences in the four response payloads next to them.\n\nA request schema constrains CALLERS, which is why it encodes §1.1's table rather than `parseResolveRequest()`'s leniency. The server accepts an `apply` with no `requestId` and no `origin`, both of which §1.1 marks required for `apply`; a server accepting more than the contract demands is permissive, not divergent, and tightening it is a behaviour change filed separately (#222). What this definition must not do is quietly restate the leniency as the contract, which would delete the requirement instead of recording that it is unenforced.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["mode", "action"],
+      "properties": {
+        "requestId": {
+          "description": "Required for `apply` — see the `allOf` below. `maxLength` is §1.1's own '≤ 64 chars' and is the only length bound in this file, because this string is the replay key: an unbounded client-generated id keys an in-memory store (§6).",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "mode": {
+          "description": "NO DEFAULT, which is why it is in `required`. `parseResolveRequest()`'s comment states the reason from both sides: a missing mode defaulting to `apply` turns a caller's omission into a live production write, and defaulting to `dry_run` makes an approval silently preview while the operator waits for something to happen.",
+          "enum": ["dry_run", "apply"]
+        },
+        "action": {
+          "description": "The same cross-schema `$ref` the response uses, deliberately: §1.2's rule is that `action` is a field-for-field copy of the investigation's structured `recommendedAction`, transcribed and never parsed. One definition for what the agent recommends, what the caller approves, and what the server reports applying is how that rule is enforced rather than asserted. `additionalProperties: false` lives on that definition, which is what makes an unknown key inside `action` a schema failure here.",
+          "$ref": "https://production-guardian/contracts/investigation.schema.json#/definitions/ResolveAction"
+        },
+        "origin": {
+          "description": "Required for `apply`, with `findingId` required inside it — see the `allOf` below. Not decoration: `confirmation.findingId` is `request.origin?.findingId ?? null`, and §7's confirmation contract is 'watch this finding disappear from `GET /api/healthscan/findings`'. An apply with no `origin` therefore returns a confirmation naming nothing to observe, which is schema-legal (`findingId` is nullable there, for the refusal and preview paths) and useless to the caller. `additionalProperties` is left open here rather than closed: §1.1 closes `action` and only `action`, and the asymmetry is stated as deliberate.",
+          "type": "object",
+          "properties": {
+            "findingId": { "type": "string", "minLength": 1 },
+            "investigationId": {
+              "description": "Opaque here on purpose — §1.1 says its shape belongs to `investigation-api.md`. Typed as a string and nothing more, so this file cannot drift from that one.",
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "precondition": {
+          "description": "Optimistic concurrency, and PARSED BUT USED BY NOTHING as shipped — `precondition_failed` is unreachable (#213). Kept in this schema because §1.1 specifies it and a caller sending it is not making a mistake; the gap is that sending it buys no protection today. `minimum: 1` rather than 2: this is the value the approver believed they were changing FROM, and `Cloud API`'s shipped state is `PoolSize 1`, which the governed tool's `2..8` bound can set nothing back to. A precondition floor of 2 would make the one value the demo actually starts from unstateable.",
+          "type": "object",
+          "properties": {
+            "poolSize": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "requestedBy": {
+          "description": "PROVENANCE LABEL ONLY, never used for authorization — §1.1 and §8 both say so, and the captured samples keep their own capture-time label rather than a plausible-looking one to make the point visible. No pattern, no enum: the moment this schema constrains the value, something downstream starts trusting it.",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "description": "§1.1: `requestId` and `origin` are required FOR `apply`, and optional for `dry_run`, which has nothing to replay and nothing to confirm. Expressed as `if/then` rather than by splitting into two definitions, so the four prose fences and any caller can validate against one name — and so a `dry_run` payload cannot accidentally satisfy the stricter half.",
+          "if": {
+            "properties": { "mode": { "const": "apply" } },
+            "required": ["mode"]
+          },
+          "then": {
+            "required": ["requestId", "origin"],
+            "properties": {
+              "origin": { "required": ["findingId"] }
+            }
+          }
+        }
+      ]
     },
     "ResolveResponse": {
       "description": "`additionalProperties: false` is the point of this file. Every #202 divergence was a field whose documented shape and shipped shape differed with nothing in between them; a permissive root would accept the next one too.\n\nTimestamps use `healthscan.schema.json`'s pattern rather than `format: date-time`, for the reason stated there: `toISOString()` output and second-precision Z-suffixed output are both legal here and `format` would accept offsets the rest of the contract forbids.",
