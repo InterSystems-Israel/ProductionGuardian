@@ -135,6 +135,37 @@ const POST_PATHS = new Set([
 ]);
 
 /**
+ * POST routes whose body is discarded without being read.
+ *
+ * BOTH HANDLERS ALREADY CLAIMED THIS and neither got it: they take a zero-argument callback, so the
+ * body was never looked at -- but every POST went through `readJsonBody` first, so an ABSENT body
+ * was refused with `400 bad request: empty body` before the handler was reached. Measured on the
+ * live stack while the queue was climbing:
+ *
+ *     curl -XPOST -H 'Origin: http://localhost:5173' localhost:3002/api/demo/reset
+ *     -> HTTP 400  {"error":"bad request: empty body"}
+ *
+ * That is exactly the case the comments below say must not happen. It stayed hidden because every
+ * caller in the repo sends `{}` -- `liveClient.ts` posts an empty object, and `docs/demo/cue-sheet.md`
+ * spells out `-d '{}'` in all four of its reset commands -- so the workaround was written into the
+ * callers instead of the defect being noticed. An operator typing the obvious command gets the 400,
+ * during the one operation that exists to recover from the others.
+ *
+ * MALFORMED, NOT JUST EMPTY. These routes now skip parsing entirely rather than tolerating `''` and
+ * still rejecting `{`: "must not be refusable on a malformed request" is the stated property, and
+ * unparseable JSON is the malformed case. There is nothing to be strict about -- no field of the
+ * body reaches any code path, so refusing it buys no safety and costs the recovery path.
+ *
+ * NOT A GENERAL POLICY. Only these two. `/api/investigate` and `/api/resolve` are strict about their
+ * bodies on purpose (see `readFindingId`), and this set is deliberately a whitelist so adding a
+ * route to it is a visible decision.
+ */
+const BODYLESS_POST_PATHS = new Set([
+  '/api/demo/reset',
+  '/api/settings/thresholds/reset',
+]);
+
+/**
  * Origins permitted to POST — the fix for `resolve-api.md` §13.2's confused deputy.
  *
  * THE PROBLEM, MEASURED rather than reasoned about. `Access-Control-Allow-Origin: *` on a write
@@ -260,7 +291,9 @@ export function createFindingsServer(options: ServerOptions): Server {
               : path === '/api/settings/thresholds/reset'
                 ? // Takes no body, ignored rather than validated -- the same reasoning as
                   // /api/demo/reset below: reset recovers from every other operation and must not
-                  // be refusable on a malformed request.
+                  // be refusable on a malformed request. Enforced by BODYLESS_POST_PATHS, not by
+                  // this callback taking no argument -- that is the distinction this comment got
+                  // wrong for as long as it existed.
                   options.resetSettings === undefined
                   ? undefined
                   : async () => options.resetSettings!()
@@ -269,7 +302,8 @@ export function createFindingsServer(options: ServerOptions): Server {
             : path === '/api/demo/reset'
               ? // Takes no body. Ignoring it rather than validating an empty object: reset is the
                 // operation that recovers from every other one, and it must not be refusable on a
-                // malformed request.
+                // malformed request. See BODYLESS_POST_PATHS -- ignoring the body is that set's job,
+                // and until it existed the request never reached here without one.
                 options.resetTriggers === undefined
                 ? undefined
                 : async () => options.resetTriggers!()
@@ -303,9 +337,11 @@ export function createFindingsServer(options: ServerOptions): Server {
         return;
       }
 
-      readJsonBody(req)
-        .then(async (body) => {
-          const result = await handler(body);
+      // The body is drained either way; whether it is PARSED is the route's decision.
+      const bodyless = BODYLESS_POST_PATHS.has(path);
+      drainBody(req)
+        .then(async (raw) => {
+          const result = await handler(bodyless ? undefined : parseJsonBody(raw));
           sendJson(res, 200, result, options.snapshot().state);
         })
         .catch((err: unknown) => {
@@ -471,7 +507,17 @@ function sendJson(
  * larger is a mistake or an attack, and an uncapped read is an unbounded allocation on a public
  * port. Rejecting is the honest response rather than buffering whatever arrives.
  */
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+/**
+ * Drain the request body to a string, capped.
+ *
+ * SPLIT FROM PARSING so the two bodyless routes can be drained without being judged. The cap stays
+ * on this side of the split for both: it is a resource guard, not validation, and a route that
+ * ignores its body still must not buffer 100 MB of it.
+ *
+ * The stream is drained even when the content is discarded -- an undrained request can leave the
+ * socket unusable for keep-alive, which would turn "reset ignores the body" into a hang.
+ */
+async function drainBody(req: IncomingMessage): Promise<string> {
   const MAX = 64 * 1024;
   const chunks: Buffer[] = [];
   let size = 0;
@@ -481,7 +527,10 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
     if (size > MAX) throw new Error('bad request: body exceeds 64 KB');
     chunks.push(buf);
   }
-  const raw = Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function parseJsonBody(raw: string): unknown {
   if (raw.trim() === '') throw new Error('bad request: empty body');
   try {
     return JSON.parse(raw);

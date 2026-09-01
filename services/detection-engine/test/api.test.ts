@@ -380,3 +380,142 @@ describe('/api/earlywarning publishes no bare slope (earlywarning-api.md §1.4)'
     assert.equal(row.recentDirection, 'falling');
   });
 });
+
+/*
+ * THE TWO RESET ROUTES TAKE NO BODY, and until 2026-09-01 both refused a request without one.
+ *
+ * Their handler comments have said "takes no body, ignored rather than validated -- reset recovers
+ * from every other operation and must not be refusable on a malformed request" since they were
+ * written, and the callbacks genuinely take no argument. But every POST went through the body reader
+ * first, so an absent body was a `400 bad request: empty body` before any handler ran:
+ *
+ *     curl -XPOST -H 'Origin: http://localhost:5173' localhost:3002/api/demo/reset
+ *     -> HTTP 400  {"error":"bad request: empty body"}
+ *
+ * No test caught it because no test asked. Every caller in the repo sends `{}` -- `liveClient.ts`
+ * posts an empty object and `docs/demo/cue-sheet.md` spells out `-d '{}'` in all four reset commands
+ * -- so the workaround lived in the callers and the route was never exercised the obvious way. That
+ * is the shape worth remembering: a property asserted in a comment, contradicted two hundred lines
+ * below it, with the callers papering over the difference.
+ *
+ * Both routes are covered here rather than one, because they shared the defect for the same reason
+ * and a fix that reached only `/api/demo/reset` would look complete.
+ */
+describe('the reset routes are not refusable (BODYLESS_POST_PATHS)', () => {
+  let resets = 0;
+  const withResets = createFindingsServer({
+    port: 0,
+    snapshot: () => snapshot,
+    log: () => {},
+    resetTriggers: async () => {
+      resets += 1;
+      return { outcome: 'reset', armed: [] };
+    },
+    resetSettings: () => {
+      resets += 1;
+      return { outcome: 'reset' };
+    },
+    // Wired so the "unchanged" test below has a real strict route to POST to. Without it that
+    // route answers 503 before the body is read, and the assertion would pass without testing
+    // anything -- which is how this whole class of defect stayed invisible.
+    applySettings: (body: unknown) => ({ outcome: 'applied', echo: body }),
+  });
+  let resetBase = '';
+
+  before(async () => {
+    await new Promise<void>((done) => withResets.listen(0, done));
+    resetBase = `http://127.0.0.1:${(withResets.address() as AddressInfo).port}`;
+  });
+
+  after(async () => {
+    await new Promise<void>((done) => withResets.close(() => done()));
+  });
+
+  const PATHS = ['/api/demo/reset', '/api/settings/thresholds/reset'];
+
+  // No `body`, no `Content-Type` -- exactly what `curl -XPOST <url>` sends, which is what an operator
+  // types when the queue is climbing and the cue sheet is not open.
+  it('accepts a request with NO body at all', async () => {
+    for (const path of PATHS) {
+      const before = resets;
+      const res = await fetch(`${resetBase}${path}`, { method: 'POST' });
+      assert.equal(res.status, 200, `${path} must not refuse a bodyless POST`);
+      assert.equal((await res.json() as { outcome: string }).outcome, 'reset');
+      assert.equal(resets, before + 1, `${path} must actually reset, not just answer 200`);
+    }
+  });
+
+  it('accepts MALFORMED JSON too — that is the stated property, not just "empty"', async () => {
+    // "Must not be refusable on a malformed request" is what the comments claim, and unparseable
+    // JSON is the malformed case. Tolerating `''` while still rejecting `{` would satisfy the letter
+    // of the empty-body fix and leave the property untrue.
+    for (const path of PATHS) {
+      const res = await fetch(`${resetBase}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{ this is not json',
+      });
+      assert.equal(res.status, 200, `${path} must discard a malformed body rather than judge it`);
+    }
+  });
+
+  it('still accepts the `{}` every existing caller sends', async () => {
+    // The regression direction. `liveClient.ts` and the cue sheet both post `{}`; a fix that made
+    // the bodyless case work by rejecting a body would break the shipped dashboard control.
+    for (const path of PATHS) {
+      const res = await fetch(`${resetBase}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      assert.equal(res.status, 200, `${path} must keep working for the callers that send {}`);
+    }
+  });
+
+  it('the origin allow-list and the body cap still apply', async () => {
+    // Bodyless does not mean unguarded. The origin check runs before routing, and the 64 KB cap is a
+    // resource guard rather than validation -- a route that ignores its body still must not buffer
+    // an unbounded one.
+    for (const path of PATHS) {
+      const foreign = await fetch(`${resetBase}${path}`, {
+        method: 'POST',
+        headers: { Origin: 'https://evil.example.com' },
+      });
+      assert.equal(foreign.status, 403, `${path} must still refuse a foreign origin`);
+
+      const huge = await fetch(`${resetBase}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: 'x'.repeat(65 * 1024),
+      });
+      assert.equal(huge.status, 400, `${path} must still cap the body`);
+      assert.match((await huge.json() as { error: string }).error, /exceeds 64 KB/);
+    }
+  });
+
+  it('the strict routes are UNCHANGED — this is a whitelist, not a policy', async () => {
+    // The settings WRITE sits one path segment away from the settings RESET, so it is the route a
+    // too-broad match would have caught. It must still refuse a bodyless POST: there is no sensible
+    // "apply nothing", and silently applying `undefined` is worse than a 400.
+    const bodyless = await fetch(`${resetBase}/api/settings/thresholds`, { method: 'POST' });
+    assert.equal(bodyless.status, 400, 'the settings write must still require a body');
+    assert.match((await bodyless.json() as { error: string }).error, /empty body/);
+
+    const malformed = await fetch(`${resetBase}/api/settings/thresholds`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{ nope',
+    });
+    assert.equal(malformed.status, 400, 'and must still refuse unparseable JSON');
+    assert.match((await malformed.json() as { error: string }).error, /not valid JSON/);
+
+    // With a real body it goes through, so the two assertions above are about the body and not about
+    // the route being broken.
+    const ok = await fetch(`${resetBase}/api/settings/thresholds`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"values":{}}',
+    });
+    assert.equal(ok.status, 200);
+  });
+});
