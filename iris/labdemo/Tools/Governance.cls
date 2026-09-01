@@ -115,6 +115,27 @@ Parameter CHANGELOGTOOLS = "ProductionGuardian.LabDemo.Tools.ChangeLog";
 /// is set rather than after it is read.
 Parameter FINDINGTOOLS = "ProductionGuardian.LabDemo.Tools.Findings";
 
+/// The interface-map tool — which host feeds which, from the production's own configuration.
+///
+/// REGISTERED FOR `"all"` ONLY, which makes it the mirror image of `FINDINGTOOLS` above. AI Detective
+/// is the caller that needs it: every other read tool in this family is scoped to ONE host, and so is
+/// the snapshot `/api/investigate` sends, so before this the agent could not tell that any other host
+/// existed. Measured on #177 -- an upstream fault was fixed, the flushed backlog queued on
+/// `Cloud API`, and the Detective recommended doubling a pool on a queue that was draining unaided,
+/// having never looked at the host that caused it.
+///
+/// NOT GIVEN TO `"chat"` YET, deliberately and not for lack of use: "what feeds Cloud API" is a fair
+/// chat question. It is held back because the chat's capability text and its suggestion chips
+/// enumerate what it can read (#175), so a fifth family there is a copy change in two more places and
+/// belongs with that work rather than smuggled in with a Detective fix.
+///
+/// ITS OWN CLASS, on `Tools.EventLog`'s and `Tools.ChangeLog`'s reason: a new tool FAMILY in a new
+/// file moves `Setup.AIHub.ReportTools()`'s count by an amount attributable to one file. The stronger
+/// reason here is subject matter -- this is the only tool that describes RELATIONSHIPS between hosts
+/// rather than the state of one, and putting it on `Tools.Read` would leave a model one docstring away
+/// from reading "upstream" as a live traffic claim.
+Parameter TOPOLOGYTOOLS = "ProductionGuardian.LabDemo.Tools.Topology";
+
 /// The write-tool class, in its own class so the RBAC requirement does not leak onto the reads.
 Parameter WRITETOOLS = "ProductionGuardian.LabDemo.Tools.Resolve";
 
@@ -162,6 +183,12 @@ ClassMethod ToolManager(pIncludeWrite As %Boolean = 1, Output pStatus As %Status
         quit $$$NULLOREF
     }
     set pStatus = mgr.RegisterToolSet(..#CHANGELOGTOOLS)
+    if $$$ISERR(pStatus) {
+        quit $$$NULLOREF
+    }
+    // Context-free, unlike `FINDINGTOOLS`: the interface map is read from the production definition, so
+    // it answers the same question through this manager as through an agent's.
+    set pStatus = mgr.RegisterToolSet(..#TOPOLOGYTOOLS)
     if $$$ISERR(pStatus) {
         quit $$$NULLOREF
     }
@@ -241,13 +268,18 @@ ClassMethod GovernAgent(pAgent As %AI.Agent, pIncludeWrite As %Boolean = 1, pToo
 
     // ONE POSITIVE CONDITION PER TOOL SET, spelling the membership out:
     //
-    //     all       READTOOLS  ACTIVITYTOOLS  EVENTLOGTOOLS  CHANGELOGTOOLS                  AI Detective
-    //     chat                 ACTIVITYTOOLS  EVENTLOGTOOLS  CHANGELOGTOOLS  FINDINGTOOLS    ChatDispatcher
-    //     activity             ACTIVITYTOOLS                                                 unchanged from before "chat"
-    //     current   READTOOLS                                                               live state only
+    //     all       READTOOLS  ACTIVITYTOOLS  EVENTLOGTOOLS  CHANGELOGTOOLS                  TOPOLOGYTOOLS  AI Detective
+    //     chat                 ACTIVITYTOOLS  EVENTLOGTOOLS  CHANGELOGTOOLS  FINDINGTOOLS                   ChatDispatcher
+    //     activity             ACTIVITYTOOLS                                                                unchanged from before "chat"
+    //     current   READTOOLS                                                                               live state only
     //
-    // `FINDINGTOOLS` IS IN EXACTLY ONE ROW, deliberately -- see its parameter comment. It is the only
-    // entry here that is not simply "does this caller want history", because the tool republishes what
+    // TWO FAMILIES NOW SIT IN EXACTLY ONE ROW EACH, from opposite ends: `FINDINGTOOLS` is chat-only
+    // because AI Detective's caller supplies no snapshot, and `TOPOLOGYTOOLS` is Detective-only because
+    // the chat's own capability text enumerates what it can read (#175) and widening it belongs with
+    // that copy rather than with a Detective fix. Both are argued at their parameters.
+    //
+    // `FINDINGTOOLS` is the only entry here that is not simply "does this caller want history",
+    // because the tool republishes what
     // the caller supplied and AI Detective's caller supplies nothing.
     //
     // Written positively rather than as the `'= "activity"` exclusions this used to hold. With two
@@ -279,6 +311,12 @@ ClassMethod GovernAgent(pAgent As %AI.Agent, pIncludeWrite As %Boolean = 1, pToo
     }
     if pToolSets = "chat" {
         set sc = pAgent.ToolManager.RegisterToolSet(..#FINDINGTOOLS)
+        if $$$ISERR(sc) {
+            quit sc
+        }
+    }
+    if pToolSets = "all" {
+        set sc = pAgent.ToolManager.RegisterToolSet(..#TOPOLOGYTOOLS)
         if $$$ISERR(sc) {
             quit sc
         }

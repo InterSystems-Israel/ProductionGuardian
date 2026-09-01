@@ -185,6 +185,27 @@ function buildTrend(projection: HostProjection | undefined): Record<string, unkn
     metric: projection.metric,
     slope,
     slopeUnit: projection.projection?.slopeUnit ?? 'items/minute',
+    /*
+     * WHICH WAY THE QUEUE IS MOVING, and it is here because `slope` cannot answer it (#177).
+     *
+     * §2.2 says `slope` "may be zero or negative here ... because a queue that is draining is a fact
+     * the agent should see", and the §4 example carries a non-null slope beside
+     * `thresholdCrossed: true`. The implementation does not deliver that: `slope` is read from
+     * `projection.projection`, which Early Warning sets to null for `already_crossed` — i.e. for
+     * every condition this endpoint is ever called about. So the draining fact the contract promises
+     * has never actually reached the agent, and it recommended enlarging a pool on a queue falling
+     * 261 -> 181 because nothing in its input said "falling".
+     *
+     * `recentDirection` is the honest fix available without reopening `earlywarning-api.md` §1.4,
+     * which forbids publishing a bare slope beside a withheld forecast — a direction is not a rate,
+     * so it carries no forecast to mislabel. Sourced from the field #174 added, measured from the
+     * tail of the same fit.
+     *
+     * The `slope`-is-always-null deviation is real and is NOT fixed here: honouring it needs the
+     * window slope published or refitted, which is that contract's decision rather than this
+     * function's. Filed separately.
+     */
+    recentDirection: projection.recentDirection,
     thresholdValue: threshold,
     thresholdCrossed:
       projection.currentValue !== null && threshold !== null
