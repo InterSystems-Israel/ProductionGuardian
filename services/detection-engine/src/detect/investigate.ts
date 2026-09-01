@@ -17,7 +17,7 @@
  */
 
 import type { Finding, Host } from '../types/healthscan.ts';
-import type { HostProjection } from './earlywarning.ts';
+import { SLOPE_UNIT, type HostProjection } from './earlywarning.ts';
 
 /** Where the served content came from. Contract §3.1. */
 export type InvestigationSource = 'agent' | 'cache' | 'canned' | 'none';
@@ -175,35 +175,52 @@ function buildSnapshot(host: Host, projection: HostProjection | undefined): Reco
  *
  * Same field names and units as `earlywarning-api.md`, with the forecast framing dropped:
  * `thresholdCrossed: true` and `secondsToThreshold: null` is the normal case here, not an error.
+ *
+ * `slope` is the measured window fit rather than the projection's copy of it, which is what makes
+ * §2.2's "may be zero or negative here" reachable at all (#187). See below.
  */
 function buildTrend(projection: HostProjection | undefined): Record<string, unknown> | null {
   if (projection === undefined) return null;
-  const slope = projection.projection?.slope ?? null;
+  /*
+   * THE MEASURED WINDOW SLOPE, not `projection.slope` (#187).
+   *
+   * Read from `projection.projection`, this was null on every investigation this endpoint has ever
+   * served: Early Warning sets that object to null for `already_crossed`, which is the state that
+   * made `queue_buildup` fire in the first place. §2.2's argued reason for carrying a signed slope
+   * here -- "a queue that is draining is a fact the agent should see rather than a forecast to
+   * withhold" -- therefore never once reached the agent, and it recommended enlarging a pool on a
+   * queue falling 261 -> 181 because nothing in its input said so.
+   *
+   * `windowSlopePerMinute` is the same fit and the same units, measured before the decline. It stays
+   * off `/api/earlywarning`, where §1.4 forbids it; this is the consumer §2.2 published it for.
+   */
+  const slope = projection.windowSlopePerMinute;
   const threshold = projection.threshold?.value ?? null;
-  if (slope === null && threshold === null) return null;
+  /*
+   * NULL WHEN EITHER HALF IS MISSING, which §2.2 states as "no usable fit at all — a warming
+   * baseline, or fewer than 12 samples in the fit window": a null threshold is the warming case and
+   * a null slope is the sample-count case, so the contract's sentence is exactly this disjunction.
+   *
+   * It was `&&` before, which could only ever be reached because `slope` was unconditionally null --
+   * so `insufficient_samples` served a trend object whose only real content was a threshold. That
+   * threshold is in `snapshot.thresholdValue` too, so nothing is lost by declining here, and the
+   * agent gets one meaning for a present `trend` rather than two.
+   */
+  if (slope === null || threshold === null) return null;
   return {
     metric: projection.metric,
     slope,
-    slopeUnit: projection.projection?.slopeUnit ?? 'items/minute',
+    slopeUnit: SLOPE_UNIT,
     /*
-     * WHICH WAY THE QUEUE IS MOVING, and it is here because `slope` cannot answer it (#177).
+     * WHICH WAY THE QUEUE IS MOVING, and it stays here now that `slope` can also answer it (#177).
      *
-     * §2.2 says `slope` "may be zero or negative here ... because a queue that is draining is a fact
-     * the agent should see", and the §4 example carries a non-null slope beside
-     * `thresholdCrossed: true`. The implementation does not deliver that: `slope` is read from
-     * `projection.projection`, which Early Warning sets to null for `already_crossed` — i.e. for
-     * every condition this endpoint is ever called about. So the draining fact the contract promises
-     * has never actually reached the agent, and it recommended enlarging a pool on a queue falling
-     * 261 -> 181 because nothing in its input said "falling".
-     *
-     * `recentDirection` is the honest fix available without reopening `earlywarning-api.md` §1.4,
-     * which forbids publishing a bare slope beside a withheld forecast — a direction is not a rate,
-     * so it carries no forecast to mislabel. Sourced from the field #174 added, measured from the
-     * tail of the same fit.
-     *
-     * The `slope`-is-always-null deviation is real and is NOT fixed here: honouring it needs the
-     * window slope published or refitted, which is that contract's decision rather than this
-     * function's. Filed separately.
+     * It was added when `slope` was structurally null on every investigation, as the one honest
+     * signal of direction available without reopening `earlywarning-api.md` §1.4. #187 fixed the
+     * slope, so this is no longer the only source — and it is kept because the two are measured over
+     * DIFFERENT spans and disagree usefully: `slope` fits the whole window, `recentDirection` the 40%
+     * tail (#174). A queue that rose for eight minutes and has been draining for two has a positive
+     * `slope` and a `falling` direction, which is exactly the state the agent most needs to
+     * distinguish and the one a single number flattens.
      */
     recentDirection: projection.recentDirection,
     thresholdValue: threshold,

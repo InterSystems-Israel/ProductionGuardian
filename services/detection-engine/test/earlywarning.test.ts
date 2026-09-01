@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { BaselineStore } from '../src/baseline/window.ts';
 import { DEFAULT_CONFIG, type ThresholdConfig } from '../src/config/thresholds.ts';
-import { projectHost } from '../src/detect/earlywarning.ts';
+import { projectHost, publishedProjection } from '../src/detect/earlywarning.ts';
 import type { RawHostMetrics } from '../src/detect/rules/types.ts';
 
 const HOST = 'Cloud API';
@@ -653,5 +653,103 @@ describe('recentDirection — which way it is moving now (§1.5)', () => {
     assert.equal(p.projectionUnavailable, 'metric_unmeasurable');
     assert.ok('recentDirection' in p);
     assert.equal(p.recentDirection, null);
+  });
+});
+
+/*
+ * THE DEFECT THIS PINS (#187) is that the window slope was computed at step 6, BELOW the
+ * `already_crossed` decline — which is the state every `queue_buildup` investigation is requested
+ * under. So `investigation-api.md` §2.2's signed slope, argued for on the grounds that "a queue that
+ * is draining is a fact the agent should see rather than a forecast to withhold", was null on every
+ * investigation the product had ever served, and the agent recommended enlarging a pool for a queue
+ * falling 261 -> 181.
+ *
+ * The field is INTERNAL: `publishedProjection()` strips it, because `earlywarning-api.md` §1.4 forbids
+ * a slope outside `projection` on that endpoint even where the forecast is declined. Both halves are
+ * asserted here — measured for the agent, absent for the panel — since either alone would pass against
+ * a wrong implementation.
+ */
+describe('windowSlopePerMinute — measured for the agent, never published (§2.2 / §1.4)', () => {
+  /** Record an arbitrary series at the shipped poll and project at its last sample. */
+  function series(values: readonly number[], cfg = config()) {
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    let at = T0;
+    for (const v of values) {
+      store.record(HOST, 'queued', v, at);
+      at += POLL;
+    }
+    return projectHost(HOST, raw(values.at(-1) ?? 0), store, cfg, at - POLL);
+  }
+
+  it('is negative for a queue draining above its threshold — the #187 case', () => {
+    /* The exact shape a Smart Resolve apply produces: 150 down to 60 at 3/poll, never below the
+       floor, so `already_crossed` still answers first. Before the fix this was null. */
+    const values = [150];
+    for (let i = 0; i < 30; i += 1) values.push(150 - (i + 1) * 3);
+    const p = series(values);
+    assert.equal(p.projectionUnavailable, 'already_crossed', 'sanity: the investigated state');
+    assert.equal(p.projection, null, 'the forecast is still withheld');
+    assert.ok(p.windowSlopePerMinute !== null, 'the slope is measured anyway');
+    assert.ok(p.windowSlopePerMinute < 0, `expected a falling rate, got ${p.windowSlopePerMinute}`);
+    // 3 per 5s poll downward is -36/min. Asserted numerically, not just by sign: a slope with the
+    // right sign and the wrong magnitude would tell the agent a lie it cannot detect.
+    assert.equal(p.windowSlopePerMinute, -36);
+  });
+
+  it('is positive and EQUAL to projection.slope on the happy path — one fit, used twice', () => {
+    /* The invariant that makes the hoist safe. If these two ever disagree the endpoint publishes one
+       rate and the agent reads another, which is #174's argument for the tail fit. */
+    const p = ramp(20, 2);
+    assert.ok(p.projection !== null, 'sanity: expected a forecast');
+    assert.equal(p.windowSlopePerMinute, p.projection.slope);
+    assert.ok((p.windowSlopePerMinute ?? 0) > 0);
+  });
+
+  it('is measured for a queue rising above its threshold too', () => {
+    // The other direction under the same decline reason — so the agent can tell a queue still
+    // building from one already recovering, which was the pair `recentDirection` was added for.
+    const p = series(Array.from({ length: 60 }, (_, i) => i * 3));
+    assert.equal(p.projectionUnavailable, 'already_crossed');
+    assert.ok((p.windowSlopePerMinute ?? 0) > 0);
+  });
+
+  it('is null below minFitSamples — no rate, rather than one fitted through three points', () => {
+    const p = series([0, 1, 2, 3, 5]);
+    assert.equal(p.projectionUnavailable, 'insufficient_samples');
+    assert.equal(p.windowSlopePerMinute, null);
+  });
+
+  it('is null when the metric is unmeasurable — there is nothing to fit', () => {
+    const cfg = config();
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    const p = projectHost(HOST, raw(null), store, cfg, T0);
+    assert.equal(p.projectionUnavailable, 'metric_unmeasurable');
+    assert.equal(p.windowSlopePerMinute, null);
+  });
+
+  it('publishedProjection() strips it and keeps everything else', () => {
+    /* §1.4's regression guard. Asserted with `in` rather than by value, because a `null` field would
+       still imply a rate we declined to state — the thing §1.4 forbids. */
+    const p = series(Array.from({ length: 60 }, (_, i) => i * 3));
+    assert.ok('windowSlopePerMinute' in p, 'sanity: it is on the internal type');
+    const wire = publishedProjection(p);
+    assert.ok(!('windowSlopePerMinute' in wire), 'a slope must not reach /api/earlywarning');
+    // Every other §1.1 key survives. A whitelist that dropped a published field would be the
+    // opposite defect and just as invisible from the stripping assertion alone.
+    for (const key of [
+      'host',
+      'metric',
+      'currentValue',
+      'measuredAt',
+      'fitSampleCount',
+      'fitSpanSeconds',
+      'recentDirection',
+      'threshold',
+      'projection',
+      'projectionUnavailable',
+    ]) {
+      assert.ok(key in wire, `publishedProjection dropped ${key}`);
+    }
+    assert.equal(Object.keys(wire).length, 10, 'an internal field reached the wire shape');
   });
 });
