@@ -656,6 +656,85 @@ describe('recentDirection — which way it is moving now (§1.5)', () => {
   });
 });
 
+/**
+ * NO FORECAST WHILE THE APPROVED FIX IS WORKING — the tail length, pinned against the series it was
+ * chosen on.
+ *
+ * THE DEFECT THIS PINS is not a wrong number but a **false claim about the future**. The tail fit gates
+ * the projection, a least-squares fit lags a turnover by roughly half its length, and at the old
+ * `RECENT_FIT_FRACTION = 0.4` the tail was 120s. Once a draining queue falls back UNDER its threshold,
+ * `already_crossed` no longer answers first and that lagging tail is the only gate left — so the engine
+ * published five consecutive polls of `slope: 13.0` with `secondsToThreshold` *growing* 37 -> 243s,
+ * forecasting a crossing that was never coming, while Smart Resolve's own fix drained the queue.
+ * `earlywarning-api.md` §1.2 and §1.4 exist to prevent exactly that.
+ *
+ * The series below is CAPTURED, not composed: `pool_bottleneck` on the live stack at the shipped 5s
+ * engine poll, an approved `set_pool_size 1 -> 4`, queue 78 -> 0 in 50s. It is used because a shape
+ * invented to fail would not have shown that 0.2 still leaves one bad poll and 0.15 leaves none.
+ *
+ * Asserted as "no projection at any draining poll" rather than against a specific fraction, so the
+ * constant can be tuned further without editing an assertion — but it FAILS at 0.4 and at 0.2, which
+ * is what makes it a regression test rather than a restatement.
+ */
+describe('a draining queue is never forecast to cross (§2.2.1)', () => {
+  /* Zeros first so the window is warm and the threshold resolves to the absolute floor of 50, then the
+     measured ramp and drain. The trailing zeros are the idle tail after the queue emptied. */
+  const OBSERVED_DRAIN: readonly number[] = [
+    ...Array.from({ length: 60 }, () => 0),
+    4, 7, 14, 17, 24, 27, 34, 37, 44, 47, 54, 57, 64, 67, 74, 78,
+    69, 61, 50, 42, 30, 22, 10, 2, 0, 0,
+  ];
+  const PEAK_INDEX = OBSERVED_DRAIN.indexOf(78);
+
+  /** Every poll's verdict, projecting at each sample in turn as the engine's loop does. */
+  function walk(values: readonly number[]) {
+    const cfg = config();
+    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+    return values.map((v, i) => {
+      const at = T0 + i * POLL;
+      store.record(HOST, 'queued', v, at);
+      return { index: i, value: v, row: projectHost(HOST, raw(v), store, cfg, at) };
+    });
+  }
+
+  it('publishes no projection at any poll where the measured queue is falling', () => {
+    for (const { index, value, row } of walk(OBSERVED_DRAIN)) {
+      const previous = OBSERVED_DRAIN[index - 1] ?? value;
+      if (index <= PEAK_INDEX || value >= previous) continue;
+      assert.equal(
+        row.projection,
+        null,
+        `forecast published at q=${value} while draining from ${previous} ` +
+          `(reason=${row.projectionUnavailable}, dir=${row.recentDirection})`,
+      );
+    }
+  });
+
+  it('still forecasts the genuine ramp — the shorter tail costs no coverage', () => {
+    /* The other half of the pair. A tail short enough to kill every drain forecast could also kill the
+       real one, and then the module would be "correct" by being silent. The ramp must still produce a
+       forecast, and it must still be the accelerating one the demo shows. */
+    const forecasts = walk(OBSERVED_DRAIN)
+      .filter(({ index }) => index < PEAK_INDEX)
+      .map(({ row }) => row.projection)
+      .filter((p): p is NonNullable<typeof p> => p !== null);
+    assert.ok(forecasts.length >= 5, `expected the ramp to forecast, got ${forecasts.length} polls`);
+    const etas = forecasts.map((p) => p.secondsToThreshold);
+    assert.ok(
+      etas.every((e, i) => i === 0 || e <= (etas[i - 1] ?? e)),
+      `the ETA must tighten as the ramp approaches the threshold: ${etas.join(' -> ')}`,
+    );
+  });
+
+  it('reports falling, not rising, once the drain is under way', () => {
+    /* The direction half of the same fix. This is the field an operator reads on a crossed threshold
+       (§1.5), and it lags by design — so this asserts the LAST drain poll, not the first. */
+    const last = walk(OBSERVED_DRAIN).find(({ value }) => value === 2);
+    assert.ok(last !== undefined, 'sanity: the captured drain reaches 2');
+    assert.equal(last.row.recentDirection, 'falling');
+  });
+});
+
 /*
  * THE DEFECT THIS PINS (#187) is that the window slope was computed at step 6, BELOW the
  * `already_crossed` decline — which is the state every `queue_buildup` investigation is requested
@@ -797,12 +876,18 @@ describe('recentSlopePerMinute — the tail magnitude, for the agent only (§2.2
 
   it('DISAGREES IN SIGN with the window fit on the drain-through transient', () => {
     /* The load-bearing test of the pair. Same series, opposite answers: +26.6/min over five minutes
-       and -25.6/min over the last two. Everything else in this describe is a boundary condition;
-       this is the measurement that says the two fields are not interchangeable. */
+       and -36/min over the last 45s. Everything else in this describe is a boundary condition;
+       this is the measurement that says the two fields are not interchangeable.
+
+       The tail magnitude was -25.6 until 2026-09-02, when `RECENT_FIT_FRACTION` went 0.4 -> 0.15 to
+       stop a draining queue getting a forecast. A shorter tail on a monotonic drain is necessarily
+       STEEPER, not merely different, so the direction of this move is a check on that change rather
+       than a number to re-pin blindly: -36 is the drain's actual rate (20 per 5s poll less the fit's
+       smoothing), where -25.6 was it averaged with the tail end of the rise. */
     const p = series(riseThenDrain(150, 20));
     assert.equal(p.projectionUnavailable, 'already_crossed', 'sanity: the investigated state');
     assert.equal(p.windowSlopePerMinute, 26.6);
-    assert.equal(p.recentSlopePerMinute, -25.6);
+    assert.equal(p.recentSlopePerMinute, -36);
     assert.equal(p.recentDirection, 'falling', 'and the sign is the one already published');
   });
 

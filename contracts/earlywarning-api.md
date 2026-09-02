@@ -58,8 +58,8 @@ export interface HostProjection {
   /** Seconds from the first to the last sample in the fit window. 0 when fitSampleCount < 2. */
   fitSpanSeconds: number;
   /**
-   * Which way the metric is moving RIGHT NOW: the sign of the tail fit (§2.2.1's most
-   * recent 40%). MEASURED, not forecast — it describes the recent past, never the
+   * Which way the metric is moving RIGHT NOW: the sign of the tail fit (§2.2.1's
+   * tail). MEASURED, not forecast — it describes the recent past, never the
    * future. null when the tail cannot be fitted. See §1.5.
    */
   recentDirection: RecentDirection | null;
@@ -222,8 +222,8 @@ Re-render from the served number on each poll and let it jump.
 
 ### 1.5 `recentDirection` — which way it is moving now, and why it is a sign rather than a slope
 
-`recentDirection` is the **sign of the tail fit**: the same most-recent-40% fit §2.2.1 already runs,
-reported rather than only tested.
+`recentDirection` is the **sign of the tail fit**: the same tail fit §2.2.1 already runs, reported
+rather than only tested. §2.2.1 states the tail length; it is not restated here.
 
 | Value | Means |
 |---|---|
@@ -263,17 +263,27 @@ direction the whole time and published nothing that let a reader tell.
 does **not** hold: `rising` with `projection: null` is normal and means over the threshold already,
 beyond the horizon, or the defensive decline at the end of §2.2.1.
 
-**It LAGS a turn, by design, and a consumer must not read it as instantaneous.** The tail is a
-120 s least-squares fit, so the sign changes only once enough of the tail has turned — not on the
-first sample that moves the other way. Measured on the live stack: a queue peaked at 151 and began
-draining immediately; `recentDirection` reported `rising` for a further **~35 seconds** and 46
-messages of real drain before flipping to `falling`.
+**It LAGS a turn, and a consumer must not read it as instantaneous.** The tail is a least-squares fit,
+so its sign changes only once enough of the tail has turned — not on the first sample that moves the
+other way — and the lag is roughly **half the tail length** (§2.2.1). At the shipped tail that is
+~20 s. On a queue depth series captured live — peaked at 78, drained to 0 in 50 s after an approved
+`set_pool_size 1 -> 4` — the shipped fit replayed over it reports `rising` for a further **15 seconds**
+and 28 messages of real drain (78 -> 50) before flipping to `falling`. The series is measured; the
+direction sequence at this tail length is a deterministic replay of that series, since the live run
+that produced it was still on the 120 s tail.
 
-That is the intended trade and the same one §2.2.1 already makes for the gate — the 40% tail is
-chosen so "one bursty poll cannot flip its sign". A field that reacted within a poll would flap on
-every jitter, and a flapping direction beside a critical finding is worse than a slow one. So it
-answers "which way has this been going" rather than "which way did it move just now", and **a
-consumer must not build a "recovered" claim on it** — only a "coming down" one.
+**The tail was shortened from 120 s to 45 s for this field's sake** (see §2.2.1, and the engine's
+`RECENT_FIT_FRACTION` for the full measurement). At 120 s the lag was ~60 s, measured at ~35 s on one
+run and 40 s on another, and the trade was previously defended here on the grounds that the longer
+tail meant "one bursty poll cannot flip its sign". **That defence did not survive being measured**: on
+a rising queue with jitter of ±0, ±3, ±6 and ±10 items per poll, a 120 s, 60 s, 45 s and 30 s tail
+withheld exactly the same number of forecasts. There was no flap to trade against, and the 60 s lag
+was buying nothing.
+
+What the lag still costs, and what a consumer must therefore not do: a queue that has turned over
+reports `rising` for its first few polls of decline. So this field answers "which way has this been
+going" rather than "which way did it move just now", and **a consumer must not build a "recovered"
+claim on it** — only a "coming down" one. `null` likewise is not "steady".
 
 **Rendering requirement for Dev C:** where a reason is rendered for a crossed threshold, the
 direction must distinguish recovering from still-rising. `null` is not "steady" — it means unknown,
@@ -296,7 +306,7 @@ Never invent a number here; there is a reason code for every case instead.
 | `warming` | No rolling baseline yet, so **no threshold exists to project toward**. Fewer than `minBaselineSamples` (12) in the 1800 s baseline window | `null` | `—`, plus the warming affordance |
 | `insufficient_samples` | Baseline is warm, but the 300 s fit window holds fewer than **12** samples — a newly appeared host, or a gap in polling | non-null | `—` |
 | `already_crossed` | `currentValue >= threshold.value`. There is no time remaining to forecast; the `queue_buildup` finding is the thing to render | non-null | defer to the finding, **and read `recentDirection`** — a crossed queue that is `falling` is recovering, and must not read the same as one that is `rising` (§1.5) |
-| `not_rising` | **Either** fit is `<= 0` after rounding to 1 decimal — the 300 s window, **or its most recent 40%**. Flat, draining, levelled off, or turned over — nothing is approaching anything. See §2.2.1 | non-null | nothing, or a neutral "steady" |
+| `not_rising` | **Either** fit is `<= 0` after rounding to 1 decimal — the 300 s window, **or its tail**. Flat, draining, levelled off, or turned over — nothing is approaching anything. See §2.2.1 | non-null | nothing, or a neutral "steady" |
 | `beyond_horizon` | Rising, but the projected crossing is more than **1800 s** away | non-null | nothing |
 
 **The horizon is 1800 s because that is the baseline window.** Do not project further forward than
@@ -327,7 +337,7 @@ Otherwise: project.
 
 **A single slope over the 300 s window describes the WINDOW, not the present**, and
 `"rising ~N/min"` is a claim about the present. So step 6 fits twice and declines unless **both**
-fits are positive: once over the whole window, once over its **most recent 40%** (120 s, ~24 samples
+fits are positive: once over the whole window, once over its **most recent 15%** (45 s, ~9 samples
 at the shipped 5 s poll). Reported from a live run:
 
 > the early warning sometimes comes up when the queue pool is being drained, because it takes a
@@ -368,7 +378,24 @@ declines rather than publishing it. That state would mean the arithmetic disagre
 `secondsToThreshold: 0` is exactly the "zero reads as a measurement of now" case §1.4 forbids. A consumer needs no special handling: it is the same reason
 code with the same `null` projection.
 
-**The 40% is not configurable, deliberately.** ADR 0003 governs the numbers that decide what fires;
+**THE TAIL WAS 40% (120 s) UNTIL 2026-09-02, AND A DRAIN GOT A FORECAST BECAUSE OF IT.** The lag of a
+least-squares fit is roughly half its length, so a 120 s tail took ~60 s to change sign — and once a
+draining queue falls back **under** its threshold, this gate is the only thing between it and a
+published projection. Measured on the live stack (`pool_bottleneck`, approved `set_pool_size 1 -> 4`,
+queue 78 -> 0 in 50 s): five consecutive polls published `slope: 13.0` with `secondsToThreshold`
+*growing* 37 -> 93 -> 131 -> 192 -> 243 s, i.e. a forecast of a crossing that was never coming, while
+the fix worked. That is precisely what §1.2 and §1.4 exist to prevent, so the tail was shortened to
+the shortest length that costs nothing measured. Replaying the captured series: 40% left 25 s of
+bogus forecast, 20% left one poll of it, **15% and 10% left none**, and neither 15% nor 10% shortened
+the genuine forecast window by a single poll. The engine's `RECENT_FIT_FRACTION` carries the full
+comparison and the jitter experiment that retired the old justification.
+
+**A residual remains and is not closed by this change**: while the draining queue is still *at or
+above* its threshold, `already_crossed` answers first and the direction is the lagging tail, so ~15 s
+of a real cool-down still reads as `rising` (§1.5). Closing that needs a different mechanism — a
+retreat-from-peak test rather than a shorter fit — and is deliberately not in this change.
+
+**The fraction is not configurable, deliberately.** ADR 0003 governs the numbers that decide what fires;
 this one says how much of the series the word "now" covers, which is the definition of "rising"
 rather than a threshold for it. A fraction rather than a duration for two reasons: it can never be
 set longer than the window it is a tail of, and it inherits the existing

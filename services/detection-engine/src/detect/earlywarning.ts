@@ -112,7 +112,7 @@ export interface HostProjection {
    * the outcome is which side of `messagesPerSec` each lands on.)
    *
    * Gated on `minFitSamples` identically to the window fit, but NOT null under identical conditions:
-   * the tail refits over the trailing 120 s, so a poll gap can leave fewer than two samples in it
+   * the tail refits over the trailing 45 s, so a poll gap can leave fewer than two samples in it
    * while the window still holds twelve. This is then null and so is `recentDirection`, which is its
    * sign. `buildTrend` declines the whole trend object in that case rather than serving a window slope
    * beside two nulls — see the third arm of its gate.
@@ -189,19 +189,47 @@ const DISCONTINUITY_FRACTION = 0.8;
  *     a fraction moves with the window and can never invert.
  *   - it inherits the reachability invariant instead of needing its own. `thresholds.json` already
  *     requires `fitWindowSeconds / poll > minFitSamples` so a projection is structurally possible
- *     (#64's failure mode); at the shipped 300s/5s that is 60 samples, of which the tail is 24. A
+ *     (#64's failure mode); at the shipped 300s/5s that is 60 samples, of which the tail is 9. A
  *     separate configurable duration would need that check duplicated, and an unreachable value
  *     would silence the module with no error — which is exactly what the existing check exists to
  *     prevent.
  *
- * 0.4 rather than something shorter: at the shipped poll the tail is 24 samples, enough that one
- * bursty poll cannot flip its sign, where the last 30s (6 samples) of a queue that drains and refills
- * would flap between projecting and not. Rather than something longer: at 0.8 the tail is nearly the
- * window and would just re-answer the same question. Note the drain only reaches this code once the
- * queue is UNDER the threshold — above it, `already_crossed` answers first — so the tail does not
- * need to react within a poll or two of the fix landing.
+ * WHY 0.15, AND WHY IT WAS 0.4. A least-squares fit lags a turnover by roughly half its length, so the
+ * tail length IS the lag. At 0.4 the tail was 120s and the lag ~60s, and the comment here argued that
+ * was harmless: "the drain only reaches this code once the queue is UNDER the threshold — above it,
+ * `already_crossed` answers first — so the tail does not need to react within a poll or two of the fix
+ * landing." That was true when written and #174 falsified it, by giving `recentDirection` a second job:
+ * it is now published on every row and picks the `already_crossed` sentence, so an operator reads the
+ * lagging tail directly.
+ *
+ * Measured on the live stack (`pool_bottleneck`, approved `set_pool_size 1 -> 4`, engine polls at 5s),
+ * the queue drained 78 -> 0 in 50s and the panel was wrong for 40s of it:
+ *
+ *     q= 69, 61, 50   "threshold reached and STILL RISING"      <- 15s, lagging tail, queue falling
+ *     q= 42 .. 2      "rising ~13.0/min, crossing in 37s"       <- 25s, and the eta GREW 37 -> 243s
+ *
+ * The second block is the serious half. Once the queue falls back under the threshold the direction
+ * gate is the only thing between a draining queue and a published forecast, and a 120s tail still said
+ * rising — so the module projected a crossing that was never coming, five polls running, while the fix
+ * worked. §1.2 and §1.4 exist to stop exactly that.
+ *
+ * 0.15 (45s, 9 samples) rather than 0.4 because it is the shortest tail that costs nothing measured.
+ * Replaying the observed series: 0.4 -> 40s wrong; 0.2 -> 20s, one bogus forecast poll left; 0.15 ->
+ * 15s, none; 0.1 -> 10s, none. Neither 0.15 nor 0.1 shortens the forecast window by a single poll, so
+ * the shorter tail buys correctness without buying silence, and 0.15 keeps the larger sample margin.
+ *
+ * Rather than shorter still: the tail is what makes "rising" mean *now*, and below ~9 samples it stops
+ * being a fit and starts being a difference. The old comment's objection to a short tail — that a queue
+ * which drains and refills would flap between projecting and not — was tested rather than reasoned
+ * about, on a +3/poll rise with jitter of ±0/±3/±6/±10 items, and 0.4, 0.2, 0.15 and 0.1 withheld
+ * exactly the same number of forecasts. It is not a cost this series can show.
+ *
+ * The residual 15s is three polls at q=69,61,50, all at or above the threshold of 50 — a queue that is
+ * genuinely still critical, described as rising when it is falling. §1.5 warns consumers the field
+ * lags, so this is within what the contract promises rather than a second defect; closing it needs a
+ * different mechanism (a retreat-from-peak test), filed separately rather than bundled here.
  */
-const RECENT_FIT_FRACTION = 0.4;
+const RECENT_FIT_FRACTION = 0.15;
 
 const FINDING_TYPE = 'queue_buildup';
 

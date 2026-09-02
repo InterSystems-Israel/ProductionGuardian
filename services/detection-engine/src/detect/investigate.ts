@@ -306,7 +306,7 @@ function buildTrend(projection: HostProjection | undefined): Record<string, unkn
    * agent gets one meaning for a present `trend` rather than two.
    *
    * `recentSlope` IS A THIRD ARM RATHER THAN AN IMPLIED ONE (#188), because the two fits share a
-   * sample-count gate but not their outcome: the tail refits over the trailing 120 s, so a poll gap
+   * sample-count gate but not their outcome: the tail refits over the trailing 45 s, so a poll gap
    * -- the engine records nothing while the proxy is unreachable -- can leave one sample inside it
    * while the 300 s window still holds twelve. The tail fit is then null, and so is `recentDirection`,
    * which is derived from its sign. Without this arm `trend` would carry a window slope beside two
@@ -325,7 +325,7 @@ function buildTrend(projection: HostProjection | undefined): Record<string, unkn
      * It was added when `slope` was structurally null on every investigation, as the one honest
      * signal of direction available without reopening `earlywarning-api.md` §1.4. #187 fixed the
      * slope, so this is no longer the only source — and it is kept because the two are measured over
-     * DIFFERENT spans and disagree usefully: `slope` fits the whole window, `recentDirection` the 40%
+     * DIFFERENT spans and disagree usefully: `slope` fits the whole window, `recentDirection` its short
      * tail (#174). A queue that rose for eight minutes and has been draining for two has a positive
      * `slope` and a `falling` direction, which is exactly the state the agent most needs to
      * distinguish and the one a single number flattens.
