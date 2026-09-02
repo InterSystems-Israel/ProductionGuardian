@@ -7,6 +7,30 @@
  * in the header — the border alone signalled severity by colour only, which §7.3
  * forbids and which let a green `OK` dot sit unqualified beside three critical
  * findings.
+ *
+ * FOUR OF THE SIX METRICS ARE READINGS OF NOW AND TWO ARE NOT, which the block did not say. Reported
+ * from a `pool_bottleneck` run: "the avg queueing time is non zero when queue is zero, it seems to
+ * show a stale measurement." Both numbers were true and the pair read as a contradiction —
+ * `Avg queueing 24.6 s` directly under `Queued 0`.
+ *
+ * It is not stale and it is not ours. `avgQueueingTime` is `TotalQueueDuration / TotalCount` over the
+ * messages that have COMPLETED, so queue depth now says nothing about how long the messages that just
+ * finished had waited — and right after a pool enlargement the ones completing are precisely those
+ * that waited longest. Measured (#210): IRIS's own `iris_interop_avg_queueing_time` stepped at 61 s,
+ * 60 s and 55 s intervals while the proxy scraped every 2.5 s, so the ~1 minute of lag is upstream of
+ * every component we own. `24.64 s` was on screen for a full minute at `queued: 0`.
+ *
+ * So the fix is a LABEL, not a guard: `(completed)` on both averages says which population the number
+ * covers, which is the fact that dissolves the contradiction. It goes on `Avg processing` too, and
+ * that is the point of putting it on both — labelling only the queueing row would imply the other
+ * average is instantaneous, and it is the same kind of quantity from the same IRIS provider.
+ *
+ * THE ENGINE RULE WAS DELIBERATELY NOT TOUCHED. Suppressing `growing_queue_wait` when `queued === 0`
+ * was the other candidate and was declined (#210): queue depth is sampled instantaneously, so bursty
+ * traffic can read `0` at the poll instant while real waits accumulate, and that trades a
+ * confusing-but-true finding for an occasionally-missed one. The consequence is on the record — the
+ * finding itself can still stand for ~110 s after the queue empties, and its message is the engine's
+ * and rendered verbatim (§2.4).
  */
 
 import type { HostView } from '../types/healthscan';
@@ -116,8 +140,11 @@ export function HostCard({
           value={formatCount(host.errored)}
           emphasis={isPositiveCount(host.errored)}
         />
-        <MetricRow label="Avg processing" value={formatDuration(host.avgProcessingTime)} />
-        <MetricRow label="Avg queueing" value={formatDuration(host.avgQueueingTime)} />
+        {/* `(completed)` scopes the average's population — see the header. Not "(1 min)": the refresh
+            cadence is measured at ~60s but the averaging window itself is not, and a label naming a
+            span we have not measured would be the invented precision §7.3 argues against. */}
+        <MetricRow label="Avg processing (completed)" value={formatDuration(host.avgProcessingTime)} />
+        <MetricRow label="Avg queueing (completed)" value={formatDuration(host.avgQueueingTime)} />
         <MetricRow label="Last activity" value={formatRelative(host.lastActivity, now)} />
       </div>
 
