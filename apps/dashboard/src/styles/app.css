@@ -72,6 +72,8 @@ button {
 
 .pg-rail {
   grid-area: rail;
+  /* The containing block for `.pg-resize--rail`, which straddles the rail's right edge. */
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--pg-space-5);
@@ -785,6 +787,77 @@ button {
   cursor: default;
 }
 
+/* ── Drag-to-resize handles ────────────────────────────────────────────────────
+   Geometry only. Every decision — the clamp, the persistence, the keyboard path — is
+   in `hooks/useResizable.ts`, and the reason the width is written to a custom
+   property rather than to these elements is in that file's comment.
+
+   Placed between the shell and the drawer because it belongs to both.               */
+
+.pg-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* Ten pixels of target for a two-pixel mark. A 1px seam is not something a trackpad
+     can hit, and the strip sits inside the panel's own horizontal padding — 12px on the
+     rail, 24px on the drawer — so it covers nothing clickable. */
+  width: 10px;
+  z-index: 30;
+  cursor: col-resize;
+  /* Otherwise a touch drag scrolls the page instead of producing pointermove. */
+  touch-action: none;
+}
+
+/* The mark itself: invisible until the pointer or the keyboard is on it, because a
+   permanent line here would read as a border and the rail already has one. */
+.pg-resize::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--pg-teal-500);
+  opacity: 0;
+}
+
+.pg-resize:hover::after,
+.pg-resize--dragging::after {
+  opacity: 0.9;
+}
+
+/* Focus is shown on the mark rather than as an outline around a 10px strip, which would
+   look like a stray box. Full opacity plus the shared ring, so it is unmistakably the
+   focused control while the arrow keys are moving it. */
+.pg-resize:focus-visible {
+  outline: none;
+}
+
+.pg-resize:focus-visible::after {
+  opacity: 1;
+  box-shadow: var(--pg-focus-ring);
+}
+
+/* On the rail's own right edge. */
+.pg-resize--rail {
+  right: 0;
+}
+
+/* On the drawer's LEFT edge, so it tracks the rendered width including the `min(…, 60vw)`
+   narrowing below. */
+.pg-resize--drawer {
+  left: 0;
+}
+
+/* Set on <html> for the duration of a drag. Without it the pointer selects the prose it
+   passes over and the cursor flickers between col-resize and a caret. Inherited, so no
+   universal selector is needed. */
+html[data-pg-resizing] {
+  cursor: col-resize;
+  user-select: none;
+}
+
 /* ── Finding detail drawer ─────────────────────────────────────────────────── */
 
 /* Fixed rather than a grid column: the operator must keep seeing the grid behind
@@ -1006,10 +1079,28 @@ button {
     justify-content: center;
   }
 
+  /* `justify-content: center` above cannot centre anything while this margin is still
+     absorbing the free space — the label is zero-width here, but its auto margin is not. */
+  .pg-triggers__toggle-label {
+    margin-right: 0;
+  }
+
   /* At 1024px a 420px drawer would cover most of the grid, defeating the reason
-     it is a drawer and not a modal. Narrower, so the grid stays visible beside it. */
+     it is a drawer and not a modal. Narrower, so the grid stays visible beside it.
+
+     THIS CLAMP OUTRANKS A DRAG, deliberately. `--pg-drawer-width-max` is 720px, so on a
+     1024px viewport the last stretch of a drag has no visible effect — 60vw is 614px and
+     wins. That is the right way round: the reason the drawer is not a modal does not stop
+     applying because someone pulled its edge. */
   .pg-drawer {
     width: min(var(--pg-drawer-width), 60vw);
+  }
+
+  /* The rail is pinned to an icon strip above, so its width token is not being read here
+     and dragging it would appear to do nothing at all. An absent handle says that; an
+     inert one invites the drag and then reports nothing. */
+  .pg-resize--rail {
+    display: none;
   }
 }
 
@@ -1105,10 +1196,66 @@ button {
 
 /* Evidence list. Each row carries its own provenance, so the source label sits on
    the same line as the label rather than under the detail. */
+/* The disclosure row above the evidence list. A real <button>, since it is the control that
+   reveals the list, and full-width so the whole row is the target rather than the word.
+   Deliberately quieter than a heading: the thing it hides is supporting material, and the
+   recommended action below it is what an operator is looking for when it is closed. */
+.pg-disclose {
+  display: flex;
+  align-items: center;
+  gap: var(--pg-space-2);
+  width: 100%;
+  margin-top: var(--pg-space-3);
+  padding: var(--pg-space-2) 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-align: left;
+  color: var(--pg-text);
+  cursor: pointer;
+}
+
+.pg-disclose:hover {
+  color: var(--pg-info);
+}
+
+.pg-disclose:focus-visible {
+  outline: 2px solid var(--pg-teal-500);
+  outline-offset: 2px;
+  border-radius: var(--pg-radius);
+}
+
+/* The count and how much of it was measured rather than asserted. Right-aligned and in the
+   muted tone, because it is a fact about the list rather than part of the label — but never
+   hidden, since it is the only provenance visible while the list is closed. */
+.pg-disclose__count {
+  margin-left: auto;
+  font-size: 0.6875rem;
+  font-weight: 400;
+  color: var(--pg-text-muted);
+}
+
+.pg-disclose__chevron {
+  flex-shrink: 0;
+  color: var(--pg-text-muted);
+}
+
+.pg-disclose__chevron--open {
+  transform: rotate(90deg);
+}
+
 .pg-evidence {
   margin: var(--pg-space-3) 0 0;
   padding: 0;
   list-style: none;
+}
+
+/* The toggle already supplies the gap. Scoped to the adjacency so `ActivityChat`, which reuses
+   `.pg-evidence` without a disclosure, keeps its own spacing. */
+.pg-disclose + .pg-evidence {
+  margin-top: 0;
 }
 
 .pg-evidence__item {
@@ -1523,11 +1670,15 @@ button {
 
 /* ── Demo triggers in the rail (opt-in, see TriggerRail.tsx) ─────────────────── */
 
-/* Pushed to the bottom of the rail and separated by a rule, because this is scaffolding
-   rather than product: an audience should read the navigation above it first. `margin-top:
-   auto` works because .pg-rail is already a flex column. */
+/* DIRECTLY UNDER THE PRODUCT'S OWN GROUP, not pushed to the bottom of the rail
+   (@Ari-Glikman, 2026-09-02). This carried `margin-top: auto` — .pg-rail is a flex column,
+   so that pinned it to the bottom — because an audience should read the navigation above it
+   first. That reasoning is unchanged and is now served by the group being COLLAPSED by
+   default (see TriggerRail.tsx) rather than by distance, which is the stronger version of
+   it: absent beats merely lower down, and it also stops four destructive buttons being the
+   tallest thing in the rail. The rule and the heading, which did the other half of the
+   separating, stay exactly as they were. */
 .pg-triggers {
-  margin-top: auto;
   padding-top: var(--pg-space-4);
   border-top: 1px solid rgb(255 255 255 / 12%);
 }
@@ -1539,6 +1690,69 @@ button {
   align-items: center;
   gap: var(--pg-space-2);
   color: var(--pg-warning);
+}
+
+/* The heading doubles as the disclosure button, so this only resets button chrome and adds
+   the row layout. Deliberately does NOT restate font-size, weight or colour: those come from
+   `.pg-rail__brand` and `--triggers` above, and a second copy here is what would drift if the
+   rail's type changed. `font-family` alone, because that is the one property a <button> does
+   not inherit. */
+.pg-triggers__toggle {
+  width: 100%;
+  /* Overrides `.pg-rail__brand`'s `0 var(--pg-space-3)`: this one is pressed, so it needs a
+     row of target rather than a line of text, and the hover fill needs somewhere to sit. */
+  padding: var(--pg-space-1) var(--pg-space-3);
+  border: 0;
+  border-radius: var(--pg-radius);
+  background: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The same hover pair as the trigger buttons below it, so the group reads as one thing.
+   `--pg-text-invert` rather than a warning tint: the warning tones are backgrounds elsewhere
+   and a primitive used as both ink and fill cannot be themed (§7.1). */
+.pg-triggers__toggle:hover {
+  background: var(--pg-rail-hover);
+  color: var(--pg-text-invert);
+}
+
+.pg-triggers__toggle:focus-visible {
+  outline: 2px solid var(--pg-teal-500);
+  outline-offset: -2px;
+}
+
+/* Pushes the summary and the chevron to the right edge. On the label rather than as
+   `margin-left: auto` on both, which would split the free space between them and leave a gap
+   whose size depended on whether a scenario happened to be armed. */
+.pg-triggers__toggle-label {
+  margin-right: auto;
+}
+
+/* What the collapsed heading says about a live scenario — the count and the phase word. Kept
+   readable rather than decorative: `pool_bottleneck` sits in `activating` for ~75s, and this is
+   the only place that state is visible while the list is closed. */
+.pg-triggers__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--pg-space-1);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: rgb(255 255 255 / 70%);
+}
+
+/* Rotated by a class, not by an `[aria-expanded='true']` selector, which would match any
+   expandable control added to the rail later — the same choice AppShell makes for the
+   Thresholds button. */
+.pg-triggers__chevron {
+  flex-shrink: 0;
+  color: rgb(255 255 255 / 55%);
+}
+
+.pg-triggers__chevron--open {
+  transform: rotate(90deg);
 }
 
 .pg-triggers__caption {

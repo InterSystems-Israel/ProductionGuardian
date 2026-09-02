@@ -24,6 +24,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import type { SettingFieldView, ThresholdSettingsView } from '../types/settings';
+import { DrawerResizeHandle } from './DrawerResizeHandle';
 import { IconClose, IconRestart, IconSettings } from './icons';
 
 export interface ThresholdSettingsProps {
@@ -125,6 +126,9 @@ export function ThresholdSettings({
       aria-modal="false"
       aria-labelledby="pg-settings-title"
     >
+      {/* One width for all three right-edge panels — see `DrawerResizeHandle`. */}
+      <DrawerResizeHandle />
+
       <header className="pg-drawer__header">
         <div className="pg-drawer__heading">
           <h2 id="pg-settings-title" className="pg-drawer__title">

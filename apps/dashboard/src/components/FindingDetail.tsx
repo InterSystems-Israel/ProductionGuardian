@@ -34,6 +34,7 @@ import {
   formatRate,
   formatRelative,
 } from '../lib/format';
+import { DrawerResizeHandle } from './DrawerResizeHandle';
 import { SeverityBadge } from './SeverityBadge';
 import { IconClose } from './icons';
 
@@ -117,6 +118,11 @@ export function FindingDetail({
       aria-modal="false"
       aria-labelledby="pg-drawer-title"
     >
+      {/* First child, on the drawer's own left edge, so it tracks the real rendered width — including
+          the `min(…, 60vw)` narrowing under 1100px, which a handle positioned from the viewport
+          would not. */}
+      <DrawerResizeHandle />
+
       <header className="pg-drawer__header">
         <div className="pg-drawer__heading">
           <SeverityBadge severity={finding.severity} />

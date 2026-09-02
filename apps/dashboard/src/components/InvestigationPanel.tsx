@@ -31,9 +31,17 @@
  * be explicit for the same reason: nothing about a write should be inferred.
  */
 
+import { useState } from 'react';
 import type { InvestigationView, ResolveActionView, ResolveMode, ResolveView } from '../types/mvp2';
 import { ABSENT, toolLabel } from '../lib/format';
 import { findingMeta, investigationScope } from '../lib/findingMeta';
+import { IconChevronRight } from './icons';
+
+/**
+ * `aria-controls` needs an id, and the three right-edge panels are mutually exclusive by construction
+ * (see `App.tsx`), so at most one of these lists is in the document at a time.
+ */
+const EVIDENCE_ID = 'pg-evidence-list';
 
 export interface InvestigationPanelProps {
   /** The finding's type, for the §2.4 scope check. Only the type is needed, so only it is passed. */
@@ -92,6 +100,32 @@ export function InvestigationPanel({
   const canned = investigation?.source === 'canned';
   const unavailable = investigation !== null && investigation.rootCause === null;
   const scope = investigationScope(findingType);
+
+  /*
+   * THE EVIDENCE LIST, COLLAPSED BY DEFAULT (@Ari-Glikman, 2026-09-02: "when retracted one should be
+   * able to see the suggested fix but not the evidence").
+   *
+   * COLLAPSED IS THE INITIAL STATE, and that is the load-bearing half of the request rather than a
+   * default picked for tidiness. The evidence sits BETWEEN the root cause and the recommended action
+   * in this panel — deliberately, because it is what the recommendation rests on — and four to six
+   * bullets is enough to push Approve below the fold of a 420px drawer. An expand-by-default toggle
+   * would leave that complaint exactly where it was.
+   *
+   * WHAT MUST NOT BE HIDEABLE IS PROVENANCE, so two things stay outside the collapse: the badge row
+   * above (live-vs-canned, model, tool count, confidence) is never collapsed, and the closed toggle
+   * states how many bullets exist and how many were READ FROM IRIS rather than asserted. Point 3 of
+   * this file's header is that provenance is part of the evidence; a disclosure that hid the count
+   * silently would let a canned narrative and a governed one look identical while closed, which is
+   * the same defect class as point 1.
+   *
+   * NOT PERSISTED, and reset by the drawer closing rather than by anything here — this component
+   * unmounts with it (`App.tsx` clears the selection), so the next finding starts collapsed too. A
+   * remembered "expanded" would mean the fix is below the fold again for whoever opens the dashboard
+   * next, which is the state this exists to avoid.
+   */
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const evidence = investigation?.evidence ?? [];
+  const measured = evidence.filter((item) => item.source === 'mcp_tool').length;
 
   /*
    * OUT OF SCOPE RETURNS EARLY rather than wrapping the button in a condition, so `onInvestigate` is
@@ -205,23 +239,52 @@ export function InvestigationPanel({
             <p className="pg-investigate__rootcause">{investigation.rootCause}</p>
           )}
 
-          {investigation.evidence.length > 0 && (
-            <ul className="pg-evidence">
-              {investigation.evidence.map((item, index) => (
-                <li key={`${item.label}-${index}`} className="pg-evidence__item">
-                  <div className="pg-evidence__head">
-                    <span className="pg-evidence__label">{item.label}</span>
-                    <span className={`pg-evidence__source pg-evidence__source--${item.source}`}>
-                      {SOURCE_LABEL[item.source] ?? item.source}
-                      {item.tool !== null && (
-                        <span className="pg-facts__mono"> · {toolLabel(item.tool)}</span>
-                      )}
-                    </span>
-                  </div>
-                  <div className="pg-evidence__detail">{item.detail}</div>
-                </li>
-              ))}
-            </ul>
+          {evidence.length > 0 && (
+            <>
+              <button
+                type="button"
+                className="pg-disclose"
+                aria-expanded={evidenceOpen}
+                aria-controls={EVIDENCE_ID}
+                onClick={() => setEvidenceOpen((prev) => !prev)}
+              >
+                {/* Rotated by a class rather than an `[aria-expanded]` selector, so it cannot pick
+                    up an expandable control added to this panel later. */}
+                <IconChevronRight
+                  size={14}
+                  className={`pg-disclose__chevron${
+                    evidenceOpen ? ' pg-disclose__chevron--open' : ''
+                  }`}
+                />
+                Evidence
+                {/* The count and its provenance, stated on the CLOSED control — see the comment on
+                    `evidenceOpen`. `measured` is the `mcp_tool` entries: read from the live
+                    production by a governed tool, as opposed to asserted by the model. */}
+                <span className="pg-disclose__count">
+                  {evidence.length} item{evidence.length === 1 ? '' : 's'}
+                  {measured > 0 && <> · {measured} read from IRIS</>}
+                </span>
+              </button>
+
+              {/* `hidden` rather than unmounted, so the list is not rebuilt on every toggle and the
+                  button's `aria-controls` always points at something that exists. */}
+              <ul className="pg-evidence" id={EVIDENCE_ID} hidden={!evidenceOpen}>
+                {evidence.map((item, index) => (
+                  <li key={`${item.label}-${index}`} className="pg-evidence__item">
+                    <div className="pg-evidence__head">
+                      <span className="pg-evidence__label">{item.label}</span>
+                      <span className={`pg-evidence__source pg-evidence__source--${item.source}`}>
+                        {SOURCE_LABEL[item.source] ?? item.source}
+                        {item.tool !== null && (
+                          <span className="pg-facts__mono"> · {toolLabel(item.tool)}</span>
+                        )}
+                      </span>
+                    </div>
+                    <div className="pg-evidence__detail">{item.detail}</div>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
 
           {manual !== null && (
