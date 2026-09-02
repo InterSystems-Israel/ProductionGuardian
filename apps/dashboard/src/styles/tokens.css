@@ -87,13 +87,21 @@
      The bounds are chosen against what the panels have to keep legible, not by eye: the rail's 160px
      is about where the longest trigger label stops wrapping mid-word, and the drawer's 320px is
      where the evidence rows' label-and-provenance line stops colliding. The maxima are simply
-     "generous, but still leaving a dashboard behind the drawer". */
+     "generous, but still leaving a dashboard behind the drawer".
+
+     THE DRAWER'S 480px DEFAULT IS NOT A NEW NUMBER -- it is the width `.pg-drawer--host` and
+     `.pg-drawer--settings` each hardcoded until #241, where two of the three panels needed it
+     (charts and metric rows; a form row with prose and two reference values) and the finding
+     drawer loses nothing at it. Those two overrides had to go: they were the same specificity as
+     `.pg-drawer` and later in `app.css`, so they won, and a panel that wins on `width` cannot be
+     resized. A variant width is not a thing this token supports -- the three panels share one
+     remembered width by design -- so anything that wants a different default changes it here. */
   --pg-rail-width: 208px;
   --pg-rail-width-min: 160px;
   --pg-rail-width-max: 420px;
   --pg-header-height: 60px;
   --pg-content-max: 1600px;
-  --pg-drawer-width: 420px;
+  --pg-drawer-width: 480px;
   --pg-drawer-width-min: 320px;
   --pg-drawer-width-max: 720px;
   --pg-focus-ring: 0 0 0 3px rgb(0 168 135 / 45%);

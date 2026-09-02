@@ -1085,7 +1085,7 @@ html[data-pg-resizing] {
     margin-right: 0;
   }
 
-  /* At 1024px a 420px drawer would cover most of the grid, defeating the reason
+  /* At 1024px a drawer at its default width covers most of the grid, defeating the reason
      it is a drawer and not a modal. Narrower, so the grid stays visible beside it.
 
      THIS CLAMP OUTRANKS A DRAG, deliberately. `--pg-drawer-width-max` is 720px, so on a
@@ -2307,13 +2307,22 @@ html[data-pg-resizing] {
 
 /* The two panels are mutually exclusive in `App`, so this shares the drawer's z-index
    rather than stacking above it -- if it ever needed a stacking order, that would mean two
-   were open at once, which is the defect the exclusivity prevents. */
-.pg-drawer--host {
-  /* A slightly wider surface than the finding drawer: three charts plus six metric rows do
-     not read at 420px, and the charts are the reason the panel exists. Still `min()` against
-     the viewport so the grid stays visible beside it, which is why this is a drawer. */
-  width: min(480px, 92vw);
-}
+   were open at once, which is the defect the exclusivity prevents.
+
+   THERE IS DELIBERATELY NO `.pg-drawer--host` RULE, and the absence is the fix for #241.
+   It used to carry `width: min(480px, 92vw)` -- wider than the finding drawer because three
+   charts and six metric rows did not read at the finding drawer's then-420px, which was a good
+   reason. But it is the
+   same specificity as `.pg-drawer` and later in this file, so source order made it the
+   winning rule, and it therefore ignored BOTH the width the resize handle drives and the
+   `min(..., 60vw)` narrowing below 1100px. The panel an operator most wants wider was the
+   one that could not be dragged at all.
+
+   The 480px was right, so it moved to `--pg-drawer-width` in `tokens.css` and all three
+   panels now start there. The 92vw did not move: at 1024px it resolves to 942px, which is
+   very nearly the whole viewport and exactly what `.pg-drawer` says a drawer exists not to
+   cover. A per-panel width cannot survive here anyway -- the three share one remembered
+   width by design, so a variant could only ever change what they start at. */
 
 .pg-host-detail__status {
   display: flex;
@@ -2517,12 +2526,12 @@ html[data-pg-resizing] {
    things unique to a FORM are declared here, since nothing else in this file styles a
    labelled numeric input. All colours, spacing and radii come from tokens (§7.1). */
 
-.pg-drawer--settings {
-  /* Wider than the finding drawer: each row carries a label, an input, two lines of
-     prose and the two reference values, and at 420px the blast-radius sentence wrapped
-     to four lines and buried the number it describes. */
-  width: min(480px, 92vw);
-}
+/* NO `.pg-drawer--settings` RULE EITHER, for the same reason as `.pg-drawer--host` above
+   (#241). It carried the same `width: min(480px, 92vw)`, for its own good reason -- each row
+   is a label, an input, two lines of prose and two reference values, and at the then-420px the
+   blast-radius sentence wrapped to four lines and buried the number it describes. That is now
+   the shared default rather than an override, so the sentence still fits and the panel is
+   draggable. */
 
 .pg-settings__status {
   margin: 0;
