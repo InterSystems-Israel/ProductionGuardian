@@ -282,6 +282,18 @@ backlog in its window, and it will age out rather than being switched off. Which
 the findings disappear when the condition does. No acknowledging, no clearing, no tombstones. If
 it is still listed, it is still true."*
 
+**If someone points at `Avg queueing` while `Queued` reads 0, that pair is honest and you can say
+why.** It is the same fact as the paragraph above, seen on the host card rather than in the findings
+list: the metric is IRIS's average over messages that have **already completed**, so an empty queue
+now says nothing about how long the messages that just finished had waited — and right after the pool
+grows, the ones completing are precisely those that waited longest. Measured (#210): IRIS refreshes
+it about once a minute, so `24.64 s` sat on screen for a full minute at `queued: 0`, and
+`growing_queue_wait` stood for 110s of it. Both average rows are labelled **`(completed)`** for this
+reason, and the host panel spells it out under the values.
+
+**Say:** *"That average is over the messages that already finished — the ones that had been waiting
+longest. The queue behind it is empty."*
+
 > **The board really does reach zero now, and that is new.** Until 2026-08-27 a third finding —
 > `slow_processing`, on the same host — survived this beat forever, because the throttled downstream
 > takes ~1s per message whether one worker or four are waiting on it. Raising `Cloud API`'s

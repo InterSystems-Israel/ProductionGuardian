@@ -193,33 +193,52 @@ export function HostDetail({
 
         {/* CURRENT VALUES BELOW THE GRAPHS, not above. The graphs are why this panel was opened; the
             numbers are already on the card that opened it, and repeating them first would put a
-            second copy of the card above the thing that is new. */}
-        <dl className="pg-facts">
-          <div className="pg-facts__row">
-            <dt>Queued</dt>
-            <dd className="pg-facts__mono">{formatCount(host.queued)}</dd>
-          </div>
-          <div className="pg-facts__row">
-            <dt>Msg/sec</dt>
-            <dd className="pg-facts__mono">{formatRate(host.messagesPerSec)}</dd>
-          </div>
-          <div className="pg-facts__row">
-            <dt>Errors</dt>
-            <dd className="pg-facts__mono">{formatCount(host.errored)}</dd>
-          </div>
-          <div className="pg-facts__row">
-            <dt>Avg processing</dt>
-            <dd className="pg-facts__mono">{formatDuration(host.avgProcessingTime)}</dd>
-          </div>
-          <div className="pg-facts__row">
-            <dt>Avg queueing</dt>
-            <dd className="pg-facts__mono">{formatDuration(host.avgQueueingTime)}</dd>
-          </div>
-          <div className="pg-facts__row">
-            <dt>Last activity</dt>
-            <dd>{formatRelative(host.lastActivity, now)}</dd>
-          </div>
-        </dl>
+            second copy of the card above the thing that is new.
+
+            WRAPPED WITH ITS NOTE so the two are one flex item: `pg-drawer__body` sets a 24px gap
+            between its children, which would float the note halfway to the next section instead of
+            reading as a qualifier on the list it belongs to. */}
+        <div className="pg-host-detail__facts">
+          <dl className="pg-facts">
+            <div className="pg-facts__row">
+              <dt>Queued</dt>
+              <dd className="pg-facts__mono">{formatCount(host.queued)}</dd>
+            </div>
+            <div className="pg-facts__row">
+              <dt>Msg/sec</dt>
+              <dd className="pg-facts__mono">{formatRate(host.messagesPerSec)}</dd>
+            </div>
+            <div className="pg-facts__row">
+              <dt>Errors</dt>
+              <dd className="pg-facts__mono">{formatCount(host.errored)}</dd>
+            </div>
+            {/* THE SAME `(completed)` AS THE CARD, and here there is width for the sentence behind
+                it. `Avg queueing` beside `Queued` above reads as a contradiction when the queue has
+                just drained — 24.6 s against 0 — and it is not one: see `HostCard`'s header for the
+                measurement (#210). */}
+            <div className="pg-facts__row">
+              <dt>Avg processing (completed)</dt>
+              <dd className="pg-facts__mono">{formatDuration(host.avgProcessingTime)}</dd>
+            </div>
+            <div className="pg-facts__row">
+              <dt>Avg queueing (completed)</dt>
+              <dd className="pg-facts__mono">{formatDuration(host.avgQueueingTime)}</dd>
+            </div>
+            <div className="pg-facts__row">
+              <dt>Last activity</dt>
+              <dd>{formatRelative(host.lastActivity, now)}</dd>
+            </div>
+          </dl>
+
+          {/* Outside the `<dl>` rather than inside the queueing row: it qualifies BOTH averages, and
+              a `<dl>` may only contain `dt`/`dd` groups, so a prose note has no valid home in one. It
+              also keeps the mono font on the value where it belongs — nested in the `dd` it would
+              inherit it and read as data. */}
+          <p className="pg-facts__note">
+            Both averages cover messages that have already <strong>completed</strong>, so they lag the
+            queue depth above and can stay above zero after the queue empties.
+          </p>
+        </div>
 
         {/* Says what the filtered list below the panel is showing, so the filter is never a silent
             state. `findings` is already this host's; the count is the only claim made here, and the
