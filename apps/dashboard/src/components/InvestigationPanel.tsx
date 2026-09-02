@@ -108,8 +108,8 @@ export function InvestigationPanel({
    * COLLAPSED IS THE INITIAL STATE, and that is the load-bearing half of the request rather than a
    * default picked for tidiness. The evidence sits BETWEEN the root cause and the recommended action
    * in this panel — deliberately, because it is what the recommendation rests on — and four to six
-   * bullets is enough to push Approve below the fold of a 420px drawer. An expand-by-default toggle
-   * would leave that complaint exactly where it was.
+   * bullets is enough to push Approve below the fold at any width the drawer opens at. An
+   * expand-by-default toggle would leave that complaint exactly where it was.
    *
    * WHAT MUST NOT BE HIDEABLE IS PROVENANCE, so two things stay outside the collapse: the badge row
    * above (live-vs-canned, model, tool count, confidence) is never collapsed, and the closed toggle
