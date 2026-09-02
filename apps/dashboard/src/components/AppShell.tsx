@@ -47,8 +47,10 @@ import {
   IconShield,
   type IconProps,
 } from './icons';
+import { ResizeHandle } from './ResizeHandle';
 import { ThemeToggle } from './ThemeToggle';
 import { TriggerRail } from './TriggerRail';
+import { useResizable } from '../hooks/useResizable';
 
 /** Which top-level view is on screen. */
 export type View = 'dashboard' | 'brochure' | 'architecture';
@@ -137,6 +139,16 @@ export function AppShell({
   settingsOpen,
   children,
 }: AppShellProps): JSX.Element {
+  /* Drives `--pg-rail-width`, which `.pg-shell`'s grid column reads — see `useResizable`. Owned here
+     rather than by the rail's contents because the rail is not the element that is sized; the shell
+     is, and this is the component that renders both. */
+  const rail = useResizable({
+    variable: '--pg-rail-width',
+    storageKey: 'pg.railWidth.v1',
+    edge: 'end',
+    label: 'Navigation rail width',
+  });
+
   return (
     <div className="pg-shell">
       <nav className="pg-rail" aria-label="Health Connect">
@@ -211,6 +223,12 @@ export function AppShell({
             rail so an audience reads the product's own navigation first and the demo scaffolding
             after it, and so its absence leaves the rail visually unchanged. */}
         <TriggerRail />
+
+        {/* Last of all, and absolutely positioned on the rail's own right edge — so it tracks the
+            column whatever the rail contains, including the demo triggers being off. Hidden under
+            1100px, where the media query pins the rail to an icon strip and a drag would appear to
+            do nothing. */}
+        <ResizeHandle {...rail} className="pg-resize--rail" />
       </nav>
 
       <header className="pg-header">

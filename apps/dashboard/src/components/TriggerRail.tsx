@@ -41,7 +41,14 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { IconAlert } from './icons';
+import { IconAlert, IconChevronRight } from './icons';
+
+/**
+ * `aria-controls` needs an id, and one instance of this component exists in the app — it is rendered
+ * once by `AppShell`. A constant rather than `useId`, so the relationship is greppable from the CSS
+ * and from the markup.
+ */
+const LIST_ID = 'pg-trigger-list';
 
 /** One scenario, exactly as the server describes it. */
 export interface TriggerScenario {
@@ -153,6 +160,25 @@ export function TriggerRail(): JSX.Element | null {
    * mis-attribution is plausible enough to be believed (@Ari-Glikman, from driving the live UI).
    */
   const [messages, setMessages] = useState<Record<string, TriggerMessage>>({});
+  /**
+   * The scenario list, COLLAPSED BY DEFAULT (@Ari-Glikman, 2026-09-02).
+   *
+   * This replaces the distance that used to do the same job. The list was pinned to the bottom of the
+   * rail so an audience would read the product's own navigation first; it now sits directly under the
+   * Thresholds group, and collapsing it is what keeps four buttons that break a production on purpose
+   * from being the largest thing in the rail. Collapsed is the stronger separation of the two: absent
+   * beats merely lower down.
+   *
+   * WHAT COLLAPSING MUST NOT HIDE IS STATE, which is why the summary below exists. `pool_bottleneck`
+   * reads "trigger activating…" for about 75 seconds — the longest wait in the demo and the whole
+   * reason the middle phase exists (#135) — and a collapsed rail that said nothing about it would
+   * re-create, one layer up, exactly the defect the three-phase rail was built to fix.
+   *
+   * NOT PERSISTED, unlike the panel widths. A remembered "expanded" would put the scaffolding back on
+   * screen for whoever opens the dashboard next, which is the state this change exists to avoid; and
+   * a presenter who wants it open is one click away, mid-demo, with the rail in front of them.
+   */
+  const [open, setOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -368,70 +394,121 @@ export function TriggerRail(): JSX.Element | null {
     void post('/reset', {}, RESET_KEY);
   };
 
+  /*
+   * WHAT THE COLLAPSED HEADING SAYS ABOUT A LIVE SCENARIO.
+   *
+   * `activating` WINS OVER `activated` when both are present, because it is the one that describes a
+   * wait somebody is currently sitting through. Counted rather than named: the phase word is the fact
+   * that matters, and a scenario name at 11px in a 208px rail is not readable from the back of a room
+   * anyway — the label is one click away in the list itself.
+   *
+   * Recomputed from `phaseOf`, so it cannot disagree with the buttons below it.
+   */
+  const phases = state.scenarios.map((s) => phaseOf(s.id));
+  const activating = phases.filter((p) => p === 'activating').length;
+  const activated = phases.filter((p) => p === 'activated').length;
+  const summary =
+    activating > 0
+      ? { phase: 'activating' as const, count: activating }
+      : activated > 0
+        ? { phase: 'activated' as const, count: activated }
+        : null;
+
   return (
     <div className="pg-triggers">
-      <span className="pg-rail__brand pg-rail__brand--triggers">
+      {/* The heading IS the disclosure. A separate toggle beside it would be a second control for one
+          thing in a rail this narrow, and the heading is already the whole width of the group. */}
+      <button
+        type="button"
+        className="pg-rail__brand pg-rail__brand--triggers pg-triggers__toggle"
+        aria-expanded={open}
+        aria-controls={LIST_ID}
+        onClick={() => setOpen((prev) => !prev)}
+      >
         <IconAlert size={14} />
-        Demo triggers
-      </span>
-      <p className="pg-triggers__caption">These break the production on purpose.</p>
+        <span className="pg-triggers__toggle-label">Demo triggers</span>
+        {/* Only while collapsed: expanded, every button states its own phase, and repeating it here
+            would be two authorities on one fact. */}
+        {!open && summary !== null && (
+          <span className="pg-triggers__summary">
+            {/* Shape as well as colour, the same pair the buttons use (§7.3). */}
+            <span
+              className={`pg-rail__trigger-dot pg-rail__trigger-dot--${summary.phase}`}
+              aria-hidden="true"
+            />
+            {summary.count} {summary.phase}
+          </span>
+        )}
+        <IconChevronRight
+          size={14}
+          className={`pg-triggers__chevron${open ? ' pg-triggers__chevron--open' : ''}`}
+        />
+      </button>
 
-      <ul className="pg-rail__list">
-        {state.scenarios.map((s) => {
-          const phase = phaseOf(s.id);
-          return (
-            <li key={s.id} className="pg-triggers__row">
-              <button
-                type="button"
-                className={`pg-rail__item pg-rail__item--trigger pg-rail__item--${phase}`}
-                /* NOT `disabled`. A trigger that will refuse stays focusable and clickable so the
-                   refusal can explain itself in the slot below — see `onArm`. `aria-disabled` is what
-                   tells assistive technology the control will not act, which `disabled` would say at
-                   the cost of making the explanation unreachable by keyboard. */
-                aria-disabled={phase !== 'idle' || busy !== null}
-                onClick={() => onArm(s)}
-                title={`${s.detail}\n\nFires: ${s.findings}`}
-              >
-                <span className="pg-rail__trigger-label">
-                  {s.label}
-                  {/* Shape as well as words: a filled disc for activated, a hollow ring for
-                      activating. State is never carried by colour alone (§7.3), and these two are
-                      told apart by silhouette at the back of a room where amber and teal may not
-                      be. */}
-                  {phase !== 'idle' && (
-                    <span
-                      className={`pg-rail__trigger-dot pg-rail__trigger-dot--${phase}`}
-                      aria-hidden="true"
-                    />
+      {/* HIDDEN RATHER THAN UNMOUNTED. Each row carries a `role="status"` slot that has to be in the
+          document before its text changes or the change is not announced (see `TriggerNote`), and
+          unmounting the list would rebuild those regions on every expand. `hidden` is `display: none`,
+          so it is out of the layout and out of the accessibility tree either way. */}
+      <div id={LIST_ID} hidden={!open}>
+        <p className="pg-triggers__caption">These break the production on purpose.</p>
+
+        <ul className="pg-rail__list">
+          {state.scenarios.map((s) => {
+            const phase = phaseOf(s.id);
+            return (
+              <li key={s.id} className="pg-triggers__row">
+                <button
+                  type="button"
+                  className={`pg-rail__item pg-rail__item--trigger pg-rail__item--${phase}`}
+                  /* NOT `disabled`. A trigger that will refuse stays focusable and clickable so the
+                     refusal can explain itself in the slot below — see `onArm`. `aria-disabled` is what
+                     tells assistive technology the control will not act, which `disabled` would say at
+                     the cost of making the explanation unreachable by keyboard. */
+                  aria-disabled={phase !== 'idle' || busy !== null}
+                  onClick={() => onArm(s)}
+                  title={`${s.detail}\n\nFires: ${s.findings}`}
+                >
+                  <span className="pg-rail__trigger-label">
+                    {s.label}
+                    {/* Shape as well as words: a filled disc for activated, a hollow ring for
+                        activating. State is never carried by colour alone (§7.3), and these two are
+                        told apart by silhouette at the back of a room where amber and teal may not
+                        be. */}
+                    {phase !== 'idle' && (
+                      <span
+                        className={`pg-rail__trigger-dot pg-rail__trigger-dot--${phase}`}
+                        aria-hidden="true"
+                      />
+                    )}
+                  </span>
+                  {/* Words, not a spinner: pool_bottleneck warms a baseline for 75 seconds and a
+                      spinner that long reads as a hang. The word the operator now sees is "activated"
+                      rather than "armed" — same state, plainer language. */}
+                  {phase === 'activating' && (
+                    <span className="pg-rail__trigger-state">trigger activating…</span>
                   )}
-                </span>
-                {/* Words, not a spinner: pool_bottleneck warms a baseline for 75 seconds and a
-                    spinner that long reads as a hang. The word the operator now sees is "activated"
-                    rather than "armed" — same state, plainer language. */}
-                {phase === 'activating' && (
-                  <span className="pg-rail__trigger-state">trigger activating…</span>
-                )}
-                {phase === 'activated' && (
-                  <span className="pg-rail__trigger-state">trigger activated</span>
-                )}
-              </button>
-              <TriggerNote message={messages[s.id]} />
-            </li>
-          );
-        })}
-        <li className="pg-triggers__row">
-          <button
-            type="button"
-            className="pg-rail__item pg-rail__item--trigger pg-rail__item--reset"
-            onClick={onReset}
-            title="Restore every setting the triggers changed"
-          >
-            <span className="pg-rail__trigger-label">Reset all</span>
-            {busy === RESET_KEY && <span className="pg-rail__trigger-state">resetting…</span>}
-          </button>
-          <TriggerNote message={messages[RESET_KEY]} />
-        </li>
-      </ul>
+                  {phase === 'activated' && (
+                    <span className="pg-rail__trigger-state">trigger activated</span>
+                  )}
+                </button>
+                <TriggerNote message={messages[s.id]} />
+              </li>
+            );
+          })}
+          <li className="pg-triggers__row">
+            <button
+              type="button"
+              className="pg-rail__item pg-rail__item--trigger pg-rail__item--reset"
+              onClick={onReset}
+              title="Restore every setting the triggers changed"
+            >
+              <span className="pg-rail__trigger-label">Reset all</span>
+              {busy === RESET_KEY && <span className="pg-rail__trigger-state">resetting…</span>}
+            </button>
+            <TriggerNote message={messages[RESET_KEY]} />
+          </li>
+        </ul>
+      </div>
     </div>
   );
 }

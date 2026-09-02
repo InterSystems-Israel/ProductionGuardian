@@ -36,6 +36,7 @@ import { useEffect } from 'react';
 import type { FindingView, HostView, Severity } from '../types/healthscan';
 import type { HostSeriesView } from '../types/hostseries';
 import { formatCount, formatDuration, formatRate, formatRelative } from '../lib/format';
+import { DrawerResizeHandle } from './DrawerResizeHandle';
 import { MetricChart } from './MetricChart';
 import { SeverityBadge } from './SeverityBadge';
 import { StatusDot } from './StatusDot';
@@ -118,6 +119,9 @@ export function HostDetail({
       aria-modal="false"
       aria-labelledby="pg-host-drawer-title"
     >
+      {/* One width for all three right-edge panels — see `DrawerResizeHandle`. */}
+      <DrawerResizeHandle />
+
       <header className="pg-drawer__header">
         <div className="pg-drawer__heading">
           <h2 id="pg-host-drawer-title" className="pg-drawer__title">
