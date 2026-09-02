@@ -4,6 +4,55 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-02 — `earlywarning-api.md` §1.5 / §2.2.1: the tail fit is 15% of the window (45 s), not 40% (120 s) — a draining queue was getting a forecast
+
+**Behaviour change, not documentation.** `RECENT_FIT_FRACTION` in
+`services/detection-engine/src/detect/earlywarning.ts` goes `0.4 -> 0.15`, and the contract prose that
+stated the old length changes with it. Both are in one PR on purpose: the tail length is observable
+through `recentDirection` and through *when* a projection is withheld, so a merge that landed one
+without the other would leave the ratified contract describing something the engine does not do.
+
+### What was wrong
+
+The tail fit gates the projection (§2.2.1) and, since #174, is also published as `recentDirection`
+(§1.5). A least-squares fit lags a turnover by roughly half its length, so the 120 s tail lagged ~60 s.
+Measured on the live stack — `pool_bottleneck`, approved `set_pool_size 1 -> 4`, queue 78 -> 0 in 50 s
+at the shipped 5 s engine poll — the panel was wrong for 40 s of a 50 s recovery:
+
+| Polls | Queue | Published | Wrong because |
+|---|---|---|---|
+| 3 (15 s) | 69, 61, 50 | `already_crossed`, `recentDirection: rising` | the queue was falling |
+| 5 (25 s) | 42 -> 2 | `slope: 13.0`, `secondsToThreshold` **growing** 37 -> 93 -> 131 -> 192 -> 243 s | a forecast of a crossing that was never coming |
+
+The second row is the serious half and is a §1.2 / §1.4 violation in substance: a projection published
+about a condition that was already being fixed. Once a draining queue falls back **under** its
+threshold, `already_crossed` no longer answers first and the direction gate is the only thing left.
+
+### Why 0.15
+
+Replaying the captured series against each candidate: `0.4` -> 40 s wrong; `0.2` -> 20 s, one bogus
+forecast poll surviving; **`0.15` -> 15 s, no bogus forecast**; `0.1` -> 10 s, none. Neither 0.15 nor
+0.1 shortens the genuine forecast window by a single poll, so this costs no coverage; 0.15 keeps the
+larger sample margin (9 samples at the shipped poll, against a tail minimum of 2).
+
+**The old justification was retired by measurement, not by opinion.** It held that a 120 s tail was
+needed so "one bursty poll cannot flip its sign". Tested on a rising queue with jitter of ±0, ±3, ±6
+and ±10 items per poll, tails of 120 s, 60 s, 45 s and 30 s withheld **exactly the same number of
+forecasts**. There was no flap to trade the 60 s of lag against.
+
+### What a consumer must still not assume
+
+`recentDirection` still lags, now by ~20 s rather than ~60 s, and §1.5's rule is unchanged: it supports
+a "coming down" claim and never a "recovered" one. The **residual 15 s** above — a queue draining while
+still at or above its threshold, reported as `rising` — is *not* closed by this change and is called out
+in both §1.5 and §2.2.1. Closing it needs a retreat-from-peak test rather than a shorter fit, which is
+a new mechanism and deliberately out of this change.
+
+No schema change: `earlywarning.schema.json` never encoded the tail length, and no field's type,
+nullability or range moves. `recentDirection` keeps the same three values and the same `null` rule.
+
+---
+
 ## 2026-09-01 — `mcp-tools.md` §3.6: the `set_pool_size` output table described a tool that never shipped — six of nine fields did not exist
 
 **#218 items 2 and 3. Documentation only — `Tools/Resolve.cls` is unchanged, and it was never the

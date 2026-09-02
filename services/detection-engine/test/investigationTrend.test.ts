@@ -208,20 +208,25 @@ test('trend is null when Early Warning produced no projection for the host at al
  * its magnitude is published as `trend.recentSlope` so the model can show the arithmetic it is asked
  * for.
  *
- * The fixture below is that transient: window +26.6/min, tail -25.6/min. Opposite signs from the same
+ * The fixture below is that transient: window +26.6/min, tail -36/min. Opposite signs from the same
  * series, which is why one number cannot serve both this field and the ETA.
+ *
+ * The tail read -25.6 until 2026-09-02 and the shape of the argument is unchanged. `RECENT_FIT_FRACTION`
+ * went 0.4 -> 0.15 so a draining queue stops getting a forecast, and a shorter tail on a drain is
+ * steeper — which moves this estimate FURTHER below the completion rate, i.e. further in the direction
+ * the amendment wanted. The invariant asserted below, not the constant, is what this test protects.
  */
 
 test('inboundRatePerSec is completions plus the CURRENT growth rate, not the window fit', async () => {
   const p = project(riseThenDrain(150, 20));
   const { snapshot, trend } = await requestFor(p);
   assert.equal(trend?.slope, 26.6, 'sanity: the window fit still leans up');
-  assert.equal(trend?.recentSlope, -25.6, 'sanity: the tail is falling');
+  assert.equal(trend?.recentSlope, -36, 'sanity: the tail is falling');
 
-  // 4/sec cleared with the backlog shrinking 25.6/min = 3.57/sec arriving. Via `slope` this would be
+  // 4/sec cleared with the backlog shrinking 36/min = 3.4/sec arriving. Via `slope` this would be
   // 4.44 -- above the completion rate, on a queue that is emptying. That was measured recommending
   // `4 -> 8` live, so it is the case the amendment exists for.
-  assert.equal(snapshot.inboundRatePerSec, 3.57);
+  assert.equal(snapshot.inboundRatePerSec, 3.4);
   assert.ok(
     (snapshot.inboundRatePerSec as number) < (snapshot.messagesPerSec as number),
     'a draining queue must put arrivals BELOW throughput',
