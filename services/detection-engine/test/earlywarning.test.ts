@@ -676,27 +676,31 @@ describe('recentDirection — which way it is moving now (§1.5)', () => {
  * constant can be tuned further without editing an assertion — but it FAILS at 0.4 and at 0.2, which
  * is what makes it a regression test rather than a restatement.
  */
+/* Zeros first so the window is warm and the threshold resolves to the absolute floor of 50, then the
+   measured ramp and drain. The trailing zeros are the idle tail after the queue emptied.
+
+   AT MODULE SCOPE because two describes read it — the drain half below and the ramp half after it
+   (#237). A second copy of a captured series is a copied value like any other, and this one carries
+   the flat-at-zero prefix that both fixes turn on. */
+const OBSERVED_DRAIN: readonly number[] = [
+  ...Array.from({ length: 60 }, () => 0),
+  4, 7, 14, 17, 24, 27, 34, 37, 44, 47, 54, 57, 64, 67, 74, 78,
+  69, 61, 50, 42, 30, 22, 10, 2, 0, 0,
+];
+const PEAK_INDEX = OBSERVED_DRAIN.indexOf(78);
+
+/** Every poll's verdict, projecting at each sample in turn as the engine's loop does. */
+function walk(values: readonly number[]) {
+  const cfg = config();
+  const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
+  return values.map((v, i) => {
+    const at = T0 + i * POLL;
+    store.record(HOST, 'queued', v, at);
+    return { index: i, value: v, row: projectHost(HOST, raw(v), store, cfg, at) };
+  });
+}
+
 describe('a draining queue is never forecast to cross (§2.2.1)', () => {
-  /* Zeros first so the window is warm and the threshold resolves to the absolute floor of 50, then the
-     measured ramp and drain. The trailing zeros are the idle tail after the queue emptied. */
-  const OBSERVED_DRAIN: readonly number[] = [
-    ...Array.from({ length: 60 }, () => 0),
-    4, 7, 14, 17, 24, 27, 34, 37, 44, 47, 54, 57, 64, 67, 74, 78,
-    69, 61, 50, 42, 30, 22, 10, 2, 0, 0,
-  ];
-  const PEAK_INDEX = OBSERVED_DRAIN.indexOf(78);
-
-  /** Every poll's verdict, projecting at each sample in turn as the engine's loop does. */
-  function walk(values: readonly number[]) {
-    const cfg = config();
-    const store = new BaselineStore(cfg.baselineWindowSeconds, cfg.minBaselineSamples);
-    return values.map((v, i) => {
-      const at = T0 + i * POLL;
-      store.record(HOST, 'queued', v, at);
-      return { index: i, value: v, row: projectHost(HOST, raw(v), store, cfg, at) };
-    });
-  }
-
   it('publishes no projection at any poll where the measured queue is falling', () => {
     for (const { index, value, row } of walk(OBSERVED_DRAIN)) {
       const previous = OBSERVED_DRAIN[index - 1] ?? value;
@@ -732,6 +736,122 @@ describe('a draining queue is never forecast to cross (§2.2.1)', () => {
     const last = walk(OBSERVED_DRAIN).find(({ value }) => value === 2);
     assert.ok(last !== undefined, 'sanity: the captured drain reaches 2');
     assert.equal(last.row.recentDirection, 'falling');
+  });
+});
+
+/*
+ * THE ETA IS DIVIDED BY THE TAIL FIT, NOT THE WINDOW FIT — #237, contract §1.1 as amended.
+ *
+ * WHY THIS WAS INVISIBLE TO 455 PASSING TESTS, which is the part worth pinning. Every existing
+ * projection fixture is a UNIFORM ramp from zero: `ramp()` above starts at 0 and rises by a constant,
+ * so the window and its tail fit the same line and the two slopes are equal to the decimal. The test
+ * at "one fit, used twice" even asserts that equality. Swapping the divisor therefore changed no
+ * assertion in the suite — the defect lived entirely in the one shape no fixture had, a rising suffix
+ * on a flat prefix, which is the only shape the shipped demo ever produces.
+ *
+ * THE SERIES IS THE SAME CAPTURED ONE the drain tests use, walked over its RAMP half. The queue clears
+ * the floor of 50 at index 70, so the true seconds-to-threshold at index i is `(70 - i) * 5`, which is
+ * what makes accuracy assertable at all rather than only self-consistency.
+ *
+ * Measured on that series, window basis against tail basis:
+ *
+ *   idx   q   true   window ETA        tail ETA
+ *    60   4    50s   27600s  ->  beyond_horizon      1062s
+ *    61   7    45s   12900s  ->  beyond_horizon       391s
+ *    62  14    40s    4320s  ->  beyond_horizon       153s
+ *    63  17    35s    2475s  ->  beyond_horizon        92s
+ *    64  24    30s    1300s  =  "~22 min"              50s
+ *    65  27    25s     812s  =  "~14 min"              36s
+ *    66  34    20s     418s  =   "~7 min"              20s   <- exact
+ *    67  37    15s     269s  =   "~4 min"              15s   <- exact
+ *    68  44    10s     100s                             7s
+ *    69  47     5s      41s                             4s
+ *
+ * Both reported symptoms are in that table: four polls of "beyond projection horizon" on a queue 35 to
+ * 50 seconds from crossing, then a countdown in MINUTES on a queue seconds from crossing.
+ */
+describe('the ETA measures the current rate, not the window average (§1.1, #237)', () => {
+  /* The first poll at or over the floor of 50. Derived rather than written down: past it the answer is
+     `already_crossed` by §2.2's precedence and there is no forecast to be right or wrong about. */
+  const CROSS_INDEX = OBSERVED_DRAIN.findIndex((v) => v >= 50);
+
+  /** The captured ramp, up to but excluding the poll that crosses. */
+  function ramping() {
+    return walk(OBSERVED_DRAIN).filter(
+      ({ index, row }) => index < CROSS_INDEX && row.recentDirection === 'rising',
+    );
+  }
+
+  it('publishes a projection at every rising poll — no beyond_horizon on the shipped ramp', () => {
+    /* THE FIRST REPORTED SYMPTOM. `beyond_horizon` is a sanity bound on the FORECAST, so reaching it
+       on a queue 50 seconds from its threshold was never a statement about the horizon — it was the
+       divisor being ~20x too shallow. Asserted over every rising poll rather than counting them, so
+       it fails on the first one that declines. */
+    for (const { index, value, row } of ramping()) {
+      assert.ok(
+        row.projection !== null,
+        `no forecast at index ${index}, q=${value}, ${(PEAK_INDEX - index) * 5}s from the peak ` +
+          `(reason=${row.projectionUnavailable}, window=${row.windowSlopePerMinute}/min, ` +
+          `tail=${row.recentSlopePerMinute}/min)`,
+      );
+    }
+  });
+
+  it('divides by the tail slope and publishes that same slope', () => {
+    /* The published rate must BE the divisor, or `message` is arithmetic that does not check out. The
+       second assertion is what makes this a regression test rather than a restatement: on this shape
+       the two fits differ by more than an order of magnitude, so equality with the window fit would
+       mean the old divisor is back. */
+    const rows = ramping().filter(({ row }) => row.projection !== null);
+    assert.ok(rows.length >= 8, `expected the ramp to forecast throughout, got ${rows.length}`);
+    for (const { index, row } of rows) {
+      assert.ok(row.projection !== null);
+      assert.equal(row.projection.slope, row.recentSlopePerMinute, `slope basis at index ${index}`);
+      assert.notEqual(
+        row.projection.slope,
+        row.windowSlopePerMinute,
+        `index ${index} fits both spans identically — the fixture has lost its flat prefix`,
+      );
+      // Self-consistency: the ETA is the published slope's own answer, to the rounding §1.2 states.
+      // Narrowed rather than coalesced — a `?? 0` here would still compute a number on a null
+      // threshold and assert nothing, which is the shape of a test that cannot fail.
+      assert.ok(row.threshold !== null && row.currentValue !== null);
+      assert.equal(
+        row.projection.secondsToThreshold,
+        Math.ceil(((row.threshold.value - row.currentValue) / row.projection.slope) * 60),
+      );
+    }
+  });
+
+  it('lands within one poll of the true crossing over the last 20 s of the ramp', () => {
+    /* THE SECOND REPORTED SYMPTOM — "it says X minutes but it passes in seconds". Asserted only over
+       the final 20s, deliberately: earlier in the ramp the TAIL still holds part of the flat prefix
+       too, so 1062s at q=4 is an overstatement this fix does not remove and "at this rate" is what
+       covers it. What must be true is that the number is right by the time it matters. Under the
+       window basis these four polls read 418s, 269s, 100s and 41s against 20s, 15s, 10s and 5s. */
+    for (const { index, row } of ramping()) {
+      const trueSeconds = (CROSS_INDEX - index) * (POLL / 1000);
+      if (trueSeconds > 20) continue;
+      assert.ok(row.projection !== null);
+      const error = Math.abs(row.projection.secondsToThreshold - trueSeconds);
+      assert.ok(
+        error <= POLL / 1000,
+        `index ${index}: forecast ${row.projection.secondsToThreshold}s against a true ${trueSeconds}s`,
+      );
+    }
+  });
+
+  it('still tightens monotonically, which the window basis also did', () => {
+    /* Kept because it is the property a viewer actually reads off the card, and because a shorter fit
+       is noisier — the accuracy above is bought with jitter (§5), and a countdown that went back up
+       would undo the fix's whole point on stage. */
+    const etas = ramping()
+      .map(({ row }) => row.projection?.secondsToThreshold)
+      .filter((e): e is number => e !== undefined);
+    assert.ok(
+      etas.every((e, i) => i === 0 || e <= (etas[i - 1] ?? e)),
+      `the ETA must tighten as the ramp approaches the threshold: ${etas.join(' -> ')}`,
+    );
   });
 });
 
