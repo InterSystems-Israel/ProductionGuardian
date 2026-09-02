@@ -34,7 +34,25 @@
  * healthy host, and a row saying "no projection available" on every card would make the grid
  * unreadable for information nobody needs. `warming` and `insufficient_samples` render because they
  * mean "ask again shortly" rather than "nothing is coming". `not_rising` renders too — see
- * `SHOWN_REASONS` for why that changed, and why it is the only one that earns an icon.
+ * `REASON_SENTENCES` for why that changed, and why it is the only one that earns an icon.
+ *
+ * AND `beyond_horizon` RENDERS, WHICH IS THE THIRD TIME THIS FILE HAS LEARNED THE SAME THING. It had
+ * no entry in the sentence map, so the row vanished for the 20 seconds it is returned — measured on
+ * the live stack, `pool_bottleneck`, engine polls at `q=4,7,14,17`: the queue is *visibly climbing*
+ * and the panel is blank, between "Watching" and the forecast. Reported as "the early warning is not
+ * shown and then after a while it shows warning/rising. why is there a time that nothing is
+ * displayed?" (@Ari-Glikman). The blank is 20s against a forecast that lasts 25s, so the module is
+ * absent for nearly half the window it exists for.
+ *
+ * The reason it was missed three times is that the map was a `Record<string, string>`, which accepts
+ * any subset of the reasons in silence. It is now `Record<ProjectionDeclineReason, string | null>`, so
+ * a reason with no sentence is a **compile error** and choosing silence has to be written down as an
+ * explicit `null`. Same move as `validate-architecture.mjs`'s header describes for coordinates: a
+ * missing one was made impossible rather than documented.
+ *
+ * Note the engine does NOT publish the slope on this row — `earlywarning-api.md` §1.4 forbids a slope
+ * outside `projection`, and a decline has no `projection` — so the sentence is qualitative. The rate
+ * is withheld by the contract, not lost.
  *
  * ONE REASON CARRIES AN ICON, AND ONLY ONE. `not_rising` is the sole state whose whole content is
  * reassurance, so a tick makes it readable at a glance instead of as a line of grey text among five
@@ -47,19 +65,13 @@
  * `svg()` wrapper; the sentence beside it stays the authoritative statement (§7.3).
  */
 
-import type { HostProjectionView, RecentDirection } from '../types/mvp2';
+import type { HostProjectionView, ProjectionDeclineReason, RecentDirection } from '../types/mvp2';
 import { IconWatching } from './icons';
 
 export interface EarlyWarningProps {
   projection: HostProjectionView | null;
 }
 
-/**
- * The reasons worth a row, and what each says.
- *
- * `already_crossed` is the one that earns its place by NOT being a forecast: it marks the module as
- * present and watching after the window has closed. The other two mean "ask again shortly".
- */
 /**
  * `already_crossed`, by which way the queue is actually moving (§1.5, #174).
  *
@@ -83,10 +95,32 @@ const CROSSED_BY_DIRECTION: Record<RecentDirection, string> = {
   steady: 'Threshold reached — holding steady; see the finding below',
 };
 
-const SHOWN_REASONS: Record<string, string> = {
+/**
+ * Every decline reason's sentence, or `null` for the two that stay silent.
+ *
+ * TOTAL OVER THE UNION, which is the whole point. This was `Record<string, string>` holding only the
+ * reasons that speak, and a partial map of a closed union is a blank row waiting to happen — it
+ * happened three times (see the file header). Now `tsc` fails when `ProjectionDeclineReason` gains a
+ * member, and choosing silence means writing `null` next to it rather than leaving it out.
+ *
+ * `disabled` and `metric_unmeasurable` are the two nulls, and they are steady states on a host nothing
+ * is happening to: Early Warning is off, or the host reports no `queued` at all (contract Q13 — null
+ * is "not measurable", never zero). A row per card saying so is noise on every poll forever.
+ */
+const REASON_SENTENCES: Record<ProjectionDeclineReason, string | null> = {
+  disabled: null,
+  metric_unmeasurable: null,
   warming: 'Baseline still warming — no projection yet',
   insufficient_samples: 'Not enough samples yet for a projection',
   already_crossed: 'Threshold reached — see the finding below',
+  /*
+   * Rising, but the crossing is further out than the engine's horizon (30 min on the shipped
+   * config), so it declines to name a time. That is a real, transient state in the middle of a ramp
+   * — it is what the first four polls of a queue build look like — and it is exactly when an
+   * operator is watching the card. The rate is not available to say (§1.4, see the header), so this
+   * says the direction and the reason there is no ETA, and nothing it cannot support.
+   */
+  beyond_horizon: 'Rising — a crossing is beyond the projection horizon',
   /*
    * `not_rising` was silent, and that made the module INVISIBLE on a healthy production — which is
    * every demo before a trigger is armed, and is what "I don't see the early warning" meant
@@ -139,16 +173,18 @@ export function EarlyWarning({ projection }: EarlyWarningProps): JSX.Element | n
 
   if (forecast === null) {
     /* `already_crossed` is the one reason whose sentence depends on a second field, so it is resolved
-       here rather than by widening SHOWN_REASONS into a nested map that three other reasons would
+       here rather than by widening REASON_SENTENCES into a nested map that the other reasons would
        carry a null key for. */
     const direction = projection.recentDirection;
     const shown =
       reason === 'already_crossed' && direction !== null
         ? CROSSED_BY_DIRECTION[direction]
         : reason === null
-          ? undefined
-          : SHOWN_REASONS[reason];
-    if (shown === undefined) return null;
+          ? null
+          : REASON_SENTENCES[reason];
+    /* Null covers both "the engine declined for no stated reason" and the two reasons that are
+       deliberately silent. Neither renders, and REASON_SENTENCES is where the second is argued. */
+    if (shown === null) return null;
     /* `already_crossed` reads as spent rather than pending -- it is not waiting for anything, it is
        reporting that the thing it was watching for has happened. The other two are genuinely
        "not yet", so they keep the muted pending styling. */
