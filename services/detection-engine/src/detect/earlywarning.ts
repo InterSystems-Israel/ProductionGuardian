@@ -505,12 +505,15 @@ export function projectHost(
   // "nothing to see" about a queue that is over its limit.
   if (currentValue >= threshold.value) return decline('already_crossed', threshold);
 
+  // THE WINDOW MUST LEAN UP — a gate, and no longer the rate that is published (#237, below).
+  //
   // Round to 1dp in the units we publish, and test the ROUNDED value: publishing slope 0.0
   // alongside a finite ETA would be a projection the numbers do not support. Reads the fit measured
-  // above rather than repeating it (#187) — one computation, so the rate this endpoint publishes and
+  // above rather than repeating it (#187) — one computation, so the gate this endpoint applies and
   // the rate the investigation carries cannot drift apart.
-  const slopePerMinute = windowSlopePerMinute;
-  if (slopePerMinute === null || slopePerMinute <= 0) return decline('not_rising', threshold);
+  if (windowSlopePerMinute === null || windowSlopePerMinute <= 0) {
+    return decline('not_rising', threshold);
+  }
 
   // RISING NOW, not merely on average across the window. The window slope above describes the
   // window; this asks the same question of its tail, and both must say rising. That one gate covers
@@ -538,6 +541,55 @@ export function projectHost(
   if (recentDirection !== 'rising') {
     return decline('not_rising', threshold);
   }
+
+  /*
+   * THE ETA IS COMPUTED FROM THE TAIL, NOT THE WINDOW (#237, contract §1.1 as amended).
+   *
+   * `secondsToThreshold` used to divide by `windowSlopePerMinute`, and on the one scenario MVP 2
+   * exists to demonstrate that is the wrong span by a factor of ~20. §1.1 already contains the
+   * argument, one window size too high up: *"a 30-minute least-squares fit over mostly-flat history
+   * systematically understates a rise that started two minutes ago — it would hand back a comfortably
+   * distant ETA at exactly the moment the queue is running away."* Substitute 300 s for 30 minutes
+   * and 40 seconds for two minutes and it describes the shipped behaviour.
+   *
+   * The arithmetic, from the live scenario rather than from paper. `pool_bottleneck` warms at zero
+   * and then ramps +5 per 5 s poll, crossing the floor of 50 at 50 s. The window is 60 samples, so
+   * the ramp is a short suffix on a flat-at-zero prefix and least squares averages the two regimes:
+   *
+   *   t=5s   queued   5   window +0.1/min   tail  +3.3/min   true +60/min
+   *   t=25s  queued  25   window +1.4/min   tail +34.5/min   ETA was 1072 s, truly 25 s away
+   *   t=45s  queued  45   window +3.9/min   tail +60.0/min   ETA was   77 s, truly  5 s away
+   *
+   * So the first four polls of the ramp reported `beyond_horizon` (ETA > 1800 s) on a queue 20 to 45
+   * seconds from crossing, and the next five published a countdown reading 18 min, 11 min, 6 min,
+   * 3 min, 77 s. Both symptoms were reported from a demo run and both are this one division.
+   *
+   * WHY THE TAIL IS THE RIGHT SPAN AND NOT MERELY THE SHORTER ONE. `message` says "at this rate", and
+   * §1.5 already defines the tail as the answer to "which way is it moving NOW" — the gate directly
+   * above turns on it. Dividing by a different slope than the one that decided it is rising was the
+   * inconsistency; the published `slope` now names the divisor, so the message is arithmetic a reader
+   * can check. This is the same amendment #188 made to `snapshot.inboundRatePerSec` for the same
+   * reason: "the window slope is the wrong span … the tail fit is the 'now' the definition needs."
+   *
+   * WHY THE WINDOW GATE STAYS. It no longer supplies a number, but "the window leans up as well" is
+   * the false-positive posture MVP §6 asks for, and `fitSampleCount >= minFitSamples` above is what
+   * grounds the tail: 9 samples decide the rate only once 12 have agreed on the direction.
+   *
+   * The gate's obvious cost — a ramp begun while the window still holds a drain gets no forecast —
+   * turns out not to be reachable on this scenario, and `DISCONTINUITY_FRACTION` is why. A second
+   * `pool_bottleneck` inside five minutes leaves a 200-deep plateau and its drain inside the window,
+   * but the drain ends at zero, so the final step is a 100% fall and the truncation above discards
+   * everything before it. Measured: window +1.3/min at the first poll of the second ramp, forecasting
+   * identically to a cold stack. Checked rather than assumed, because the arrangement only works
+   * while the drain reaches zero.
+   *
+   * The cost is a jumpier countdown. A 45 s fit moves more between polls than a 300 s one, and §5's
+   * "it will move substantially between polls in the seconds after load changes" applies more
+   * strongly. That is the right trade for a warning: the previous number was smooth and wrong by more
+   * than an order of magnitude, and §5 already tells a reader not to treat the seconds as time to act.
+   */
+  const slopePerMinute = recentSlopePerMinute;
+  if (slopePerMinute === null || slopePerMinute <= 0) return decline('not_rising', threshold);
 
   const secondsToThreshold = Math.ceil(
     ((threshold.value - currentValue) / slopePerMinute) * 60,

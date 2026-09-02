@@ -22,8 +22,10 @@
  *     activating        the request was accepted; the scenario is not in effect yet
  *     activated         the scenario is live
  *
- * `pool_bottleneck` is why. It warms a baseline at zero for ~75 seconds *before* arming anything —
- * that wait is load-bearing, see `Triggers.PoolBottleneck` and #43 — and it runs as a background
+ * `pool_bottleneck` is why. It settles for ~75 seconds with nothing armed *before* arming anything —
+ * that wait is load-bearing, see `Triggers.PoolBottleneck`, which is also where to read why the
+ * reason changed (it was `queue_buildup`'s baseline and #43; it is now Early Warning's fit window,
+ * and the 75s is unchanged either way) — and it runs as a background
  * job, so the arm POST returns in ~0.26s. For over a minute the scenario is in neither of the other
  * two states. Collapsing that into "not activated" invites a second click; collapsing it into
  * "activated" is a claim a presenter notices is false when no queue appears. The dispatcher reports
@@ -247,8 +249,8 @@ export function TriggerRail(): JSX.Element | null {
          * Both notes this system produces are ONE LINE and each answers a question the state word
          * immediately provokes, rather than restating it:
          *
-         *   pool_bottleneck   "Warming the baseline at zero for ~75s before arming, so
-         *                      queue_buildup can fire..."
+         *   pool_bottleneck   "Settling for ~75s with nothing armed, so Early Warning has enough
+         *                      samples to project the crossing..."
          *   reset             "Findings clear within ~10s. A system_alert finding persists until it
          *                      ages out of the proxy's buffer."
          *

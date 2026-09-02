@@ -139,10 +139,11 @@ ClassMethod Status() As %Status
 ///   activating      the request landed; the scenario is not in effect yet
 ///   activated       the scenario is in effect
 ///
-/// The middle state is real and observable, not a UI nicety. `PoolBottleneck()` warms the baseline
-/// at zero for 75 seconds BEFORE arming anything -- that wait is load-bearing (see that method, and
-/// #43: a queue forming during warm-up caps the ratio near 2x and `queue_buildup` can then never
-/// fire) -- and it runs as a background job, so the HTTP call returns in ~0.26s. For 75 seconds the
+/// The middle state is real and observable, not a UI nicety. `PoolBottleneck()` settles for 75
+/// seconds with nothing armed BEFORE arming anything -- that wait is load-bearing (see that method
+/// for why, and note the reason has changed once: it was #43's zero baseline, which
+/// `referenceBaselines` made unnecessary, and it is now Early Warning's minimum fit window. The 75s
+/// did not move) -- and it runs as a background job, so the HTTP call returns in ~0.26s. For 75 seconds the
 /// operator has a scenario that was accepted and is doing nothing yet. Reporting that as "not
 /// activated" invites a second click; reporting it as "activated" is a claim the presenter notices
 /// is false when no queue appears.
@@ -239,9 +240,13 @@ ClassMethod Arm() As %Status
         //
         //     POST /labdemo/trigger/arm {"scenario":"pool_bottleneck"}  ->  HTTP 504 in 60.2s
         //
-        // `PoolBottleneck()` waits 75s BEFORE arming anything -- the baseline has to warm at exactly
-        // zero or `queue_buildup` can never fire (see that method's comment, and #43). So the wait is
-        // load-bearing and cannot be shortened, which means the REQUEST has to stop being long.
+        // `PoolBottleneck()` waits 75s BEFORE arming anything. The reason has changed and the wait has
+        // not: it was "the baseline has to warm at exactly zero or `queue_buildup` can never fire"
+        // (#43), which `referenceBaselines` made untrue, and it is now Early Warning's `minFitSamples`
+        // (12) x the 5s engine poll -- see `PoolBottleneck()`'s comment for both halves. Either way the
+        // wait is load-bearing and cannot be shortened, which means the REQUEST has to stop being long.
+        // Worth noting the 504 does not care WHY the wait exists, so this block would have been needed
+        // regardless.
         //
         // Raising timeouts was the wrong fix and I tried it first: nginx 35s -> 180s and the engine
         // at 150s both sat outside a limit neither of them owned, and the symptom was unchanged.
@@ -266,7 +271,7 @@ ClassMethod Arm() As %Status
                 return $$$OK
             }
             write { "armed": (scenario), "ok": true, "pending": true, "log": "",
-                "note": "Warming the baseline at zero for ~75s before arming, so queue_buildup can fire. The armed indicator will appear when it starts." }.%ToJSON()
+                "note": "Settling for ~75s with nothing armed, so Early Warning has enough samples to project the crossing. The throttle and the inflow then go on together and the armed indicator appears." }.%ToJSON()
             return $$$OK
         }
 

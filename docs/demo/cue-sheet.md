@@ -169,13 +169,61 @@ the most common real-world failure and the hardest to see, because every individ
 | t | What happens |
 |---|---|
 | 0s | Button returns immediately; shows *activating* |
-| **~77s** | Takes effect — measured 77s. It warms a baseline at zero first |
-| ~90s | Queue starts climbing, ~1/sec net |
+| **~77s** | Takes effect — measured 77s. It settles with nothing armed first |
+| ~85s | Queue starts climbing, ~1/sec net — **and Early Warning starts projecting** (§1.2b) |
 | ~2min | First findings confirmed |
 
 > **Do not skip the 77 seconds and do not fill it with silence.** The wait exists for a real reason and
 > it is worth saying out loud: *"it is establishing what normal looks like before I break anything —
 > a baseline learned during a fault is worthless."* That line lands well with a technical audience.
+>
+> It is also worth knowing which reason is the live one, because someone will ask. The wait was
+> originally there to hold `queue_buildup`'s rolling baseline at zero; a **stated** baseline
+> (`referenceBaselines`) replaced that need. What it buys now is Early Warning's minimum fit window —
+> twelve samples at the 5s engine poll, i.e. 60s — which is why the projection in §1.2b is available
+> from the very first poll on which the queue moves. The number did not change; the reason did.
+
+### 1.2b Early Warning projects the crossing before it happens (30s)
+
+**This is the beat that was missing, and it is the one that distinguishes the product from a
+dashboard.** Between the queue starting to move and the first finding there are ~40 seconds in which
+Guardian is saying something no threshold alert can say: *not yet, but shortly, and here is how fast.*
+
+**Measured live on the containerised stack, 2026-09-02, one arm from a cold engine.** `t` is seconds
+from arming; the queue crossed the floor of 50 at t≈128s:
+
+| t | queue | Early Warning shows |
+|---|---|---|
+| 80s | 0 | *"Watching — not trending toward a threshold"* |
+| **85s** | 4 | `queued rising ~3.2/min · projected to cross 50 in ~14 min` |
+| 95s | 14 | `rising ~16.2/min · in ~2 min` |
+| 105s | 24 | `rising ~34.2/min · in under a minute` |
+| 120s | 46 | `rising ~60.4/min · in under a minute` |
+| 130s | 56 | *"Threshold reached — see the finding below"* |
+
+**Say:** *"Look at the rate, not the countdown: 60 messages a minute — one a second — arriving at a
+host that can clear one a second at best. Guardian worked that out from the trend, and it told me
+before the queue was deep enough for any threshold to have fired. That is the difference between a
+monitor and a warning."*
+
+> **Point at the RATE.** `~60.4/min` is a measurement and it converges on exactly the net inflow the
+> scenario creates. The countdown is the softer of the two claims — it is a projection, prefixed `~`
+> on purpose — and everything under 90 seconds is rendered *"under a minute"* rather than as a
+> ticking number, because a nine-sample fit does not support seconds.
+>
+> **The first projection is a large overestimate and say so if asked.** At t=85s it reads ~14 minutes
+> for a crossing that is ~43 seconds away, because at the first rising poll the fit still contains
+> mostly flat-at-zero history. It corrects within two polls. Claiming otherwise is a worse answer
+> than the honest one, and the honest one is the product's own point: the estimate improves as
+> evidence accumulates.
+>
+> **This used to be broken and it is worth knowing what it looked like**, in case you are presenting
+> from an older build. Until #237 the eta was fitted over a 300-second window rather than the recent
+> tail, which on a 50-second ramp is ~85% flat-at-zero prefix — so the rate read ~20× too low, the
+> first four polls said *"a crossing is beyond the projection horizon"* with nothing else on the
+> strip, and the polls after that promised *"~22 min"*, *"~14 min"*, *"~7 min"* for a queue 30, 25
+> and 20 seconds from crossing. If you see either symptom, the engine image predates the fix:
+> `PG_DEMO_TRIGGERS=1 PG_AGENT_MODE=live docker compose up -d --build detection-engine`.
 
 ### 1.3 The findings arrive (60s)
 

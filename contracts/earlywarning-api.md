@@ -123,16 +123,76 @@ contract violation, a `null` value is not — same rule as `healthscan-api.md` �
 
 ### 1.1 How the slope is fitted
 
-Ordinary least squares of `value` against sample time (in minutes), unweighted, over every sample
-in the **fit window**: the trailing **300 s**, i.e. up to 60 samples at the shipped 5000 ms engine
-poll. `slope` is that line's gradient.
+Ordinary least squares of `value` against sample time (in minutes), unweighted, over the **most
+recent 15% of the fit window**: 45 s, ~9 samples at the shipped 5000 ms engine poll. `slope` is that
+line's gradient, and `secondsToThreshold` is `(threshold.value - currentValue) / slope`.
 
-Three things about that, each a decision rather than an implementation detail:
+**AMENDED 2026-09-02 (#237). `slope` was the fit over the WHOLE 300 s fit window until then**, and the
+bullet immediately below was the argument for it — correct in form and one window size too high up.
+Substituting 300 s for "30 minutes" and 40 s for "two minutes" describes what shipped: on
+`pool_bottleneck`, the one scenario MVP 2 exists to demonstrate, the ramp is a short suffix on a
+flat-at-zero prefix, so least squares averaged the two regimes and understated the rise by ~20x.
+Measured on a captured live series (60 idle polls, then the ramp; floor 50 crossed at t=50 s):
 
-- **The fit window is 300 s, not the 1800 s baseline window.** A 30-minute least-squares fit over
+| queued | true seconds to crossing | ETA over the 300 s window | ETA over the 45 s tail |
+|---|---|---|---|
+| 4 | 50 s | 27600 s → `beyond_horizon` | 1062 s |
+| 7 | 45 s | 12900 s → `beyond_horizon` | 391 s |
+| 14 | 40 s | 4320 s → `beyond_horizon` | 153 s |
+| 17 | 35 s | 2475 s → `beyond_horizon` | 92 s |
+| 24 | 30 s | 1300 s = "~22 min" | 50 s |
+| 27 | 25 s | 812 s = "~14 min" | 36 s |
+| 34 | 20 s | 418 s = "~7 min" | **20 s** |
+| 37 | 15 s | 269 s = "~4 min" | **15 s** |
+| 44 | 10 s | 100 s | 7 s |
+| 47 | 5 s | 41 s | 4 s |
+
+So the panel spent its first four polls saying the crossing was beyond a 30-minute horizon, on a queue
+35 to 50 seconds away from it, and then counted down in **minutes** on a queue seconds away. Both
+were reported from a demo run; both are this one divisor. The tail is exact from 20 s out.
+
+**CONFIRMED LIVE**, not only in replay — one `pool_bottleneck` arm from a cold engine on the
+containerised stack, 2026-09-02, `t` measured from the arm and the floor of 50 crossed at t≈128 s:
+
+| t | queued | `recentDirection` | `slope` | `secondsToThreshold` |
+|---|---|---|---|---|
+| 80 s | 0 | `steady` | — | `not_rising` |
+| 85 s | 4 | `rising` | 3.2 | 863 |
+| 90 s | 11 | `rising` | 11.2 | 209 |
+| 95 s | 14 | `rising` | 16.2 | 134 |
+| 100 s | 21 | `rising` | 25.7 | 68 |
+| 105 s | 24 | `rising` | 34.2 | 46 |
+| 110 s | 35 | `rising` | 55.4 | 17 |
+| 115 s | 39 | `rising` | 59.0 | 12 |
+| 120 s | 46 | `rising` | 60.4 | 4 |
+| 125 s | 49 | `rising` | 59.0 | 2 |
+| 130 s | 56 | `rising` | — | `already_crossed` |
+
+Three properties a consumer may rely on, all visible above: **a projection on every rising poll** and
+no `beyond_horizon` anywhere on this scenario; **`slope` converging on the scenario's actual net
+inflow** (~1/sec = 60/min, which is what `pool_bottleneck` creates by construction — see
+`Triggers.PoolBottleneck`); and **the ETA landing within one poll of the true crossing** over the last
+20 s. The first row is the residual §5 warns about: 863 s against a true ~43 s, because at the first
+rising poll the 45 s tail still holds flat-at-zero samples. It corrects within two polls.
+
+**The tail is the right span rather than merely the shorter one.** §1.5 already defines it as the
+answer to "which way is it moving *now*", and §2.2.1's gate turns on it — so the ETA was being divided
+by a different slope than the one that decided the queue was rising at all. That is the same amendment
+`investigation-api.md` §2.2 made to `snapshot.inboundRatePerSec` on 2026-09-01 (#188), for the same
+reason and against the same alternative: *"the window slope is the wrong span … the tail fit is the
+'now' the definition needs."*
+
+Three things about the fit, each a decision rather than an implementation detail:
+
+- **Neither span is the 1800 s baseline window.** A 30-minute least-squares fit over
   mostly-flat history systematically understates a rise that started two minutes ago — it would
   hand back a comfortably distant ETA at exactly the moment the queue is running away. The whole
-  claim is "at *this* rate", so the fit has to be over the recent rate.
+  claim is "at *this* rate", so the fit has to be over the recent rate. The amendment above is that
+  argument reaching its conclusion: 300 s was still mostly-flat history for a 50 s ramp.
+- **The 300 s window still gates the forecast, it just no longer supplies the number.** §2.2.1's
+  two-fit test is unchanged — both spans must lean up — and `fitSampleCount >= minFitSamples` (12) is
+  still measured against the full window. 9 samples decide the *rate* only once 12 have agreed on the
+  *direction*, which is what keeps a 45 s fit from being a claim with nothing behind it.
 - **It is not `(latest - previous) / interval`.** That is a one-sample difference and it is pure
   noise at this cadence — `window.ts` exposes `latest()` and `previous()` for rate-of-change
   comparisons and they are the wrong input here. It is also not `(last - first) / span`, which
@@ -150,7 +210,7 @@ promising they are the only possible ones.
 
 | Field | Rounded to | Reason |
 |---|---|---|
-| `slope` | 1 decimal | `9.63841...` implies precision a 60-sample fit over a bursty queue does not have |
+| `slope` | 1 decimal | `9.63841...` implies precision a ~9-sample fit over a bursty queue does not have — and since #237 it is the 45 s tail, so this is more true than when it was written against 60 samples |
 | `secondsToThreshold` | whole seconds | same |
 | minutes inside `message` | nearest whole minute | the demo line is "~4 min", and a "~3.96 min" reads as a measurement |
 
@@ -239,11 +299,18 @@ producing one. Published standalone on a warming host, a sign fitted through thr
 a claim with nothing behind it. So `warming` and `insufficient_samples` rows always carry `null`
 here, and a consumer gets a direction exactly when there is a fit worth signing.
 
-**A SIGN, NOT A SECOND SLOPE, and that is §2.2.1's own decision rather than a new one.** That section
-already states that the tail fit "is a sign test confirming an answer the window already grounded in
-`minFitSamples`" and that its slope is deliberately never published. Publishing a magnitude here
-would put two rates in one payload with no way for a reader to know which one `message` was built
-from. So the tail keeps answering exactly one question — *which way* — and this field is that answer.
+**A SIGN, NOT A SECOND SLOPE.** The magnitude of this fit *is* published — as `projection.slope`, since
+#237 (§1.1) — so the field is redundant with it wherever a projection exists. It is kept as a sign
+because that is exactly where a projection does **not** exist: on `already_crossed`, which is the state
+the panel spends most of its life in (see "Why it exists" below), there is no `slope` and the sign is
+the only thing that distinguishes a recovery from a runaway.
+
+**The old reason for it being a sign — that "publishing a magnitude here would put two rates in one
+payload with no way for a reader to know which one `message` was built from" — was retired by #237,
+which removed the second rate.** There is now one published rate, it is this fit, and `message` is
+built from it. The window fit is internal and reaches only the agent, as `trend.slope`
+(`investigation-api.md` §2.2). That is a stronger arrangement than the one that argument was
+protecting: a reader can check the sentence's arithmetic against the number beside it.
 
 **MEASURED, so §1.4 does not apply to it.** It is computed from samples that have already happened,
 which makes it the same kind of value as `currentValue` and `fitSampleCount`, not the same kind as
@@ -361,11 +428,11 @@ answer to *which reason* is unchanged, and what is added is the answer to *which
 
 Two consequences worth stating, because a consumer cannot see them from the reason alone:
 
-- **`slope` is never published for the tail** — the *magnitude*, that is. The tail fit is a sign test
-  confirming an answer the window already grounded in `minFitSamples`; only the window slope is
-  published as a rate. So a positive published `slope` with `projection: null` cannot occur — the
-  decline happens before any projection is built. Its **sign** is published, as `recentDirection`
-  (§1.5), which is a different claim: `rising` is not a rate and cannot be used as one.
+- **`slope` is the tail's magnitude, and the window's is never published** — the reverse of what this
+  bullet said until 2026-09-02 (#237, §1.1). A positive published `slope` with `projection: null` still
+  cannot occur, and for the same reason: the decline happens before any projection is built, so the
+  gate and the divisor being the same fit changes nothing about that invariant. The window fit stays
+  internal and reaches the agent only, as `trend.slope`.
 - **An unfittable tail declines too**, and still as `not_rising`: fewer than two samples has no
   slope, and a tail sharing one timestamp is division by zero. `insufficient_samples` would be the
   wrong reason, since the contract defines that against the published `fitSampleCount` — the full
@@ -460,8 +527,14 @@ the other two (healthscan Q9). The dashboard works with or without the Vite dev 
 ### 4.1 Live projection — the MVP 2 scenario
 
 `Cloud API` at `PoolSize 1` against a ~1s-per-message downstream, so it clears ~1 msg/sec while
-inflow exceeds that. Net queue growth ~9.6/min. Baseline is ~0.4, so `baseline * 5.0` is ~2 and the
-absolute floor of 50 is the live arm.
+inflow exceeds that. Net queue growth ~9.6/min over the 45 s tail (§1.1) — the span `slope` is fitted
+over and the one `secondsToThreshold` is divided by. Baseline is ~0.4, so `baseline * 5.0` is ~2 and
+the absolute floor of 50 is the live arm.
+
+This row sits early in the ramp, where the tail is still catching up: §1.1's live table read `slope`
+11.2 at `queued: 11` and 16.2 at `queued: 14`, so 9.6 at 12 is one poll's worth of jitter below that
+pair rather than a different regime. The slope on this scenario ends up at ~60/min — see that table
+before treating 9.6 as the scenario's rate.
 
 `200` · `X-Healthscan-State: ok`
 
@@ -655,6 +728,12 @@ in `message` is there to say.
 and in the demo it is closer to a step than a ramp. A slope fitted across a step is an artifact of
 where the fit window happens to sit relative to the step, and it will move substantially between
 polls in the seconds after load changes.
+
+**And #237 made that worse on purpose.** A 45 s fit moves more between polls than a 300 s one, so both
+`slope` and `secondsToThreshold` are jumpier than they were — that is the price of the accuracy in
+§1.1's table, and it is the right price, because the smooth number it replaced was wrong by more than
+an order of magnitude at the moment it mattered. It also means the ETA is not a countdown: §1.4's
+"let it jump" rendering rule is load-bearing rather than cautious.
 
 **The target can move as well as the value** — §1.3, whenever `basis` is `baselineMultiplier`.
 

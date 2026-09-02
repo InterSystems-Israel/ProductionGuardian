@@ -4,6 +4,72 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-02 — `earlywarning-api.md` §1.1: `projection.slope` and `secondsToThreshold` are fitted over the 45 s tail, not the 300 s window (#237)
+
+**Behaviour change.** `projectHost` in `services/detection-engine/src/detect/earlywarning.ts` divides by
+`recentSlopePerMinute` instead of `windowSlopePerMinute`, and publishes that same slope. The window fit
+keeps both of its other jobs — it still gates the forecast (§2.2.1's two-fit test is untouched) and it
+still reaches the agent as `trend.slope` (`investigation-api.md` §2.2). One PR with the prose, for the
+same reason as the entry below: the divisor is observable through `slope`, `secondsToThreshold` and
+`beyond_horizon`, so landing one half would leave the ratified contract describing something else.
+
+### What was wrong
+
+§1.1's own argument, one window size too high up. It said a 1800 s fit "systematically understates a
+rise that started two minutes ago — it would hand back a comfortably distant ETA at exactly the moment
+the queue is running away", and then chose 300 s. On the one scenario MVP 2 exists to demonstrate the
+whole ramp is **50 s**, so 300 s is ~85% flat-at-zero prefix and least squares averaged the two regimes.
+
+Replayed against a captured live series (60 idle polls, then the measured `pool_bottleneck` ramp; floor
+50 crossed at t=50 s), against the truth the series itself supplies:
+
+| queued | true | 300 s window | 45 s tail |
+|---|---|---|---|
+| 4 | 50 s | 27600 s → `beyond_horizon` | 1062 s |
+| 14 | 40 s | 4320 s → `beyond_horizon` | 153 s |
+| 24 | 30 s | 1300 s = "~22 min" | 50 s |
+| 34 | 20 s | 418 s = "~7 min" | **20 s** |
+| 37 | 15 s | 269 s = "~4 min" | **15 s** |
+| 47 | 5 s | 41 s | 4 s |
+
+Two reported symptoms, one divisor: four polls of "beyond projection horizon" on a queue 35–50 s from
+crossing, then a countdown in **minutes** on a queue seconds from crossing. Under-warning in the state
+Early Warning exists for.
+
+**Then confirmed live rather than only in replay** — one `pool_bottleneck` arm from a cold engine on the
+containerised stack, the full nine-poll table in §1.1. `beyond_horizon` did not occur at all, a
+projection was published on every rising poll, `slope` converged on 60.4/min against a scenario that
+creates ~1/sec by construction, and the last ETA before the crossing read 2 s against a true ~3 s. The
+replay predicted the fix; the live run is what confirms it, and the two agree except on the first rising
+poll, where the live residual is 863 s rather than 1062 s.
+
+### Why the tail rather than a third span
+
+It is the span §1.5 already calls "now", and §2.2.1's gate already turns on it — so the ETA was being
+divided by a different slope than the one that decided the queue was rising at all. §1.1 now names one
+fit, and `message` is arithmetic a reader can check against the number beside it. This is the same
+amendment `investigation-api.md` §2.2 made to `snapshot.inboundRatePerSec` on 2026-09-01 (#188), on the
+identical reasoning: *"the window slope is the wrong span … the tail fit is the 'now' the definition
+needs."*
+
+### What a consumer must still not assume
+
+**The ETA is jumpier than it was**, and §5 now says so: a 45 s fit moves more between polls than a 300 s
+one. §1.4's "let `secondsToThreshold` jump, never tick it down client-side" was already the rule and is
+now load-bearing rather than cautious. The overstatement is **not** fully removed at the very start of a
+ramp — 1062 s in replay and 863 s live at `queued: 4`, against a true ~43–50 s — because the tail also
+still holds part of the flat
+prefix there; "at this rate" is what covers it, and the number is exact from 20 s out, which is where
+§5's "below ~20 s is inside the pipeline's own latency bound" takes over.
+
+**Two paragraphs were reversed rather than extended.** §1.5's "publishing a magnitude here would put two
+rates in one payload" and §2.2.1's "`slope` is never published for the tail" were both arguments against
+this change, and both are struck with the reason: there is now one published rate. `recentDirection`
+stays a sign, on a narrower and better justification — it is what `already_crossed` rows have instead of
+a slope.
+
+---
+
 ## 2026-09-02 — `earlywarning-api.md` §1.5 / §2.2.1: the tail fit is 15% of the window (45 s), not 40% (120 s) — a draining queue was getting a forecast
 
 **Behaviour change, not documentation.** `RECENT_FIT_FRACTION` in

@@ -312,11 +312,30 @@ ClassMethod SystemAlert(pHost As %String = {..#OPERATION}) As %Status
 /// this value, and #66 established that restoring to a hardcoded number destroys a deployment that
 /// legitimately differs.
 ///
-/// THE BASELINE MUST WARM AT ZERO, WITH NO QUEUE, BEFORE ANYTHING IS ARMED. `pWarmSeconds`
-/// (default 75) waits with both halves OFF so the engine records a genuinely empty queue, and only
-/// then applies the throttle and the rate together.
+/// `pWarmSeconds` (default 75) WAITS WITH BOTH HALVES OFF BEFORE ARMING, AND THE REASON IS NO LONGER
+/// THE ONE THIS COMMENT GAVE. It used to read "THE BASELINE MUST WARM AT ZERO, WITH NO QUEUE" and the
+/// argument below was the justification. That argument is now dead, and the wait is still right:
 ///
-/// WHY, and this comes from the rule rather than from tuning. `queue_buildup` computes:
+///   * DEAD: the `queue_buildup` baseline. `thresholds.json` `referenceBaselines` states
+///     `Cloud API`.`queued = 0`, and `rules/index.ts` resolves the baseline through
+///     `effectiveBaseline()`, which returns the stated reference *instead of* the rolling mean. So
+///     the reference wins from poll 1 and there is no `minBaselineSamples` gate on this path at all.
+///     Whatever the rolling window learns during warm-up is not what the rule divides by. A queue
+///     forming during warm-up can no longer spoil the finding, which is exactly what the two
+///     measurements below were about.
+///
+///   * ALIVE, for a different module: Early Warning's fit. `earlywarning-api.md` §1.1 needs
+///     `minFitSamples` (12) samples before it will project, at the 5s engine poll — 60s on a stack
+///     that has just come up. Below that the endpoint returns `insufficient_samples` and the strip
+///     says "not enough samples yet" over a visibly climbing queue, which is the blank the whole of
+///     #237 was about closing. So 75s is still the right number, with margin, and shortening it
+///     below ~60s reintroduces a defect in a module that did not exist when this wait was written.
+///
+/// Both halves are worth keeping visible: the first because a reader who trusts it will "fix" the
+/// wrong thing, the second because the wait looks like dead weight once you know the first is dead.
+///
+/// THE ORIGINAL ARGUMENT, kept because it is why `referenceBaselines` exists. `queue_buildup`
+/// computes:
 ///
 ///     ratio = baseline > 0 ? depth / baseline : POSITIVE_INFINITY
 ///
@@ -337,13 +356,14 @@ ClassMethod SystemAlert(pHost As %String = {..#OPERATION}) As %Status
 /// passes 50.
 ///
 /// Cloud API idles at queued=0, so an empty warm-up is the natural state rather than something to
-/// engineer. 75s covers minBaselineSamples (12) x the 5s engine poll with margin.
+/// engineer.
 ///
 /// This is the same mechanism that makes ErrorRate() work where a plain disable does not (#43),
 /// stated as a requirement instead of relied on as luck.
 ///
-/// HONEST STATUS: THE MECHANICS ALL WORK, THE FINDING IS NOT YET RELIABLE. Measured on the
-/// containerised stack, each independently:
+/// STATUS, AS OF MVP 2 SHIPPING: THE FINDING IS RELIABLE. The block below recorded the opposite and
+/// is kept as the measurement record, not as current advice — read the correction after it before
+/// acting on any of it. Measured on the containerised stack, each independently:
 ///
 ///   the dispatcher throttle        avgProcessingTime 0.01s -> 1.01s
 ///   the inflow rate override       archive rate 0.53/sec -> 4.13/sec
@@ -361,11 +381,22 @@ ClassMethod SystemAlert(pHost As %String = {..#OPERATION}) As %Status
 /// gate (#43). Getting the baseline to zero requires the queue to be *empty* for the whole warm-up,
 /// and with the HL7 generator running it intermittently is not.
 ///
-/// So do not build the demo script on `queue_buildup` alone yet. `throughput_drop` fires reliably
-/// on this scenario and is a true statement about it. The remaining work is either a warm-up that
-/// guarantees an empty queue (pause the generator during it) or accepting that #25's threshold
-/// rework is the real fix -- and #25 is open precisely because these floors are tuned to LABDEMO's
-/// scale. Recorded here rather than left as a surprise for whoever writes the demo script.
+/// THE CORRECTION: BUILD THE DEMO SCRIPT ON `queue_buildup`. This paragraph said "do not build the
+/// demo script on `queue_buildup` alone yet" and named two candidate fixes. The first of the two
+/// shipped, in a form neither had guessed: not a warm-up that guarantees an empty queue, but a
+/// **stated** baseline that does not have to be learned. `referenceBaselines` removed the dependency
+/// on "what the instance was doing beforehand" entirely — that was the whole diagnosis above, and a
+/// stated normal is immune to it. MVP 2 shipped on 2026-08-20 with `queue_buildup` as the finding the
+/// agent explains and Smart Resolve clears, verified from an empty volume in one `compose up`, and it
+/// is the standing pre-demo check (#108).
+///
+/// `throughput_drop` is no longer the safe alternative it is called above, and in fact went the other
+/// way: it was measured firing on all three hosts at idle with nothing armed, because a post-reset
+/// backlog flush put ~134/sec into a mean baseline. That is why its baseline is a median now
+/// (`ROBUST_METRICS`). Do not fall back to it on the strength of this comment.
+///
+/// #25 remains open, and the second candidate above is still a fair description of it: these floors
+/// are tuned to LABDEMO's scale. It is no longer blocking anything here.
 ///
 /// EXPECT: queue_buildup within ~2 min of the rate rising. dead_host does NOT fire -- the host is
 /// healthy, just outnumbered, which is the point: this is the scenario where the finding needs an
@@ -425,12 +456,14 @@ ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Doubl
         set ^ProductionGuardian.Trigger("PoolWas") = ..GetPoolSize(..#OPERATION)
     }
 
-    // WARM AT ZERO, with nothing armed. Applying the throttle before this wait was the defect:
-    // a queue forms during warm-up, the baseline learns a nonzero value, and the ratio can then
-    // never reach 5x (see the class comment). Both halves go on together AFTER the wait.
+    // SETTLE WITH NOTHING ARMED, so Early Warning has a fit window before the queue moves. The
+    // original reason -- keeping the rolling baseline at zero so `queue_buildup`'s ratio could clear
+    // 5x -- no longer applies: `referenceBaselines` states that baseline now. The surviving reason is
+    // `minFitSamples` (12) x the 5s poll = 60s before the endpoint will project at all. Full argument
+    // in the method comment. Both halves go on together AFTER the wait.
     if pWarmSeconds > 0 {
-        write "  warming the baseline for ", pWarmSeconds, "s with NOTHING armed", !
-        write "    (queue must read 0 so the baseline is 0 -- otherwise the ratio caps near 2x)", !
+        write "  settling for ", pWarmSeconds, "s with NOTHING armed", !
+        write "    (Early Warning needs ~60s of samples before it will project a crossing)", !
         hang pWarmSeconds
     }
     set ^ProductionGuardian.Trigger("DispatcherMs") = pDispatcherMs

@@ -43,7 +43,7 @@ export interface TriggerStatus {
   /**
    * Per-scenario **accepted but not yet in effect** state.
    *
-   * A THIRD STATE, not a flag on the second. `pool_bottleneck` warms a baseline at zero for 75s
+   * A THIRD STATE, not a flag on the second. `pool_bottleneck` settles for 75s with nothing armed
    * before it arms anything and runs as a background job, so the arm POST returns in ~0.26s and the
    * scenario is in neither of the other two states for over a minute. Carried through this service
    * rather than re-derived in the dashboard: IRIS owns the witnesses, and a browser inferring
@@ -195,7 +195,7 @@ function parseResult(raw: unknown, scenario: string | null): TriggerResult {
 /**
  * Live trigger caller, over HTTP to the dispatcher in IRIS.
  *
- * ARM'S TIMEOUT IS LARGE ON PURPOSE. `PoolBottleneck()` warms a baseline at zero for 75 seconds
+ * ARM'S TIMEOUT IS LARGE ON PURPOSE. `PoolBottleneck()` settles for 75 seconds with nothing armed
  * before it returns, so a conventional 30s timeout would abort a call that was working and leave
  * the production half-armed with nothing reporting why. Measured: the trigger blocks for ~80s.
  *

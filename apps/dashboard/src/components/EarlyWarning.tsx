@@ -6,14 +6,21 @@
  * §1.4 makes it a boundary condition: a forecast presented as a reading is the same defect class as
  * the coerced `lastActivity` in #58, and it is worse here because the number is about the future.
  *
- * WHAT IT RENDERS, AND THE ONE CASE THAT CHANGED. Measured on the live stack: a projection exists
- * for roughly 100 seconds of a queue_buildup run — from the queue starting to rise until it crosses
- * the threshold. Before that the slope is too flat to fit; after it, `already_crossed`.
+ * WHAT IT RENDERS, AND THE ONE CASE THAT CHANGED. A projection exists from the first rising poll
+ * until the queue crosses the threshold, then `already_crossed`. Measured on the captured
+ * `pool_bottleneck` series (floor 50, crossed 50s after the ramp starts), replayed through the
+ * engine — these are the numbers the strip shows since #237 moved the fit to the 45s tail:
  *
- *     q=9    (not_rising)
- *     q=19   slope=1.5/min  eta=1240s     <- strip appears
- *     q=49   slope=8.6/min  eta=7s
- *     q=58   (already_crossed)            <- strip used to vanish here
+ *     q=0    (not_rising)
+ *     q=4    slope=0.2/min  eta=1062s     <- strip appears, on the FIRST rising poll
+ *     q=17   slope=21.5/min eta=92s
+ *     q=34   slope=48.0/min eta=20s       <- exact: the true crossing is 20s out
+ *     q=47   slope=48.0/min eta=4s
+ *     q=54   (already_crossed)            <- strip used to vanish here
+ *
+ * The eta was ~20x too long and the first four polls declined `beyond_horizon` until #237. Both were
+ * the same divisor: a 300s window fit is ~85% flat-at-zero prefix on a 50s ramp, so least squares
+ * averaged two regimes. Neither the horizon nor this component was wrong.
  *
  * The first version hid `already_crossed` entirely, reasoning that the state is covered by a
  * FINDING and repeating it would be noise. That reasoning is sound and the consequence was not:
@@ -43,6 +50,13 @@
  * shown and then after a while it shows warning/rising. why is there a time that nothing is
  * displayed?" (@Ari-Glikman). The blank is 20s against a forecast that lasts 25s, so the module is
  * absent for nearly half the window it exists for.
+ *
+ * #237 then removed the *cause* — those four polls now carry a projection — but the sentence stays,
+ * and the ordering is the point: this fix was right on its own terms and would still be right if the
+ * engine change were reverted. A reason with no sentence is a blank row whenever it is returned, and
+ * `beyond_horizon` is still returned by a genuinely slow rise. Fixing the display of a state is not
+ * the same as making the state rarer, and a fix that only holds because a state stopped occurring is
+ * not a fix.
  *
  * The reason it was missed three times is that the map was a `Record<string, string>`, which accepts
  * any subset of the reasons in silence. It is now `Record<ProjectionDeclineReason, string | null>`, so
@@ -115,10 +129,13 @@ const REASON_SENTENCES: Record<ProjectionDeclineReason, string | null> = {
   already_crossed: 'Threshold reached — see the finding below',
   /*
    * Rising, but the crossing is further out than the engine's horizon (30 min on the shipped
-   * config), so it declines to name a time. That is a real, transient state in the middle of a ramp
-   * — it is what the first four polls of a queue build look like — and it is exactly when an
-   * operator is watching the card. The rate is not available to say (§1.4, see the header), so this
-   * says the direction and the reason there is no ETA, and nothing it cannot support.
+   * config), so it declines to name a time. The rate is not available to say (§1.4, see the header),
+   * so this says the direction and the reason there is no ETA, and nothing it cannot support.
+   *
+   * NO LONGER THE FIRST FOUR POLLS OF A QUEUE BUILD, which is what this comment said until #237.
+   * That reading was an artefact of the 300s window fit understating a 50s ramp by ~20x; the tail fit
+   * projects from the first rising poll. What reaches here now is a rise that really is slower than
+   * 30 minutes to threshold — a real state, no longer a transient one on the demo path.
    */
   beyond_horizon: 'Rising — a crossing is beyond the projection horizon',
   /*
@@ -154,9 +171,21 @@ const QUIET_REASONS = new Set(['not_rising']);
 /**
  * Seconds to a human span, rounded coarsely on purpose.
  *
- * A least-squares fit over a five-minute window does not support "crosses in 7 minutes 12 seconds",
- * and printing that precision would imply a confidence the arithmetic does not have. Minutes below
- * an hour, hours above it.
+ * A least-squares fit over a 45-second tail (§1.1, as amended by #237) does not support "crosses in
+ * 7 minutes 12 seconds", and printing that precision would imply a confidence the arithmetic does not
+ * have. Minutes below an hour, hours above it.
+ *
+ * The span in that first sentence read "five-minute window" until #237, and the shorter span makes the
+ * argument stronger rather than weaker: a ~9-sample fit is jumpier than a 60-sample one, which is the
+ * cost #237 accepted in exchange for the eta being right. So the coarse rounding is now doing more
+ * work, not less — it absorbs the jitter that would otherwise show as an eta flicking between
+ * neighbouring seconds every poll.
+ *
+ * ONE CONSEQUENCE WORTH KNOWING BEFORE MAKING THIS FINER. Everything under 90s reads "under a minute",
+ * and on the shipped `pool_bottleneck` ramp the last ~30s of the build sits in that bucket, so the
+ * strip stops visibly tightening near the end. That is deliberate: the tightening is carried by the
+ * RATE and by the queue depth beside it, both of which are measurements, and buying a countdown here
+ * would mean printing seconds off a nine-sample fit.
  */
 function horizon(seconds: number): string {
   if (seconds < 90) return 'under a minute';
