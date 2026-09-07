@@ -297,8 +297,9 @@ docker compose exec iris iris session IRIS -U LABDEMO
 ```
 
 ```objectscript
-// Arm: throttles the downstream to ~1s/message and raises inflow, after a 75s settle with nothing
-// armed so Early Warning can project. Takes about 2 minutes to produce a confirmed finding.
+// Arm: throttles the downstream to ~1s/message and raises inflow, after a 30s settle with nothing
+// armed so the room sees a healthy production first. Measured over two runs: armed at +30s, the queue
+// crosses the threshold at +86-91s, confirmed `queue_buildup` finding at +91-96s.
 do ##class(ProductionGuardian.LabDemo.Triggers).PoolBottleneck()
 do ##class(ProductionGuardian.LabDemo.Triggers).Status()   // what is armed, and the queue cap
 do ##class(ProductionGuardian.LabDemo.Triggers).Reset()    // undo, including the pool size

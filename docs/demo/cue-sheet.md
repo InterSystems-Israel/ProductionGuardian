@@ -135,11 +135,18 @@ people ask for afterwards.
 | **2** | *Does it understand and fix it?* | WHY → FIX | ~6 min |
 | **3** | *What if there is no button to press?* | the honest answer | ~2 min |
 
-Total ≈ 10 minutes of demo. Budget 15 with questions.
+Total ≈ 9–10 minutes of demo. Budget 15 with questions.
 
 Act 2 was ~4 min until 2026-08-27, on the assumption that the drain beat ended when the queue hit
 zero. Re-measured, the last finding takes ~200s rather than ~103s to age out — see §2.3. The number
 here is the one that matters for a slot, so it follows the measurement rather than the intent.
+
+**Act 1 got ~47s shorter on 2026-09-07** (the `pool_bottleneck` settle went 77s → 30s, §1.2) and Act 1
+is the only act that moved. **That is not enough for a 5-minute slot and this sheet does not claim to
+be one.** The unavoidable floor is Act 2.3: the drain is a real production catching up, measured at
+~90s to an empty queue and ~200s to a clean board, and it is the beat the whole demo exists for. A
+5-minute cut is a different script — most plausibly Acts 1+2 only, with 2.3 called at an empty queue
+rather than a clean board — and it needs writing and measuring, not trimming on stage.
 
 ---
 
@@ -158,7 +165,7 @@ now is that it is quiet."*
 > **Why that matters:** a monitoring tool that is silent when nothing is wrong is the whole point.
 > False positives are the top risk this product was designed against, so a quiet list is a feature.
 
-### 1.2 Break something real (45s)
+### 1.2 Break something real (30s)
 
 Click **Pool bottleneck** in the rail under *Demo triggers*.
 
@@ -168,54 +175,69 @@ the most common real-world failure and the hardest to see, because every individ
 
 | t | What happens |
 |---|---|
-| 0s | Button returns immediately; shows *activating* |
-| **~77s** | Takes effect — measured 77s. It settles with nothing armed first |
-| ~85s | Queue starts climbing, ~1/sec net — **and Early Warning starts projecting** (§1.2b) |
-| ~2min | First findings confirmed |
+| 0s | Button returns immediately (0.03s); shows *activating* |
+| **~30s** | Takes effect — measured 30s. It settles with nothing armed first |
+| ~35s | Queue starts climbing, ~1/sec net — **and Early Warning starts projecting** (§1.2b) |
+| ~90s | First finding confirmed |
 
-> **Do not skip the 77 seconds and do not fill it with silence.** The wait exists for a real reason and
-> it is worth saying out loud: *"it is establishing what normal looks like before I break anything —
-> a baseline learned during a fault is worthless."* That line lands well with a technical audience.
+**Measured on the containerised stack, 2026-09-07, two consecutive arms from a warm engine.** Armed
+at +30s both times; the queue crossed the floor of 50 at +86s and +91s; `queue_buildup` confirmed at
++91s and +96s.
+
+> **THE SETTLE WAS 77s UNTIL 2026-09-07 AND IS NOW 30s.** If you are presenting from an older build
+> the button will sit on *activating* for over a minute; that is the old default, not a hang.
 >
-> It is also worth knowing which reason is the live one, because someone will ask. The wait was
-> originally there to hold `queue_buildup`'s rolling baseline at zero; a **stated** baseline
-> (`referenceBaselines`) replaced that need. What it buys now is Early Warning's minimum fit window —
-> twelve samples at the 5s engine poll, i.e. 60s — which is why the projection in §1.2b is available
-> from the very first poll on which the queue moves. The number did not change; the reason did.
+> **Do not fill the 30 seconds with silence**, and do not repeat the old line about it. The wait used
+> to be defended as *"it is establishing what normal looks like before I break anything"*, which was a
+> good line and is now false: **the wait gates nothing.** `queue_buildup`'s baseline is a *stated* one
+> (`referenceBaselines`), and Early Warning's twelve-sample fit is counted from **engine uptime**, not
+> from this trigger — measured at 49 samples already banked at the moment the button was pressed. What
+> the 30s buys is a beat: the room sees a healthy production immediately before the fault, and you get
+> to set up what is about to happen. Say that instead — it is true, and it is a better line anyway.
+>
+> **The one precondition that IS real: the engine must have been up ~60s.** That is where the twelve
+> samples come from. It is covered by the pre-flight above; if you arm within a minute of
+> `compose up`, §1.2b's projection will read *"not enough samples yet"* for the first few polls.
 
-### 1.2b Early Warning projects the crossing before it happens (30s)
+### 1.2b Early Warning projects the crossing before it happens (45s)
 
 **This is the beat that was missing, and it is the one that distinguishes the product from a
-dashboard.** Between the queue starting to move and the first finding there are ~40 seconds in which
+dashboard.** Between the queue starting to move and the first finding there are ~45 seconds in which
 Guardian is saying something no threshold alert can say: *not yet, but shortly, and here is how fast.*
 
-**Measured live on the containerised stack, 2026-09-02, one arm from a cold engine.** `t` is seconds
-from arming; the queue crossed the floor of 50 at t≈128s:
+**Measured live on the containerised stack, 2026-09-07, at the 30s settle from a warm engine.** `t` is
+seconds from the button press, so the +30s row is the moment the scenario arms; the queue crossed the
+floor of 50 at t=86s:
 
 | t | queue | Early Warning shows |
 |---|---|---|
-| 80s | 0 | *"Watching — not trending toward a threshold"* |
-| **85s** | 4 | `queued rising ~3.2/min · projected to cross 50 in ~14 min` |
-| 95s | 14 | `rising ~16.2/min · in ~2 min` |
-| 105s | 24 | `rising ~34.2/min · in under a minute` |
-| 120s | 46 | `rising ~60.4/min · in under a minute` |
-| 130s | 56 | *"Threshold reached — see the finding below"* |
+| 30s | 0 | *"Watching — not trending toward a threshold"* |
+| **40s** | 4 | `Queue depth 4 rising ~3.8/min; at this rate it crosses 50 in ~12 min.` |
+| 50s | 14 | `rising ~19.6/min; … in ~2 min.` |
+| 61s | 24 | `rising ~39.4/min; … in ~40 s.` |
+| 71s | 34 | `rising ~55.2/min; … in ~18 s.` |
+| 81s | 45 | `rising ~61.4/min; … in ~5 s.` |
+| 86s | 52 | *"Threshold reached — see the finding below"* |
 
 **Say:** *"Look at the rate, not the countdown: 60 messages a minute — one a second — arriving at a
 host that can clear one a second at best. Guardian worked that out from the trend, and it told me
 before the queue was deep enough for any threshold to have fired. That is the difference between a
 monitor and a warning."*
 
-> **Point at the RATE.** `~60.4/min` is a measurement and it converges on exactly the net inflow the
-> scenario creates. The countdown is the softer of the two claims — it is a projection, prefixed `~`
-> on purpose — and everything under 90 seconds is rendered *"under a minute"* rather than as a
-> ticking number, because a nine-sample fit does not support seconds.
+> **Point at the RATE.** `~61.4/min` is a measurement and it converges on exactly the net inflow the
+> scenario creates — one message a second, which is the whole point, and it was equally true at the
+> 75s settle: the shorter settle changed *when* the table above starts, not what it says. The
+> countdown is the softer of the two claims — it is a projection, prefixed `~`
+> on purpose — and it **does tick down in seconds** once the crossing is under 90 seconds away
+> (`~40 s`, `~18 s`, `~5 s`). An earlier version of this sheet said the sub-90s case rendered as
+> *"under a minute"*; the shipped `humanDuration` rounds to whole seconds below 90 and to minutes
+> above, and the table above is what it actually printed.
 >
-> **The first projection is a large overestimate and say so if asked.** At t=85s it reads ~14 minutes
-> for a crossing that is ~43 seconds away, because at the first rising poll the fit still contains
-> mostly flat-at-zero history. It corrects within two polls. Claiming otherwise is a worse answer
-> than the honest one, and the honest one is the product's own point: the estimate improves as
-> evidence accumulates.
+> **The first projection is a large overestimate and say so if asked.** At t=40s it reads ~12 minutes
+> for a crossing that is ~46 seconds away, because at the first rising poll the fit still contains
+> mostly flat-at-zero history. It corrects within two polls — ~3 min by t=45s, ~2 min by t=50s.
+> Claiming otherwise is a worse answer than the honest one, and the honest one is the product's own
+> point: the estimate improves as evidence accumulates.
 >
 > **This used to be broken and it is worth knowing what it looked like**, in case you are presenting
 > from an older build. Until #237 the eta was fitted over a 300-second window rather than the recent

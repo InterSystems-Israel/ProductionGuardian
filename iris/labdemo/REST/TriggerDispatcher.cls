@@ -52,9 +52,15 @@ Parameter FLAGVAR = "PG_DEMO_TRIGGERS";
 /// Scenarios that take longer to arm than the web server will wait, so they run as a background job.
 ///
 /// A LIST RATHER THAN A DURATION THRESHOLD, because the cost is not measurable before the call: the
-/// only way to know a scenario is slow is to know what it does. `pool_bottleneck` warms a baseline
-/// for 75s; the other two return in under a second. Adding a scenario means deciding which side of
+/// only way to know a scenario is slow is to know what it does. `pool_bottleneck` settles for 30s;
+/// the other two return in under a second. Adding a scenario means deciding which side of
 /// this it falls on, which is the decision that should be explicit.
+///
+/// 30s IS STILL THE SLOW SIDE, and the settle shortening from 75s to 30s (2026-09-07) does not move
+/// it: IRIS's embedded Apache answers 504 after exactly 60s, measured directly with no proxy in
+/// front, so the threshold this list stands in for is 60s and not "about a minute". A future settle
+/// under that would be a genuine decision to make, not an automatic promotion — the job also keeps
+/// the arm POST at ~0.02s, which is what makes the `activating` state observable at all.
 Parameter SLOWSCENARIOS = {$listbuild("pool_bottleneck")};
 
 XData UrlMap [ XMLNamespace = "http://www.intersystems.com/urlmap" ]
@@ -80,7 +86,7 @@ ClassMethod Enabled() As %Boolean [ Private ]
 ///
 /// PUBLISHES TWO MAPS, `armed` AND `activating`, because there are THREE states and only two of
 /// them were previously observable. See `Scenarios()` for how the pair is derived; the short version
-/// is that "the request was accepted" and "the scenario is in effect" are up to 75 seconds apart for
+/// is that "the request was accepted" and "the scenario is in effect" are ~30 seconds apart for
 /// `pool_bottleneck`, and a presenter watching a button needs to tell those apart from each other
 /// and from nothing having happened.
 ///
@@ -139,14 +145,22 @@ ClassMethod Status() As %Status
 ///   activating      the request landed; the scenario is not in effect yet
 ///   activated       the scenario is in effect
 ///
-/// The middle state is real and observable, not a UI nicety. `PoolBottleneck()` settles for 75
-/// seconds with nothing armed BEFORE arming anything -- that wait is load-bearing (see that method
-/// for why, and note the reason has changed once: it was #43's zero baseline, which
-/// `referenceBaselines` made unnecessary, and it is now Early Warning's minimum fit window. The 75s
-/// did not move) -- and it runs as a background job, so the HTTP call returns in ~0.26s. For 75 seconds the
-/// operator has a scenario that was accepted and is doing nothing yet. Reporting that as "not
-/// activated" invites a second click; reporting it as "activated" is a claim the presenter notices
-/// is false when no queue appears.
+/// The middle state is real and observable, not a UI nicety. `PoolBottleneck()` settles for 30
+/// seconds with nothing armed BEFORE arming anything -- and it runs as a background job, so the HTTP
+/// call returns in ~0.02s. For those 30 seconds the operator has a scenario that was accepted and is
+/// doing nothing yet. Reporting that as "not activated" invites a second click; reporting it as
+/// "activated" is a claim the presenter notices is false when no queue appears.
+///
+/// THE WAIT IS NO LONGER LOAD-BEARING, and this comment claimed twice that it was. It gave #43's
+/// zero baseline, then Early Warning's minimum fit window, and noted approvingly that "the 75s did
+/// not move" -- which was the tell. Both reasons are dead and `Triggers.PoolBottleneck()` has the
+/// autopsy; the wait is now a presentational beat, cut to 30s on 2026-09-07 for a 5-minute slot.
+///
+/// NONE OF THAT WEAKENS THIS THREE-STATE MODEL, which is the point worth keeping. The states are
+/// keyed on witnesses the scenario sets, not on a duration, so they were never reading the 75 in the
+/// first place -- shortening the settle to 30 needed no change here beyond this prose. A model built
+/// on "assume it is arming for ~75s" would have needed one, and would have been silently wrong for a
+/// day. Any future change to the settle is likewise free.
 ///
 /// `effectWitness` IS THE ONE THAT MEANS "IN EFFECT", and for `pool_bottleneck` it is deliberately
 /// NOT the stash. `DispatcherMs` is set unconditionally, only by this scenario, and only AFTER the
@@ -221,9 +235,9 @@ ClassMethod Arm() As %Status
         // A FIXED $case, not $classmethod. See the class comment: dynamic dispatch on a wire value
         // is arbitrary code execution wearing a scenario name.
         //
-        // PoolBottleneck's defaults are used unchanged, which includes a 75-second baseline warm-up
-        // -- so this call BLOCKS for over a minute. That is why the UI shows a pending state rather
-        // than assuming a quick reply, and why the engine's timeout for this route is generous.
+        // PoolBottleneck's defaults are used unchanged, which includes a 30-second settle -- so this
+        // call BLOCKS for half a minute. That is why the UI shows a pending state rather than
+        // assuming a quick reply, and why the engine's timeout for this route is generous.
         //
         // The unknown-scenario branch is evaluated BEFORE the redirect opens, so a bad name never
         // creates a temp file. Checked separately for that reason rather than folded into the $case.
@@ -240,13 +254,22 @@ ClassMethod Arm() As %Status
         //
         //     POST /labdemo/trigger/arm {"scenario":"pool_bottleneck"}  ->  HTTP 504 in 60.2s
         //
-        // `PoolBottleneck()` waits 75s BEFORE arming anything. The reason has changed and the wait has
-        // not: it was "the baseline has to warm at exactly zero or `queue_buildup` can never fire"
-        // (#43), which `referenceBaselines` made untrue, and it is now Early Warning's `minFitSamples`
-        // (12) x the 5s engine poll -- see `PoolBottleneck()`'s comment for both halves. Either way the
-        // wait is load-bearing and cannot be shortened, which means the REQUEST has to stop being long.
-        // Worth noting the 504 does not care WHY the wait exists, so this block would have been needed
-        // regardless.
+        // `PoolBottleneck()` settled for 75s when this block was written, so the 504 was certain.
+        // SINCE 2026-09-07 IT SETTLES FOR 30s AND THE 504 IS NO LONGER CERTAIN -- 30 is under 60, so a
+        // synchronous request would now, on today's numbers, come back. `pool_bottleneck` STAYS on
+        // `SLOWSCENARIOS` anyway, deliberately, for three reasons that do not depend on the settle:
+        //
+        //   1. The `activating` state exists because this POST returns immediately. Un-jobbing the
+        //      scenario would collapse the three states in `Scenarios()` back to two and put a
+        //      half-minute spinner where a presenter currently gets "trigger accepted".
+        //   2. 30s against a 60s limit is a 2x margin on a `hang`, and the settle is a presentational
+        //      number now -- exactly the kind that gets nudged for a room. The demo breaks at 60.
+        //   3. `pRateSecs` and `pWarmSeconds` are the method's defaults, not the wire's, so a terminal
+        //      caller can pass a longer warm through a path this route cannot see.
+        //
+        // Worth noting the 504 does not care WHY the wait exists, so this block was needed regardless
+        // of which justification for the settle was current -- and it is needed now that the settle has
+        // no justification beyond pacing.
         //
         // Raising timeouts was the wrong fix and I tried it first: nginx 35s -> 180s and the engine
         // at 150s both sat outside a limit neither of them owned, and the symptom was unchanged.
@@ -271,7 +294,7 @@ ClassMethod Arm() As %Status
                 return $$$OK
             }
             write { "armed": (scenario), "ok": true, "pending": true, "log": "",
-                "note": "Settling for ~75s with nothing armed, so Early Warning has enough samples to project the crossing. The throttle and the inflow then go on together and the armed indicator appears." }.%ToJSON()
+                "note": "Settling for ~30s with nothing armed, so the room sees a healthy production before the fault. The throttle and the inflow then go on together and the armed indicator appears." }.%ToJSON()
             return $$$OK
         }
 
