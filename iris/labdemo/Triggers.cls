@@ -312,9 +312,44 @@ ClassMethod SystemAlert(pHost As %String = {..#OPERATION}) As %Status
 /// this value, and #66 established that restoring to a hardcoded number destroys a deployment that
 /// legitimately differs.
 ///
-/// `pWarmSeconds` (default 75) WAITS WITH BOTH HALVES OFF BEFORE ARMING, AND THE REASON IS NO LONGER
-/// THE ONE THIS COMMENT GAVE. It used to read "THE BASELINE MUST WARM AT ZERO, WITH NO QUEUE" and the
-/// argument below was the justification. That argument is now dead, and the wait is still right:
+/// `pWarmSeconds` (default 30) WAITS WITH BOTH HALVES OFF BEFORE ARMING. THE DEFAULT WAS 75 UNTIL
+/// 2026-09-07 AND THE REASON FOR 75 HAD ALREADY EXPIRED TWICE OVER. It first read "THE BASELINE MUST
+/// WARM AT ZERO, WITH NO QUEUE"; `referenceBaselines` killed that. It was then re-argued as Early
+/// Warning's minimum fit window, which is the block below -- and that argument, checked properly
+/// against the engine rather than against its own comment, does not need the wait either:
+///
+///   * `minFitSamples` (12) is counted by `BaselineStore.recent()`, which filters ONLY on
+///     `fitWindowSeconds` and DELIBERATELY IGNORES the regime boundary (`window.ts` -- "Raw sample
+///     count ... deliberately ignoring `#regimeStart`"). So the fit is satisfied by ENGINE UPTIME,
+///     not by anything this method does, and it survives a `Reset all` intact. That was the case the
+///     75s was really protecting against, and it was never protecting it: the samples were always
+///     there.
+///
+///   * The one case where the fit genuinely is cold is a COLD ENGINE -- the first ~60s after
+///     `compose up` or an engine restart. 30s of settling does not cover that and is not meant to.
+///     It is a precondition on the stack, not on this method: bring the stack up before you demo,
+///     which #108's pre-demo check already requires for four other reasons.
+///
+/// SO WHAT DOES THE 30s BUY, given both original reasons are gone? Two things, both about the room
+/// rather than the engine, which is why it is not zero: the audience sees a healthy production for a
+/// beat before the fault, and the presenter gets to say what is happening while nothing is happening.
+/// Requested at 30s for a 5-minute slot (@Ari-Glikman, 2026-09-07). It measured 77s wall-clock at 75.
+///
+/// MEASURED AT 30, twice, against the containerised stack from a warm engine (2026-09-07). `t` is
+/// seconds from the arm POST, which itself returns in 0.02s because the dispatcher jobs this scenario:
+///
+///     armed (DispatcherMs set)   +30s   +30s
+///     first Early Warning fit    +40s   +40s
+///     queue crosses the floor    +91s   +86s
+///     confirmed queue_buildup    +96s   +91s
+///
+/// The fit was already at 20 and 49 samples respectively when the button was pressed, which is the
+/// evidence for the paragraph above: nothing about the wait produced those samples.
+///
+/// A NUMBER TO PUT BACK IF THE FIT IS EVER COLD ON PURPOSE: 60s, not 75. The 75 was 60 plus margin
+/// for a reason that no longer holds, and nothing measured ever needed the extra 15.
+///
+/// The dead argument is kept below because a reader who trusts it will "fix" the wrong thing:
 ///
 ///   * DEAD: the `queue_buildup` baseline. `thresholds.json` `referenceBaselines` states
 ///     `Cloud API`.`queued = 0`, and `rules/index.ts` resolves the baseline through
@@ -328,11 +363,13 @@ ClassMethod SystemAlert(pHost As %String = {..#OPERATION}) As %Status
 ///     `minFitSamples` (12) samples before it will project, at the 5s engine poll — 60s on a stack
 ///     that has just come up. Below that the endpoint returns `insufficient_samples` and the strip
 ///     says "not enough samples yet" over a visibly climbing queue, which is the blank the whole of
-///     #237 was about closing. So 75s is still the right number, with margin, and shortening it
-///     below ~60s reintroduces a defect in a module that did not exist when this wait was written.
+///     #237 was about closing.
 ///
-/// Both halves are worth keeping visible: the first because a reader who trusts it will "fix" the
-/// wrong thing, the second because the wait looks like dead weight once you know the first is dead.
+///     WHY THIS TOO IS NOW DEAD, and it is the sharper lesson of the two: the wait was justified by
+///     what `minFitSamples` needs WITHOUT checking where the samples come from. They come from
+///     engine uptime and no arming sequence can affect them. The comment reasoned from a threshold
+///     name to a delay, and both times the delay outlived the reason by weeks because the reason was
+///     written down and the check was not.
 ///
 /// THE ORIGINAL ARGUMENT, kept because it is why `referenceBaselines` exists. `queue_buildup`
 /// computes:
@@ -423,7 +460,7 @@ ClassMethod SystemAlert(pHost As %String = {..#OPERATION}) As %Status
 /// So the default leaves headroom: 2/sec in against 4/sec out drains ~2/sec, and the backlog the
 /// demo built visibly disappears. Raise pRateSecs to make the drain faster and more dramatic;
 /// lower it toward 0.25 only if you want to demonstrate that a pool of 4 is NOT enough.
-ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Double = 0.5, pWarmSeconds As %Integer = 75, pMaxQueued As %Integer = 400) As %Status
+ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Double = 0.5, pWarmSeconds As %Integer = 30, pMaxQueued As %Integer = 400) As %Status
 {
     set sc = ..CheckProduction()
     if $$$ISERR(sc) {
@@ -456,14 +493,14 @@ ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Doubl
         set ^ProductionGuardian.Trigger("PoolWas") = ..GetPoolSize(..#OPERATION)
     }
 
-    // SETTLE WITH NOTHING ARMED, so Early Warning has a fit window before the queue moves. The
-    // original reason -- keeping the rolling baseline at zero so `queue_buildup`'s ratio could clear
-    // 5x -- no longer applies: `referenceBaselines` states that baseline now. The surviving reason is
-    // `minFitSamples` (12) x the 5s poll = 60s before the endpoint will project at all. Full argument
-    // in the method comment. Both halves go on together AFTER the wait.
+    // SETTLE WITH NOTHING ARMED. This is a beat for the room, not a gate for the engine -- both
+    // reasons it used to be a gate are dead, and the method comment has the autopsy. Early Warning's
+    // fit comes from engine uptime, which no wait here can change; `queue_buildup`'s baseline is
+    // stated in `referenceBaselines`. Both halves still go on together AFTER the wait, because
+    // arming the throttle before the inflow would let a queue form against a half-armed scenario.
     if pWarmSeconds > 0 {
         write "  settling for ", pWarmSeconds, "s with NOTHING armed", !
-        write "    (Early Warning needs ~60s of samples before it will project a crossing)", !
+        write "    (a beat on the healthy state; the engine needs no warm-up if it has been up ~60s)", !
         hang pWarmSeconds
     }
     set ^ProductionGuardian.Trigger("DispatcherMs") = pDispatcherMs

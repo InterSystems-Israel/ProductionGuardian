@@ -37,15 +37,15 @@ export interface TriggerStatus {
    * Per-scenario **in effect** state, read from the trigger globals in IRIS.
    *
    * Means "the scenario is live", not "a request was accepted" — the dispatcher keys it on a global
-   * the scenario sets when it actually takes effect. For `pool_bottleneck` those are ~75s apart.
+   * the scenario sets when it actually takes effect. For `pool_bottleneck` those are ~30s apart.
    */
   armed: Record<string, boolean>;
   /**
    * Per-scenario **accepted but not yet in effect** state.
    *
-   * A THIRD STATE, not a flag on the second. `pool_bottleneck` settles for 75s with nothing armed
-   * before it arms anything and runs as a background job, so the arm POST returns in ~0.26s and the
-   * scenario is in neither of the other two states for over a minute. Carried through this service
+   * A THIRD STATE, not a flag on the second. `pool_bottleneck` settles for 30s with nothing armed
+   * before it arms anything and runs as a background job, so the arm POST returns in ~0.02s and the
+   * scenario is in neither of the other two states for half a minute. Carried through this service
    * rather than re-derived in the dashboard: IRIS owns the witnesses, and a browser inferring
    * "probably still arming" from a timer it started would be wrong the moment someone drives the
    * terminal — the same reason `armed` is not tracked from button presses.
@@ -195,9 +195,13 @@ function parseResult(raw: unknown, scenario: string | null): TriggerResult {
 /**
  * Live trigger caller, over HTTP to the dispatcher in IRIS.
  *
- * ARM'S TIMEOUT IS LARGE ON PURPOSE. `PoolBottleneck()` settles for 75 seconds with nothing armed
- * before it returns, so a conventional 30s timeout would abort a call that was working and leave
- * the production half-armed with nothing reporting why. Measured: the trigger blocks for ~80s.
+ * ARM'S 150s IS NOW A CEILING, NOT A BUDGET, and the reason it was set is no longer the reason it is
+ * kept. It was sized for `PoolBottleneck()` blocking through its own settle; the dispatcher jobs that
+ * scenario and answers `pending`, and the settle itself went 75s -> 30s on 2026-09-07. Measured on
+ * that build: the arm POST returns in **0.02s**. Left large rather than retuned to the measurement —
+ * `pWarmSeconds` is a method default that a terminal caller can override on a path this service
+ * cannot see, and a generous ceiling on a route called once per demo costs nothing, while a tight one
+ * would abort a call that was working. Do not read 150s as a claim about how long arming takes.
  *
  * RESET'S IS LARGE FOR A DIFFERENT REASON — it is the only one whose duration depends on how long
  * the stack has been up. `Triggers.Reset()` purges the message store when an error scenario left

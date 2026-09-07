@@ -22,13 +22,12 @@
  *     activating        the request was accepted; the scenario is not in effect yet
  *     activated         the scenario is live
  *
- * `pool_bottleneck` is why. It settles for ~75 seconds with nothing armed *before* arming anything —
- * that wait is load-bearing, see `Triggers.PoolBottleneck`, which is also where to read why the
- * reason changed (it was `queue_buildup`'s baseline and #43; it is now Early Warning's fit window,
- * and the 75s is unchanged either way) — and it runs as a background
- * job, so the arm POST returns in ~0.26s. For over a minute the scenario is in neither of the other
- * two states. Collapsing that into "not activated" invites a second click; collapsing it into
- * "activated" is a claim a presenter notices is false when no queue appears. The dispatcher reports
+ * `pool_bottleneck` is why. It settles for ~30 seconds with nothing armed *before* arming anything —
+ * see `Triggers.PoolBottleneck`, which is also where to read why that wait is now a presentational
+ * beat rather than a gate on the engine, and why it went 75s → 30s on 2026-09-07 — and it runs as a
+ * background job, so the arm POST returns in ~0.02s. For half a minute the scenario is in neither of
+ * the other two states. Collapsing that into "not activated" invites a second click; collapsing it
+ * into "activated" is a claim a presenter notices is false when no queue appears. The dispatcher reports
  * both maps and this component renders three phases from them. `missing_folder` and `closed_port`
  * arm atomically and pass through the middle phase in under a second, with no branch for that case.
  *
@@ -170,7 +169,7 @@ export function TriggerRail(): JSX.Element | null {
    * beats merely lower down.
    *
    * WHAT COLLAPSING MUST NOT HIDE IS STATE, which is why the summary below exists. `pool_bottleneck`
-   * reads "trigger activating…" for about 75 seconds — the longest wait in the demo and the whole
+   * reads "trigger activating…" for about 30 seconds — the longest wait in the demo and the whole
    * reason the middle phase exists (#135) — and a collapsed rail that said nothing about it would
    * re-create, one layer up, exactly the defect the three-phase rail was built to fix.
    *
@@ -275,13 +274,13 @@ export function TriggerRail(): JSX.Element | null {
          * Both notes this system produces are ONE LINE and each answers a question the state word
          * immediately provokes, rather than restating it:
          *
-         *   pool_bottleneck   "Settling for ~75s with nothing armed, so Early Warning has enough
-         *                      samples to project the crossing..."
+         *   pool_bottleneck   "Settling for ~30s with nothing armed, so the room sees a healthy
+         *                      production before the fault..."
          *   reset             "Findings clear within ~10s. A system_alert finding persists until it
          *                      ages out of the proxy's buffer."
          *
          * The first is close to load-bearing. `pool_bottleneck` reads "trigger activating…" for
-         * about 75 seconds — the longest wait in the demo, and the whole reason the middle state
+         * about 30 seconds — the longest wait in the demo, and the whole reason the middle state
          * exists (#135) — and a word that sits unchanged that long reads as a hang to everyone
          * except the person who wrote it. The note is what makes the wait legible. Cutting it would
          * re-create the defect the three-state rail was built to fix, one layer up.
@@ -334,7 +333,7 @@ export function TriggerRail(): JSX.Element | null {
    *
    * NO REQUEST IS MADE FOR A TRIGGER THAT IS ALREADY ACTIVATED OR STILL ACTIVATING. Deliberately not
    * "POST and let IRIS refuse": arming is idempotent in the trigger class but not free — the
-   * dispatcher's `$case` runs the method again, `PoolBottleneck` re-enters its 75-second warm-up and
+   * dispatcher's `$case` runs the method again, `PoolBottleneck` re-enters its 30-second settle and
    * rewrites `RateSecs`/`MaxQueued`, and a second `Arm` on a jobbed scenario starts a second
    * background job against the same production definition. The information needed to refuse is
    * already in state this component polls, so spending a round trip to be told what it knows would
@@ -481,9 +480,9 @@ export function TriggerRail(): JSX.Element | null {
                       />
                     )}
                   </span>
-                  {/* Words, not a spinner: pool_bottleneck warms a baseline for 75 seconds and a
-                      spinner that long reads as a hang. The word the operator now sees is "activated"
-                      rather than "armed" — same state, plainer language. */}
+                  {/* Words, not a spinner: pool_bottleneck settles for 30 seconds and a spinner that
+                      long reads as a hang. The word the operator now sees is "activated" rather than
+                      "armed" — same state, plainer language. */}
                   {phase === 'activating' && (
                     <span className="pg-rail__trigger-state">trigger activating…</span>
                   )}
