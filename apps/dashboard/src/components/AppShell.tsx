@@ -81,6 +81,14 @@ export type View = 'dashboard' | 'brochure' | 'architecture';
  * The port is not read from `docker-compose.yml`'s `PG_IRIS_WEB_PORT`: the bundle is built before
  * compose runs and the browser is on the host, so the build cannot know the mapping. A wrong
  * default is visible and one variable away from fixed, which is the honest trade.
+ *
+ * THAT VARIABLE IS A BUILD INPUT, and for a while it was unreachable from the one place that most
+ * needed it. Vite freezes `import.meta.env.VITE_*` into the emitted HTML at `npm run build`, so
+ * nginx cannot substitute it at container start the way it does `HEALTHSCAN_UPSTREAM` — and until
+ * `apps/dashboard/Dockerfile` grew a matching `ARG VITE_IRIS_PORTAL_URL`, every containerised
+ * dashboard shipped the default below regardless of its environment. On the EKS deployment that
+ * meant the header link opened the *viewer's own* machine. Pass the ARG; there is nothing to set
+ * at runtime.
  */
 const DEFAULT_PORTAL_URL =
   'http://localhost:52773/ui/interop/interop-editor/index.html' +

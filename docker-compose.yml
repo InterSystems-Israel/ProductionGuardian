@@ -323,6 +323,21 @@ services:
     build:
       context: .
       dockerfile: apps/dashboard/Dockerfile
+      # A BUILD ARG, NOT AN `environment:` ENTRY, and the distinction is the whole point: Vite
+      # substitutes `import.meta.env.VITE_*` while `npm run build` runs, so this value is frozen
+      # into the served HTML. Putting it below with HEALTHSCAN_UPSTREAM would look right and do
+      # nothing.
+      #
+      # UNSET IS THE RIGHT DEFAULT HERE. Empty means the bundle keeps AppShell.tsx's
+      # `localhost:52773` default, which is exactly what this file publishes (see the iris
+      # service's port mapping), so `compose up` needs no flag. Set PG_IRIS_PORTAL_URL when IRIS
+      # is not on the machine holding the browser -- and note this comes from the REPO-ROOT `.env`
+      # that compose reads, not from `apps/dashboard/.env.local`, which only Vite sees.
+      #
+      # Changing it requires `compose build dashboard` (or `up --build`): a rebuild, not a
+      # restart, because there is nothing to re-read at start.
+      args:
+        VITE_IRIS_PORTAL_URL: ${PG_IRIS_PORTAL_URL:-}
     container_name: pg-dashboard
     ports:
       # 5173:80 -- the container listens on 80, not 8080. Keeping 5173 on the host so the
