@@ -26,6 +26,32 @@ COPY apps/dashboard/ ./
 # MVP docx files and the concept demo, none of which belong in a build layer.
 COPY docs/Brochure.png /repo/docs/Brochure.png
 
+# The header's Management Portal link, and the ONE value in this bundle that cannot be relative.
+#
+# WHY AN ARG AND NOT AN ENV ON THE SERVE STAGE. `import.meta.env.VITE_*` is substituted by Vite
+# during `npm run build`, i.e. inside this stage — it is a compile-time constant in the emitted
+# HTML, not something nginx can envsubst later like HEALTHSCAN_UPSTREAM. So a runtime environment
+# variable on the serve stage would be silently ignored, which is the trap this ARG exists to
+# close: until it was added there was NO way for a container build to override
+# AppShell.tsx's `DEFAULT_PORTAL_URL`, and every image ever built from this file pointed the
+# button at `http://localhost:52773`. Correct under `docker compose up`, which publishes 52773 on
+# the host; wrong everywhere else, and reported from the EKS deployment where the button opened
+# the viewer's own machine.
+#
+# EMPTY DEFAULT ON PURPOSE — do not put a URL here. `portalUrl()` treats unset and empty
+# identically and falls back to `DEFAULT_PORTAL_URL`, so an unpassed build keeps today's
+# compose-correct behaviour and this file stays free of any hostname (apps/dashboard/CLAUDE.md
+# §5/§9, #25). The deployment that knows its own IRIS hostname is the one that supplies it.
+#
+# CONSEQUENCE FOR TAGGING: passing this makes the image environment-specific. Two images built
+# from the same commit with different values are NOT interchangeable, so do not reuse one tag for
+# both — see the k8s deployment notes for the tagging scheme it uses.
+#
+# Declared here rather than at the top of the stage so changing the URL does not invalidate the
+# `npm ci` layer.
+ARG VITE_IRIS_PORTAL_URL=""
+ENV VITE_IRIS_PORTAL_URL=${VITE_IRIS_PORTAL_URL}
+
 # `npm run build` runs `tsc --noEmit` first, so a type error fails the image build
 # rather than producing one that serves a stale bundle.
 RUN npm run build
