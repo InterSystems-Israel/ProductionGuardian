@@ -9,7 +9,7 @@
 # and the fallback cannot drift apart.
 
 # BUILD CONTEXT IS THE REPO ROOT, not this directory — see docker-compose.yml's dashboard
-# service. `BrochureView.tsx` imports ../../../../docs/Brochure.png so the 1.7 MB asset has one
+# service. `BrochureView.tsx` imports ../../../../docs/Brochure-A3.webp so the asset has one
 # copy in git; that import cannot resolve from a context rooted here. Every COPY below is
 # therefore repo-relative, and the source tree is reproduced at the same depth so the relative
 # import resolves inside the image exactly as it does on a host.
@@ -24,7 +24,15 @@ COPY apps/dashboard/ ./
 
 # Only the one asset the bundle imports, not all of docs/ — that directory holds the deck, the
 # MVP docx files and the concept demo, none of which belong in a build layer.
-COPY docs/Brochure.png /repo/docs/Brochure.png
+#
+# THE FILENAME HERE IS LOAD-BEARING AND `tsc` CANNOT SEE IT. This line named Brochure.png until
+# the brochure became a vector master; the import moved to the WebP render of it, and a host
+# `npm run build` stayed green because a host has the whole repo on disk. Only the image build
+# fails, with `Could not resolve "../../../../docs/Brochure-A3.webp"` — the exact failure
+# CLAUDE.md §6 records from MVP 3. Change the import, change this line, in the same commit.
+# The A3 PDF master is deliberately NOT copied: nothing in the bundle imports it, and an <img>
+# could not render it if it did.
+COPY docs/Brochure-A3.webp /repo/docs/Brochure-A3.webp
 
 # The header's Management Portal link, and the ONE value in this bundle that cannot be relative.
 #

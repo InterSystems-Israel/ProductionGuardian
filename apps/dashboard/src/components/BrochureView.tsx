@@ -7,7 +7,7 @@
  * established by reading it rather than assuming:
  *
  *   - `docker-compose.yml` builds this image with `context: ./apps/dashboard`, so
- *     `docs/Brochure.png` is outside the build context and cannot be copied in.
+ *     `docs/Brochure-A3.webp` is outside the build context and cannot be copied in.
  *   - `Dockerfile`'s runtime stage copies `dist/index.html` and nothing else — by
  *     design, "the output is one HTML file plus an nginx config". A `public/` asset
  *     would be built into `dist/` and then not shipped, so the served dashboard
@@ -15,26 +15,39 @@
  *   - `vite-plugin-singlefile` exists so `dist/index.html` opens from `file://`
  *     (CLAUDE.md §6). A separate asset breaks that promise too.
  *
- * So serving it would mean committing a duplicate 1.7 MB binary AND changing the
- * Dockerfile AND weakening the single-file fallback. Importing it keeps one copy,
- * one artefact, and both delivery paths working. The cost is bundle size, measured
- * and recorded in the PR rather than guessed at.
+ * So serving it would mean committing a duplicate binary AND changing the Dockerfile
+ * AND weakening the single-file fallback. Importing it keeps one copy, one artefact,
+ * and both delivery paths working. The cost is bundle size, measured and recorded in
+ * the PR rather than guessed at.
  *
  * The asset still lives in `docs/` — read-only source material (root `CLAUDE.md`
  * §3) — and is referenced across the directory boundary rather than copied, so
  * there is no second file to go stale.
  *
- * THE CARD IS A THUMBNAIL AND THE READER IS THE DELIVERABLE. `docs/Brochure.png` is
- * 1024×1536, and this card bounds it to 68vh — about 0.44 of its own width on a
- * 1024-high laptop, which reduces the body copy to unreadable grey. So the card's
- * only real job is "here is the brochure, open it", and it says so; the reading
- * happens in `BrochureLightbox`, which owns the zoom controls and the reasoning for
- * them. Nothing about the import-not-serve decision above changes — both render the
- * same inlined bytes from one import.
+ * A DERIVED RASTER, AND THE MASTER IS A PDF. What this imports is not the brochure;
+ * `docs/Brochure-A3.pdf` is (297×420 mm, one page, embedded fonts, no images), and
+ * `tools/brochure-render.py` derives this one file from it at 200 DPI — the script
+ * carries the measurements for why 200 and why lossless WebP. It matters here for one
+ * reason: `<img>` cannot render a PDF, so the view CANNOT show the master, and the
+ * thing an audience reads on screen is a render of the thing that goes to a printer.
+ * `--check` re-renders and compares pixel-for-pixel, so the two cannot drift silently.
+ *
+ * The predecessor, `docs/Brochure.png`, is still in the repo: it is the original
+ * marketing export and the provenance `tokens.css` cites for the palette. It is not
+ * imported any more because it could not be printed — 1024×1536 with no pHYs chunk is
+ * 131 PPI on A4, and no larger copy exists anywhere in the history.
+ *
+ * THE CARD IS A THUMBNAIL AND THE READER IS THE DELIVERABLE. The asset is 2339×3308
+ * and this card bounds it to 68vh — about 0.21 of its own width on a 1024-high laptop,
+ * which reduces the body copy to unreadable grey. So the card's only real job is "here
+ * is the brochure, open it", and it says so; the reading happens in
+ * `BrochureLightbox`, which owns the zoom controls and the reasoning for them. Nothing
+ * about the import-not-serve decision above changes — both render the same inlined
+ * bytes from one import.
  */
 
 import { useCallback, useRef, useState } from 'react';
-import brochureUrl from '../../../../docs/Brochure.png';
+import brochureUrl from '../../../../docs/Brochure-A3.webp';
 import { BrochureLightbox } from './BrochureLightbox';
 
 /* One description of the image, shared by the card and the reader. Two copies of alt
@@ -96,8 +109,8 @@ export function BrochureView(): JSX.Element {
            be unreachable — which is exactly why it says where the original is
            rather than just apologising. */
         <p className="pg-view__caption">
-          The brochure image could not be loaded. The original is{' '}
-          <code>docs/Brochure.png</code> in the repository.
+          The brochure image could not be loaded. The print master is{' '}
+          <code>docs/Brochure-A3.pdf</code> in the repository.
         </p>
       ) : (
         <div className="pg-brochure">
