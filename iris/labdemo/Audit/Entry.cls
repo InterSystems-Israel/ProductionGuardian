@@ -82,7 +82,7 @@ Property Arguments As %String(MAXLEN = "");
 /// record alone rather than from the operator's memory.
 Property Result As %String(MAXLEN = "");
 
-/// `executed` | `denied` | `dropped`.
+/// `executed` | `denied` | `dropped` | `answered`.
 ///
 /// ONE VALUE PER WRITER, and each writer exists because the one before it could not see the event.
 /// `%AI.ToolMgr.ExecuteTool` checks authorization, then executes, then audits -- so an authorization
@@ -105,7 +105,45 @@ Property Result As %String(MAXLEN = "");
 /// that audits as `executed`; `dropped` is the word this codebase already uses for the event, in the
 /// guards' own method names and in the `droppedAction` / `droppedRemediation` / `droppedEvidence`
 /// fields they set.
+///
+/// `answered` IS THE FOURTH, and it arrived by the same rule -- no existing writer can see the event
+/// (#255). The audit hook fires once per TOOL, from inside a chat turn; a turn is the thing that
+/// contains the calls, so nothing writing per-call can record it. Two facts are missing without it and
+/// both are the operator's half of the exchange: the QUESTION and the ANSWER. #251 is the case that
+/// proves the cost -- row 135 holds a correct `messages: 48588` next to a reply that called a
+/// 23.6-hour window "the last hour", and only the 48588 was recoverable. The prose was the defect and
+/// the prose was the one thing not stored.
+///
+/// AND IT MUST BE FILTERED OUT OF TOOL-CALL COUNTS, exactly like `dropped`: an `answered` row's `Tool`
+/// is `Ask`, which is a dispatcher entry point and not a tool. The paragraph under `Tool` already says
+/// counting calls from this table requires a `Disposition` filter; this is the second value that makes
+/// it true.
 Property Disposition As %String(MAXLEN = 16) [ Required ];
+
+/// The chat turn this row belongs to, or "" for a row written outside one.
+///
+/// WHY A COLUMN AND NOT AN ORDERING. Three rows measured on the live instance -- ids 128, 129, 130 --
+/// are identical `CompareHostActivity` calls with `{"buckets":10,"resolution":"seconds"}` spanning two
+/// seconds. One turn asking three times, or three turns asking once? Unanswerable from the table, and
+/// neither available ordering fixes it: `RecordedAt` has one-second resolution, and CSP POOLS AND
+/// REUSES PROCESSES across requests, so "the rows this process wrote" spans unrelated questions. The
+/// id is monotonic but says nothing about where one turn stops.
+///
+/// READ HERE RATHER THAN PASSED IN, which is the decision that keeps the other three writers
+/// untouched. Every writer runs in the process that is serving the request -- the audit hook by
+/// construction (`%AI.ToolMgr.ExecuteTool` calls it inline), `AuthPolicy.Deny` and `RecordRefusal` the
+/// same -- so a process-private global set once by `ChatDispatcher.Ask` is visible to all of them
+/// without a signature change, and a FIFTH writer is correlated for free rather than by remembering
+/// to thread an argument. Same mechanism as the findings handoff two nodes over.
+///
+/// "" ON EVERY EXISTING ROW, and that is correct rather than a migration gap: the 139 rows written
+/// before this column existed were tool calls whose turn is genuinely unknown, and a synthesised value
+/// would assert a grouping nobody measured.
+///
+/// A TURN ID WITH NO `answered` ROW IS ITSELF THE FINDING -- a turn that made tool calls and then
+/// failed to produce a reply. `RecordChatTurn` is only reached on the success path, so the asymmetry
+/// is load-bearing and must not be "fixed" by writing a row on the error paths too.
+Property TurnId As %String(MAXLEN = 64);
 
 /// Populated on `denied` and `dropped` rows: the reason the refusal happened.
 ///
@@ -175,6 +213,11 @@ ClassMethod Record(actor As %String, tool As %String, arguments As %String, resu
     set entry.DurationMs = durationMs
     set entry.StatusText = statusText
     set entry.DenialReason = denialReason
+    // NOT AN ARGUMENT, deliberately -- see `TurnId`. Reading it here is what correlates the rows the
+    // AUDIT HOOK writes, and that writer is the runtime's: `%AI.Policy.Audit.%LogExecution`'s signature
+    // is fixed by `%AI.ToolMgr`, so there is no parameter to add to it. Any path that could thread a
+    // turn id explicitly is a path that did not need correlating.
+    set entry.TurnId = ..CurrentTurn()
     set sc = entry.%Save()
     if $$$ISERR(sc) {
         quit ""
@@ -224,6 +267,162 @@ ClassMethod RecordRefusal(guard As %String, host As %String, refused As %Dynamic
         set handle = ""
     }
     quit handle
+}
+
+/// Write one row for a chat turn that answered: the question asked and the answer given. Returns the
+/// handle, or "" if the write failed.
+///
+/// THE FOURTH WRITER. See `Disposition` for why a turn is invisible to the other three, and `TurnId`
+/// for why the correlation is a column rather than an ordering.
+///
+/// `Tool` IS `Ask`, THE DISPATCHER METHOD, and that keeps the column one kind of thing -- an
+/// ObjectScript method name -- exactly as a `dropped` row holds a guard's method name rather than a
+/// tool's. `ByTool` therefore answers "how many questions were asked" without a new index.
+///
+/// `publishHandle` OFF, by `RecordRefusal`'s argument in full: a turn is not the call this process just
+/// made. CSP reuses processes, so a resolve arriving after a chat in the same process would read this
+/// row's handle as its `auditId` and report a *question* as the audit record for a pool change.
+///
+/// IT SWALLOWS ITS OWN FAILURE, like the other two convenience writers, and for the sharpest version of
+/// the reason: this runs after the answer is built and immediately before it is written to the client.
+/// An exception here would turn a correct answer into a 500 -- losing the answer AND the record of it,
+/// which is worse than losing the record alone.
+ClassMethod RecordChatTurn(question As %String, answer As %String, toolCalls As %String = "", model As %String = "") As %String
+{
+    // Assigned then quit after the try, for the reason `RecordRefusal` gives: `quit <value>` inside a
+    // TRY is #1043, because inside a block QUIT means leave the block.
+    set handle = ""
+    try {
+        set arguments = {"question": (question)}
+        // `toolCalls` CARRIED EVEN WHEN "", which is the value `Ask` produces when the session had no
+        // stats object. An answer built from zero tool calls is a model reasoning from its priors about
+        // a production it has never seen -- `iris/CLAUDE.md`'s pre-demo check turns on exactly this
+        // field -- so the number belongs in the durable record and not only in the HTTP reply that
+        // nobody keeps.
+        set payload = { "answer": (answer), "toolCalls": (toolCalls), "model": (model) }
+        set handle = ..Record($username, "Ask", arguments.%ToJSON(), payload.%ToJSON(), "answered", , , , 0)
+    } catch ex {
+        set handle = ""
+    }
+    quit handle
+}
+
+/// Mint a turn id, stash it for every writer in this process, and return it.
+///
+/// THE GLOBAL'S NAME LIVES IN THIS CLASS ONLY. `ChatDispatcher` calls these three methods and never
+/// names the node, so the correlation cannot break by one side being renamed -- which is the failure the
+/// findings handoff two nodes over is exposed to, with `Tools.Findings` and `ChatDispatcher` both
+/// spelling `^||PGGuardian("chat")` out.
+///
+/// `(second, $job)` IS UNIQUE, and provably rather than probably: a CSP process serves one request at a
+/// time, so one process cannot begin two turns in the same second. That is why there is no counter, no
+/// global sequence and no GUID here -- and the value stays readable in a SQL result, which a GUID would
+/// not. Seconds resolution is enough for the key BECAUSE the job disambiguates it; it is not enough for
+/// ordering rows, which is what `TurnId` exists to stop anyone doing.
+ClassMethod BeginTurn() As %String
+{
+    set id = "chat-" _ $translate($zdatetime($ztimestamp, 3), "- :", "") _ "-" _ $job
+    set ^||ProductionGuardian.Audit("turn") = id
+    quit id
+}
+
+/// Forget the current turn. Call before anything else in a request -- see `ChatDispatcher.Ask`.
+ClassMethod ClearTurn()
+{
+    kill ^||ProductionGuardian.Audit("turn")
+}
+
+/// The turn this process is serving, or "" outside one.
+ClassMethod CurrentTurn() As %String
+{
+    quit $get(^||ProductionGuardian.Audit("turn"), "")
+}
+
+/// One turn as it happened: the `answered` row and every tool call that fed it, in call order.
+///
+/// THE READER THAT MAKES THE COLUMN WORTH HAVING. Without it a turn id is a value you can see and not a
+/// question you can ask, and #255 exists because a record that is never queried is indistinguishable
+/// from a record that was never written -- which is the mistake that opened that issue.
+///
+/// ORDERED BY ID, not by `RecordedAt`, by the same reasoning as `Recent`: several tool calls inside one
+/// turn routinely land in the same second, and that is precisely the ordering the timestamp cannot give.
+///
+/// SHAPED AS THE EXCHANGE rather than as a row list -- `question`, `answer`, then `calls[]` -- because
+/// the whole point is reading the prose next to the numbers it was built from.
+ClassMethod DescribeTurn(turnId As %String) As %DynamicObject
+{
+    set out = { "turnId": (turnId), "question": "", "answer": "", "toolCalls": "", "model": "",
+        "answeredAt": "", "calls": [] }
+    set sql = "SELECT ID, RecordedAt, Tool, Arguments, Result, Disposition, DenialReason "
+        _ "FROM ProductionGuardian_LabDemo_Audit.Entry WHERE TurnId = ? ORDER BY ID"
+    set rs = ##class(%SQL.Statement).%ExecDirect(, sql, turnId)
+    if rs.%SQLCODE < 0 {
+        quit out
+    }
+    while rs.%Next() {
+        if rs.%Get("Disposition") = "answered" {
+            // The turn row's own columns hold the exchange. Parsed rather than echoed as JSON text so a
+            // caller reads `answer` as a string instead of unwrapping a string inside a string.
+            set out.answeredAt = rs.%Get("RecordedAt")
+            try {
+                set asked = ##class(%DynamicObject).%FromJSON(rs.%Get("Arguments"))
+                set said = ##class(%DynamicObject).%FromJSON(rs.%Get("Result"))
+                set out.question = asked.%Get("question", "")
+                set out.answer = said.%Get("answer", "")
+                set out.toolCalls = said.%Get("toolCalls", "")
+                set out.model = said.%Get("model", "")
+            } catch ex {
+                // A row whose JSON will not parse is still evidence that the turn answered. Reported as
+                // the empty exchange it is rather than dropped, which would make a malformed row look
+                // like a turn that never replied.
+            }
+            continue
+        }
+        do out.calls.%Push({
+            "auditId": (..#HANDLEPREFIX _ rs.%Get("ID")),
+            "at": (rs.%Get("RecordedAt")),
+            "tool": (rs.%Get("Tool")),
+            "disposition": (rs.%Get("Disposition")),
+            "arguments": (rs.%Get("Arguments")),
+            "result": (rs.%Get("Result")),
+            "denialReason": (rs.%Get("DenialReason"))
+        })
+    }
+    quit out
+}
+
+/// The N most recent chat turns, newest first, as `{turnId, at, question, toolCalls}` summaries.
+///
+/// A SUMMARY AND NOT `DescribeTurn` PER TURN, because a turn's `calls[]` carries every tool result in
+/// full -- `CompareHostActivity` alone returns a few KB -- and twenty of those is a payload nobody asked
+/// for. Read this to find the turn, then `DescribeTurn` the one you want.
+ClassMethod RecentTurns(limit As %Integer = 20) As %DynamicArray
+{
+    if (limit < 1) || (limit > 200) {
+        set limit = 20
+    }
+    set out = []
+    set sql = "SELECT TOP ? ID, RecordedAt, TurnId, Arguments, Result FROM "
+        _ "ProductionGuardian_LabDemo_Audit.Entry WHERE Disposition = 'answered' ORDER BY ID DESC"
+    set rs = ##class(%SQL.Statement).%ExecDirect(, sql, limit)
+    if rs.%SQLCODE < 0 {
+        quit out
+    }
+    while rs.%Next() {
+        set question = "", calls = ""
+        try {
+            set question = ##class(%DynamicObject).%FromJSON(rs.%Get("Arguments")).%Get("question", "")
+            set calls = ##class(%DynamicObject).%FromJSON(rs.%Get("Result")).%Get("toolCalls", "")
+        } catch ex {
+        }
+        do out.%Push({
+            "turnId": (rs.%Get("TurnId")),
+            "at": (rs.%Get("RecordedAt")),
+            "question": (question),
+            "toolCalls": (calls)
+        })
+    }
+    quit out
 }
 
 /// The handle of the most recent row written by THIS process, or "" if none.
@@ -387,6 +586,9 @@ Storage Default
 </Value>
 <Value name="12">
 <Value>Source</Value>
+</Value>
+<Value name="13">
+<Value>TurnId</Value>
 </Value>
 </Data>
 <DataLocation>^PG.Audit.EntryD</DataLocation>
