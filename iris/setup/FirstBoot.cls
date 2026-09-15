@@ -557,6 +557,10 @@ ClassMethod ApplyDeploymentSettings() As %Status
 /// so it survives a restart with the rest of the setup globals and is visible to anyone reading them.
 /// It is NOT read to decide whether to write the setting: the write is unconditional, because a
 /// compile has just reverted the stored config and skipping it is how #96 happens.
+///
+/// It records BEFORE the write is known to have succeeded, which is the one inconsistency here and is
+/// the harmless direction: a failed `SetSetting()` aborts `ApplyDeploymentSettings()` with the error
+/// printed in the boot log, so the instance is loudly broken rather than quietly under-audited.
 ClassMethod AuditThisApplication(pName As %String, pValue As %String) As %Boolean [ Private ]
 {
     set known = $data(^ProductionGuardian.Setup("Applied", pName))
