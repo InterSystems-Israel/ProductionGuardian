@@ -153,6 +153,17 @@ the flag is computed by `AuditThisApplication()`, which returns 1 the moment the
 moves, so a real re-target still audits. **A trigger mutating a live production setting must stay
 attributable (root `CLAUDE.md` §2.1)** — that is what the default is for.
 
+**A tool must publish enough for its numbers to be DESCRIBABLE, and the prompt cannot make up the
+difference.** `CompareHostActivity` published `from` and `to` as bucket START instants with no bucket
+width, so its window was short by one bucket always and zero-width at `buckets = 1` — and the chat,
+asked which host was busiest, read 8/8/7 correctly and called it "the last second" over a ten-second
+span (#251). `ChatDispatcher` already said *"Never invent a number you did not read"* and was obeyed;
+**every number in the wrong answer had been read.** The width was even in the result set already
+(`MIN(Period) AS Secs`) and the row loop dropped it. So before adding a prompt rule about a figure, check
+that the payload contains what the rule asks the model to say — and prefer the method's **doc comment**,
+which is the description the model actually sees, since `RegisterToolSet` introspects the class.
+Publishing a derived figure (`messagesPerSecond`) beats leaving the model to divide.
+
 **A tool that is registered and described is not a tool that gets CALLED.** Adding a tool takes three
 things, and the third is the one that keeps being forgotten: register it in `Tools.Governance`,
 describe it in the system prompt, and **name it in a `MUST` in the per-request goal**. Measured twice.

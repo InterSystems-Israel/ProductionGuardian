@@ -4,6 +4,86 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-15 — `mcp-tools.md` §3.9: `compare_host_activity` publishes its window and a per-host rate; `from`/`to` were bucket starts with no width (#251)
+
+**Additive.** Six new fields — `through`, `periodSeconds`, `bucketsMeasured`, `windowSeconds`,
+`lastBucketPartial` on the payload and `messagesPerSecond` on each `hosts[]` entry. `from`, `to`,
+`bucketsRequested` and every existing host field are unchanged in name, meaning and value, so no
+consumer has to change. §3.8 gains a cross-reference only; `get_activity_trend` already published
+`periodSeconds` per bucket.
+
+### What was wrong
+
+A `TimeSlotUTC` names the **instant a bucket starts**. `to` is the start of the *last* bucket, so
+`from`→`to` was always short by one bucket — and at `buckets: 1` `from` **equalled** `to`, publishing a
+zero-width instant as the window. Nothing in the payload said how wide a bucket was, so the window was
+not recoverable at all: 10 seconds and 3600 seconds looked identical.
+
+The width was already being queried. The SQL selected `MIN(Period) AS Secs` and **the row loop never
+read it** — the field existed in the result set and was dropped on the floor.
+
+### What it cost
+
+Reported by the owner: with `pool_bottleneck` armed, asking the chat "which host is handling the most
+messages" named **EMR Source and Lab Router** — the two hosts feeding the bottleneck. Reproduced twice
+identically, `toolCalls: 1`, then matched against the tool by enumerating every argument combination on
+the live pod:
+
+```
+("seconds", 1)   from 2026-09-15T08:00:50Z -> to 2026-09-15T08:00:50Z     <- from == to
+                 EMR Source 8 | Lab Router 8 | Cloud API 7 (proc 1.011286)
+("seconds", 24)  07:57:00Z -> 08:00:50Z     235 | 235 | 234
+```
+
+The model read 8/8/7 correctly and described it as **"7 messages processed in the last second"**. The
+span was ten seconds; the payload contained no span, so it invented one. And one bucket is the least
+informative window this tool has — `Ens_Activity_Data` counts a message at every hop, so a three-host
+serial pipeline is within one message of a tie at that width, and the ranking that decides the answer
+is noise.
+
+### A second defect, found by verifying the first
+
+Publishing `windowSeconds` as `periodSeconds × bucketsMeasured` was wrong the moment it was measured.
+The newest bucket exists from the instant its first message lands, so crediting it a whole period counts
+time that has not happened yet — and the coarser the resolution, the worse it is. Live at 08:15:34Z:
+
+```
+("days",  1)  windowSeconds 86400  ->  Lab Router 0.2176/s     <- 8h15m of a day, counted as a day
+("hours", 6)  windowSeconds 21600  ->  Lab Router 0.6206/s
+("days",  1)  windowSeconds 29734  ->  Lab Router 0.6363/s     <- truncated to the elapsed part
+("hours", 6)  windowSeconds 18934  ->  Lab Router 0.7142/s
+```
+
+Two resolutions over the same traffic disagreed threefold, and the coarser one — what an "overall load"
+question reaches for — was the wrong one, in the direction that makes a saturated pipeline look idle.
+Truncating the newest bucket to its elapsed part makes them agree, and `lastBucketPartial` says when
+that has happened. **This is the one clock read in the tool**; the slots still choose the bounds, so
+every host is still compared over the same span. A future-dated or unparseable slot falls back to the
+full period, understating rather than inventing time.
+
+### Why the producer and not the prompt
+
+`ChatDispatcher.cls` already said "Never invent a number you did not read", and it was obeyed — every
+number in the wrong answer was read. **A prompt cannot restate a window the payload does not contain.**
+The prompt did gain the companion rule it was missing (`buckets` is a count of buckets; omit it when the
+question names no span; state the window from `from`/`through`/`windowSeconds`), but that rule is only
+followable because the fields now exist.
+
+### What a consumer must still not assume
+
+- **`windowSeconds` is covered time, not elapsed time.** The window is the newest N slots *that exist*,
+  so an idle gap belongs to no bucket and is excluded. It can be less than `through` − `from`.
+- **It is not `periodSeconds × bucketsMeasured`** whenever `lastBucketPartial` is true, and it can be
+  `0` for a bucket under a second old — in which case every `messagesPerSecond` is `null`, because a
+  rate over no elapsed time is not zero messages per second (§2.1).
+- **`messagesPerSecond` divides by the whole window for every host**, never by that host's own
+  `bucketsWithActivity` — the same denominator for all hosts is the reason a compare tool exists.
+- **Near-equal counts are not a tie.** Every hop counts the same message, so the host with a *lower*
+  count than the one feeding it is the one falling behind, and the shortfall is the backlog.
+- **`through` is omitted, never faked**, when the timestamp cannot be parsed — `IsoUTC`'s rule.
+
+---
+
 ## 2026-09-15 — `mcp-tools.md` §3.12: the boot-time `Cloud API` rows are real where the values move, and the fix is producer-side only (#249)
 
 **Documentation of a producer fix, not a contract change.** `get_recent_config_changes` returns exactly

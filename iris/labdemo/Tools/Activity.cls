@@ -353,6 +353,21 @@ ClassMethod GetActivityTrend(host As %String, resolution As %String = "hours", b
 /// average processing and queueing time, and a classification of the KINDS of message it handled.
 ///
 /// Averages are null for a host with no messages in the window, never zero.
+///
+/// `buckets` IS A COUNT OF BUCKETS, NOT A COUNT OF SECONDS OR HOURS. One bucket is `periodSeconds`
+/// wide -- 10 seconds at `seconds` resolution, an hour at `hours` -- so ("seconds", 1) covers ten
+/// seconds, not one. If the question names no time span, omit `buckets` and take the default rather
+/// than passing 1: a single bucket is the least informative window this tool has, and in a serial
+/// pipeline every host in it is within a message or two of every other, which reads as a tie and
+/// hides the host that is actually behind.
+///
+/// The reply states its own window and rates. Use them rather than describing the window yourself:
+/// `from` and `to` are both bucket START instants, `through` is when the window ends, `windowSeconds`
+/// is how much time it covers, and each host's `messagesPerSecond` is already divided by that.
+/// `windowSeconds` is not `periodSeconds` x `bucketsMeasured` when `lastBucketPartial` is true -- the
+/// newest bucket is counted only as far as it has actually elapsed, so the rates are comparable
+/// across resolutions. A null `messagesPerSecond` means no time has elapsed to measure over, never
+/// zero traffic.
 ClassMethod CompareHostActivity(resolution As %String = "hours", buckets As %Integer = 24) As %DynamicObject
 {
     // Both optional arguments restated, for the reason given in full on GetActivityTrend.
@@ -381,7 +396,7 @@ ClassMethod CompareHostActivity(resolution As %String = "hours", buckets As %Int
     // Two queries rather than one, because a per-host TOP N would give each host its own window and
     // the comparison would be between different periods -- which is the defect a "compare" tool
     // exists to avoid.
-    set slotSql = "SELECT TOP ? TimeSlotUTC FROM Ens_Activity_Data." _ table _ " "
+    set slotSql = "SELECT TOP ? TimeSlotUTC, MIN(Period) AS Secs FROM Ens_Activity_Data." _ table _ " "
         _ "WHERE Namespace = ? GROUP BY TimeSlotUTC ORDER BY TimeSlotUTC DESC"
     set rs = ##class(%SQL.Statement).%ExecDirect(, slotSql, buckets, $namespace)
     if rs.%SQLCODE < 0 {
@@ -395,18 +410,64 @@ ClassMethod CompareHostActivity(resolution As %String = "hours", buckets As %Int
     //
     // Fixed-width, most-significant-first timestamps would compare correctly as strings, but not
     // relying on that is what makes this independent of the column's format.
-    set from = "", to = ""
+    //
+    // THE WIDTH OF A BUCKET IS READ HERE, AND NOT READING IT IS WHAT MADE THIS TOOL LIE (#251). A
+    // slot is an INSTANT -- the start of its bucket -- and `Period` is how wide that bucket is: 10
+    // seconds at `seconds` resolution, not 1. So `from` and `to` alone understate the window by
+    // exactly one bucket, and at `buckets = 1` they are the SAME instant and the window reads as
+    // zero-width. Measured: a chat asked "which host is handling the most messages" called
+    // ("seconds", 1), got `from == to == 08:00:50Z` with 8/8/7 messages, and described it as "7
+    // messages processed in the last second" -- an invented window, because the payload did not
+    // contain one. The SQL below has always selected `MIN(Period)`; the row loop never read it.
+    set from = "", to = "", period = 0, slots = 0
     while rs.%Next() {
         set slot = rs.%Get("TimeSlotUTC")
         if to = "" {
             set to = slot
         }
         set from = slot
+        set slots = slots + 1
+        // MIN across the returned slots, matching the SQL's own aggregate. Period is a property of
+        // the table and does not vary within one, so this is defensive rather than load-bearing --
+        // and a MIN cannot inflate a rate, which is the direction that matters.
+        if (period = 0) || (+rs.%Get("Secs") < period) {
+            set period = +rs.%Get("Secs")
+        }
     }
     if to = "" {
         set out.reason = "no activity recorded at this resolution"
         quit out
     }
+    // COVERED time, not elapsed time, and they differ whenever the instance was idle: the window is
+    // "the newest N slots THAT EXIST", so a gap between two of them is not part of any bucket. This
+    // is the denominator every rate below divides by, so it is the one that has to exclude gaps --
+    // dividing by the wall-clock span would report a host as slower than it ran.
+    //
+    // AND THE NEWEST BUCKET IS ALMOST NEVER FULL, which is the one place this tool must read the
+    // clock. The newest slot exists from the instant its first message lands, but it is credited a
+    // whole `Period`, so counting it full understates every rate by the part that has not happened
+    // yet. Measured on the live instance at 08:13Z: ("days", 1) reported `windowSeconds` 86400 with
+    // 8h13m elapsed, so 18803 messages read as 0.2176/s against an actual ~0.63/s -- a factor of
+    // three, in the direction that makes a saturated pipeline look idle.
+    //
+    // THIS DOES NOT WEAKEN "THE WINDOW IS DERIVED FROM THE DATA". The clock is not choosing the
+    // bounds -- the slots still do, so every host is still compared over the same span and an idle
+    // window is still honestly empty. The clock only truncates the last bucket to the part that has
+    // elapsed, which no query against this table can know.
+    set nowStamp = $zdatetime($ztimestamp, 3)
+    set lastWidth = period, partial = 0
+    set elapsed = ..SecondsBetween(to, nowStamp)
+    // `elapsed = ""` is an unparseable stamp and `elapsed < 0` is clock skew or a slot stamped in the
+    // future: both fall through to the full period, which is the pre-#251 behaviour and understates
+    // rather than inventing time. `\ 1` truncates to whole seconds toward zero for the same reason.
+    if (elapsed '= "") && (elapsed >= 0) && (elapsed < period) {
+        set lastWidth = elapsed \ 1
+        set partial = 1
+    }
+    // The completed buckets at full width, plus however much of the newest one has happened. When
+    // that is under a second in the only bucket, this is 0 and every rate below is null -- which is
+    // `Divide`'s rule applied to time: a rate over no elapsed time is not zero messages per second.
+    set windowSeconds = (period * (slots - 1)) + lastWidth
 
     set sql = "SELECT %EXACT(HostName) AS HostName, HostType, SUM(TotalCount) AS Msgs, "
         _ "SUM(TotalDuration) AS Dur, SUM(TotalQueueDuration) AS QDur, "
@@ -434,6 +495,12 @@ ClassMethod CompareHostActivity(resolution As %String = "hours", buckets As %Int
             // 1.0s x 12 have the same story only in one of the two columns.
             "totalProcessingTime": (+rs.%Get("Dur")),
             "bucketsWithActivity": (+rs.%Get("Slots")),
+            // MESSAGES PER SECOND OVER THE WHOLE WINDOW, and deliberately not over this host's own
+            // active buckets. Every host here divides by the SAME denominator -- which is the reason
+            // a compare tool exists at all (see the two-query comment above). A host that ran in 3
+            // of 24 buckets is genuinely handling less of the window's load than one that ran in
+            // all 24, and per-host denominators would hide exactly that.
+            "messagesPerSecond": (..Rate(msgs, windowSeconds)),
             // CLASSIFIED, NEVER THE RAW VALUE. See the class comment: SiteDimension is computed by
             // the message body via an overridable hook, so it is treated as untrusted text and only
             // independently-verifiable configuration names survive.
@@ -445,8 +512,34 @@ ClassMethod CompareHostActivity(resolution As %String = "hours", buckets As %Int
         do out.hosts.%Push(entry)
         do out.%Set("measured", 1, "boolean")
     }
+    // THE WINDOW, STATED SO THAT IT CANNOT BE GUESSED AT (#251). `from` and `to` are kept as they
+    // were -- both are bucket START instants, and callers already read them that way -- but they are
+    // no longer the whole story:
+    //
+    //   periodSeconds     how wide one bucket is. 10 at `seconds` resolution, 3600 at `hours`.
+    //   bucketsMeasured   how many slots the window actually covers, which is <= bucketsRequested
+    //                     whenever the table holds fewer.
+    //   windowSeconds     the covered time, and the denominator of every `messagesPerSecond` above.
+    //                     NOT period x bucketsMeasured when the newest bucket is still filling.
+    //   through           the instant the window ends: `to` plus as much of its period as has
+    //                     elapsed. At buckets = 1 this is the only field that distinguishes the
+    //                     window from an instant.
+    //   lastBucketPartial whether the newest bucket is still filling. Nearly always true, and stated
+    //                     rather than left to be inferred from `through` being short of a period.
+    //
+    // `through` is omitted rather than faked when the timestamp cannot be parsed, on `IsoUTC`'s rule:
+    // an absent value must not become a substituted one.
     set out.from = ..IsoUTC(from)
     set out.to = ..IsoUTC(to)
+    set through = ..PlusSeconds(to, lastWidth)
+    if through '= "" {
+        set out.through = ..IsoUTC(through)
+    }
+    set out.periodSeconds = period
+    set out.bucketsMeasured = slots
+    set out.windowSeconds = windowSeconds
+    // Typed, for the reason spelled out at `GetActivityCoverage`'s `readable`.
+    do out.%Set("lastBucketPartial", partial, "boolean")
     set out.bucketsRequested = buckets
     quit out
 }
@@ -694,6 +787,63 @@ ClassMethod IsoUTC(stamp As %String) As %String [ Private ]
         quit ""
     }
     quit $translate($piece(stamp, ".", 1), " ", "T") _ "Z"
+}
+
+/// Seconds from the first ODBC timestamp to the second, negative if backwards, "" if either is
+/// unparseable. Private.
+///
+/// EXISTS TO MEASURE HOW MUCH OF THE NEWEST BUCKET HAS HAPPENED (#251), which is the difference
+/// between a slot's start and now. Fractional, because $ZTIMESTAMP carries a fraction and the caller
+/// is the one that decides to truncate -- rounding here would let a sub-second window read as one
+/// second, and a rate divided by an invented second is the defect this file is closing.
+///
+/// "" RATHER THAN 0 ON FAILURE, and the caller must tell them apart: 0 means the two stamps are the
+/// same instant, "" means one of them could not be read. Treating the second as the first would
+/// silently truncate a window to nothing.
+ClassMethod SecondsBetween(pFrom As %String, pTo As %String) As %String [ Private ]
+{
+    if (pFrom = "") || (pTo = "") {
+        quit ""
+    }
+    try {
+        set a = $zdatetimeh(pFrom, 3), b = $zdatetimeh(pTo, 3)
+        set days = $piece(b, ",", 1) - $piece(a, ",", 1)
+        set out = (days * 86400) + ($piece(b, ",", 2) - $piece(a, ",", 2))
+    } catch {
+        set out = ""
+    }
+    quit out
+}
+
+/// An ODBC timestamp advanced by N seconds, still ODBC, or "" when it cannot be. Private.
+///
+/// EXISTS TO TURN A BUCKET START INTO A WINDOW END (#251). `TimeSlotUTC` names the instant a bucket
+/// begins, so the end of the last bucket -- the only honest answer to "up to when?" -- is that
+/// instant plus one `Period`. String arithmetic on the text cannot do it: 08:00:50 + 10s crosses a
+/// minute, and hourly slots cross days.
+///
+/// Via $HOROLOG rather than DATEADD, because the day rollover is then explicit and local: seconds are
+/// carried into days by division, so a slot at 23:59:50 advances the date rather than producing
+/// 24:00:00. `\` and `#` are integer division and modulo, and `pSeconds` is a `Period` from the
+/// table, so it is a non-negative integer and no negative-modulo case arises.
+///
+/// "" ON ANYTHING UNPARSEABLE, and the caller then omits the field. $ZDATETIMEH throws on malformed
+/// input; a substituted "now" or a silently unadvanced start would both be a window the payload
+/// asserts and the data does not support -- which is the defect this method was added to close.
+ClassMethod PlusSeconds(pStamp As %String, pSeconds As %Integer) As %String [ Private ]
+{
+    if (pStamp = "") || (+pSeconds = 0) {
+        quit pStamp
+    }
+    try {
+        set h = $zdatetimeh($piece(pStamp, ".", 1), 3)
+        set days = $piece(h, ",", 1), secs = $piece(h, ",", 2) + pSeconds
+        set days = days + (secs \ 86400), secs = secs # 86400
+        set out = $zdatetime(days _ "," _ secs, 3)
+    } catch {
+        set out = ""
+    }
+    quit out
 }
 
 }
