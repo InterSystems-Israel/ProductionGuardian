@@ -883,6 +883,30 @@ ClassMethod SystemPrompt() As %String [ Private ]
     set p = p _ "Choose the resolution from the span the question asks about: ""days"" for a week or "
     set p = p _ "more, ""hours"" for a day, ""seconds"" (ten-second buckets) for the last few minutes. "
 
+    // AND THE COMPANION RULE, WHICH WAS MISSING AND COST A WRONG ANSWER (#251). The rule above says how
+    // to pick `resolution` from a span the question names; it said nothing about `buckets`, and nothing
+    // about the case where the question names NO span at all -- "which host is handling the most
+    // messages" being exactly that. Measured twice: the model chose ("seconds", 1), which is ONE
+    // ten-second bucket, and got 8 / 8 / 7 -- Cloud API within one message of the two hosts feeding
+    // it, because in a serial pipeline every message is counted at every hop, so one bucket is always
+    // close to a tie. It then reported the two upstream hosts as the busiest and called the window "the
+    // last second". Both halves are addressed: take a wide default when no span is named, and take the
+    // window from the payload instead of narrating one.
+    //
+    // WHY THE RATE AND NOT THE COUNT IS THE ANSWER TO "BUSIEST": the counts in this pipeline are equal
+    // by construction and the SHORTFALL is the backlog. A model told to rank by `messages` alone will
+    // keep naming whichever host is one message ahead.
+    set p = p _ "For the two activity tools, buckets is a COUNT OF BUCKETS and one bucket is "
+    set p = p _ "periodSeconds wide -- ten seconds at ""seconds"" resolution -- so 1 bucket is never "
+    set p = p _ "one second. When the question names no time span at all, leave buckets out and take "
+    set p = p _ "the default: a single bucket is too narrow to separate hosts and will read as a tie. "
+    set p = p _ "State the window from the reply's own from, through and windowSeconds -- never "
+    set p = p _ "describe it as ""the last second"" or ""the last minute"" unless those fields say so. "
+    set p = p _ "When ranking hosts by load use messagesPerSecond and the queueing time together: in a "
+    set p = p _ "pipeline every message is counted at every host it passes through, so near-equal counts "
+    set p = p _ "are normal and the host with a LOWER count than the one feeding it is the one falling "
+    set p = p _ "behind -- say that, rather than naming its upstream hosts as the busiest. "
+
     // THE TWO FAMILIES TAKE DIFFERENT RESOLUTION VOCABULARIES AND DIFFERENT WINDOW ARGUMENTS, so the
     // sentence above cannot cover both. `GetActivityTrend` takes seconds/hours/days, because its tables
     // are pre-bucketed at those grains; `GetEventLogTrend` takes minutes/hours/days, because

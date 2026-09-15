@@ -1130,6 +1130,11 @@ returned, with no time cutoff, so "the last 24 hours" and "the last 24 hours tha
 distinguishable: every returned bucket is one that exists, and `from`/`to` state the span actually
 covered. A cutoff would silently return fewer buckets for an idle host and read as missing data.
 
+**`from` and `to` are `startUTC` values, so the window runs to `to` + `periodSeconds`** — §3.9's
+bucket-start rule applies here too. It is recoverable here rather than lost, because every bucket
+publishes its own `periodSeconds`; a consumer that ignores them and reads `from`→`to` as the span is
+short by one bucket, and at `buckets: 1` reads a zero-width instant.
+
 **An empty result distinguishes an unknown host from a silent one**, checked against the production's
 config item set rather than inferred from the absence of rows:
 
@@ -1166,10 +1171,12 @@ trend call per host.
 **Input**: `resolution` (optional, default `hours`), `buckets` (optional, default `24`, `1..720`).
 Same restated-default and refusal behaviour as §3.8.
 
-**Output**: `resolution`, `measured`, `from`, `to`, `bucketsRequested`, `hosts[]`.
+**Output**: `resolution`, `measured`, `from`, `to`, `through`, `periodSeconds`, `bucketsMeasured`,
+`windowSeconds`, `lastBucketPartial`, `bucketsRequested`, `hosts[]`.
 
 `hosts[]`: `host`, `hostType`, `application`, `messages`, `avgProcessingTime`, `avgQueueingTime`,
-`totalProcessingTime`, `bucketsWithActivity`, `messageKinds[]`. Ordered by message count descending.
+`totalProcessingTime`, `bucketsWithActivity`, `messagesPerSecond`, `messageKinds[]`. Ordered by
+message count descending.
 
 **`totalProcessingTime` is kept alongside the average because they answer different questions**: the
 average says how slow each message was, the total says where the instance's time actually went. A
@@ -1178,6 +1185,73 @@ host at 0.001s × 12,000 messages and one at 1.0s × 12 have the same story in o
 **The window is derived from the data, not the clock.** The newest `buckets` distinct time slots
 present are found first and every host is compared over exactly those, so the comparison is never
 between different periods for different hosts — which is the defect a "compare" tool exists to avoid.
+
+#### `from` and `to` are bucket STARTS, and that is why `through` exists (#251)
+
+**A time slot names the instant a bucket begins, not the period it covers.** `to` is the start of the
+*last* bucket, so `from`→`to` understates the window by exactly one `periodSeconds` — and at
+`buckets: 1` the two are **the same instant**, i.e. a zero-width window. Until #251 this tool
+published `from`, `to` and `bucketsRequested` and nothing else, so **the window was not recoverable
+from the payload at all**: a consumer could not know whether a bucket was 10 seconds or an hour wide.
+
+What that cost, measured on the Kubernetes deployment with `pool_bottleneck` armed: a chat asked
+"which host is handling the most messages", called `("seconds", 1)`, and received
+`from == to == 2026-09-15T08:00:50Z` with `EMR Source` 8, `Lab Router` 8, `Cloud API` 7. It reported
+the two upstream hosts as the busiest and described the window as **"the last second"** — a window the
+payload never contained, over a span that was really ten. The numbers it read were correct; the frame
+around them was invented, because the tool had not supplied one.
+
+Five fields close it, and a consumer should read the window from these rather than from `from`/`to`:
+
+| Field | Meaning |
+|---|---|
+| `periodSeconds` | Width of one bucket: `10` at `seconds`, `3600` at `hours`, `86400` at `days` |
+| `bucketsMeasured` | Slots the window actually covers — `≤ bucketsRequested` when the table holds fewer |
+| `windowSeconds` | The **covered** time, and the rate denominator. See the partial-bucket rule below |
+| `through` | The instant the window ends: `to` plus as much of its period as has elapsed. Omitted, never faked, if unparseable |
+| `lastBucketPartial` | Whether the newest bucket is still filling. Usually `true` |
+
+**`windowSeconds` is covered time, not elapsed time**, and the two differ whenever the instance was
+idle: the window is "the newest N slots *that exist*", so a gap between two of them belongs to no
+bucket and is excluded. Rates must divide by covered time — dividing by the wall-clock span would
+report a host as slower than it ran.
+
+#### The newest bucket is almost never full, and counting it full understates every rate (#251)
+
+**`windowSeconds` is NOT `periodSeconds × bucketsMeasured` when `lastBucketPartial` is true.** A slot
+exists from the instant its first message lands, but crediting it a whole period counts time that has
+not happened yet. Measured on the live instance at 08:15:34Z, before this was handled:
+
+| Call | `windowSeconds` | `Lab Router` `messagesPerSecond` |
+|---|---|---|
+| `("days", 1)`, full period | 86400 | 0.2176 |
+| `("hours", 6)`, full period | 21600 | 0.6206 |
+| `("days", 1)`, truncated | 29734 | **0.6363** |
+| `("hours", 6)`, truncated | 18934 | **0.7142** |
+
+Two resolutions over the same traffic disagreed by a factor of three, and the coarser one — the one an
+"overall load" question reaches for — was the wrong one, in the direction that makes a saturated
+pipeline look idle. Truncating the last bucket to its elapsed part makes them agree.
+
+**This is the one place the tool reads the clock, and it does not weaken "derived from the data".** The
+slots still choose the bounds, so every host is still compared over the same span and an idle window is
+still honestly empty; the clock only measures how much of the newest bucket has elapsed, which no query
+against this table can know. An unreadable or future-dated slot falls back to the full period —
+understating, never inventing time.
+
+**`windowSeconds` can be `0`, and then every `messagesPerSecond` is `null`.** One bucket, less than a
+second old: a rate over no elapsed time is not zero messages per second (§2.1).
+
+#### `messagesPerSecond` is per host but over the WHOLE window (#251)
+
+Every host divides by the same `windowSeconds`, **not** by its own `bucketsWithActivity`. That is the
+reason a compare tool exists: a host that ran in 3 of 24 buckets genuinely handled less of the
+window's load than one that ran in all 24, and per-host denominators would hide precisely that.
+
+**Near-equal counts across hosts are normal and are not a tie.** `Ens_Activity_Data` counts a message
+at *every* host it passes through, so in a serial pipeline each hop records the same traffic — the
+host with a **lower** count than the one feeding it is the one falling behind, and the shortfall *is*
+the backlog. A consumer ranking "busiest" on `messages` alone will keep naming upstream hosts.
 
 #### `messageKinds` — a CLASSIFICATION of `SiteDimension`, never the value
 
@@ -1225,21 +1299,27 @@ would itself be a small disclosure about the traffic.
 
 ```jsonc
 // <- hours, 6 buckets, abridged. Cloud API's total processing time is where the time went.
+// NOTE `to` 11:00 with `through` 12:00: `to` is the last bucket's START, and the window is 6h.
+// This reading was taken after 12:00, so the 11:00 bucket had closed -- hence lastBucketPartial
+// false and the round 21600. A reading taken DURING the 11:00 hour reports `through` as the
+// moment of the call and a `windowSeconds` short of 21600; see the partial-bucket rule above.
 {
   "resolution": "hours", "measured": true,
-  "from": "2026-08-23T06:00:00Z", "to": "2026-08-23T11:00:00Z", "bucketsRequested": 6,
+  "from": "2026-08-23T06:00:00Z", "to": "2026-08-23T11:00:00Z", "through": "2026-08-23T12:00:00Z",
+  "periodSeconds": 3600, "bucketsMeasured": 6, "windowSeconds": 21600,
+  "lastBucketPartial": false, "bucketsRequested": 6,
   "hosts": [
     { "host": "EMR Source", "hostType": "service", "application": true, "messages": 12318,
       "avgProcessingTime": 0.003073, "avgQueueingTime": 0, "totalProcessingTime": 37.858,
-      "bucketsWithActivity": 6,
+      "bucketsWithActivity": 6, "messagesPerSecond": 0.5703,
       "messageKinds": [ { "kind": "ADT_A01", "verifiedAs": "hl7_message_structure" } ] },
     { "host": "Cloud API", "hostType": "operation", "application": true, "messages": 9681,
       "avgProcessingTime": 1.005398, "avgQueueingTime": 81.249508, "totalProcessingTime": 9733.256,
-      "bucketsWithActivity": 6,
+      "bucketsWithActivity": 6, "messagesPerSecond": 0.4482,
       "messageKinds": [ { "kind": "ProductionGuardian.LabDemo.Message.PatientDemographics", "verifiedAs": "compiled_class" } ] },
     { "host": "Ens.MonitorService", "hostType": "service", "application": false, "messages": 3851,
       "avgProcessingTime": 0.001277, "avgQueueingTime": 0, "totalProcessingTime": 4.918,
-      "bucketsWithActivity": 6,
+      "bucketsWithActivity": 6, "messagesPerSecond": 0.1783,
       "messageKinds": [ { "kind": "none", "verifiedAs": "platform_default" } ] }
   ]
 }
