@@ -140,6 +140,14 @@ Property Disposition As %String(MAXLEN = 16) [ Required ];
 /// before this column existed were tool calls whose turn is genuinely unknown, and a synthesised value
 /// would assert a grouping nobody measured.
 ///
+/// AND THE STASHED VALUE MUST NOT OUTLIVE THE TOOL CALLS, which is a leak found in review rather than a
+/// theoretical one. Pooling cuts BOTH ways: the process that just served a chat serves the next
+/// *resolve* or *investigation*, and those write audit rows through this same method. A turn id left set
+/// would stamp them with an unrelated chat turn -- rows grouped under a question that did not cause
+/// them, which is worse than uncorrelated rows because the grouping looks authoritative. So the node
+/// lives exactly as long as `agent.Run`, and `RecordChatTurn` is handed the id explicitly because by
+/// then it has already been cleared. See `ChatDispatcher.Ask`.
+///
 /// A TURN ID WITH NO `answered` ROW IS ITSELF THE FINDING -- a turn that made tool calls and then
 /// failed to produce a reply. `RecordChatTurn` is only reached on the success path, so the asymmetry
 /// is load-bearing and must not be "fixed" by writing a row on the error paths too.
@@ -200,7 +208,12 @@ Index ByTool On Tool;
 /// write failed would report a *guard refusal's* handle as its `auditId`. CSP reuses processes across
 /// requests, so "an investigation and a resolve in the same process" is the ordinary case, not a
 /// contrived one.
-ClassMethod Record(actor As %String, tool As %String, arguments As %String, result As %String, disposition As %String, durationMs As %Integer = "", statusText As %String = "", denialReason As %String = "", publishHandle As %Boolean = 1) As %String
+/// `turnId` IS AN OVERRIDE, NOT THE SOURCE. Left empty -- which is every caller except the turn row
+/// itself -- this reads the process's current turn, and that is the only way the audit HOOK can be
+/// correlated at all (see `TurnId`). It is accepted explicitly so that `RecordChatTurn` can be called
+/// after the process-private node has already been cleared, which is what keeps a turn's lifetime to
+/// exactly the span where tools execute (`ChatDispatcher.Ask`).
+ClassMethod Record(actor As %String, tool As %String, arguments As %String, result As %String, disposition As %String, durationMs As %Integer = "", statusText As %String = "", denialReason As %String = "", publishHandle As %Boolean = 1, turnId As %String = "") As %String
 {
     set entry = ..%New()
     set entry.RecordedAt = ..NowUTC()
@@ -213,11 +226,10 @@ ClassMethod Record(actor As %String, tool As %String, arguments As %String, resu
     set entry.DurationMs = durationMs
     set entry.StatusText = statusText
     set entry.DenialReason = denialReason
-    // NOT AN ARGUMENT, deliberately -- see `TurnId`. Reading it here is what correlates the rows the
-    // AUDIT HOOK writes, and that writer is the runtime's: `%AI.Policy.Audit.%LogExecution`'s signature
-    // is fixed by `%AI.ToolMgr`, so there is no parameter to add to it. Any path that could thread a
-    // turn id explicitly is a path that did not need correlating.
-    set entry.TurnId = ..CurrentTurn()
+    // READ HERE WHEN NOT SUPPLIED -- see `TurnId`. This is what correlates the rows the AUDIT HOOK
+    // writes, and that writer is the runtime's: `%AI.Policy.Audit.%LogExecution`'s signature is fixed by
+    // `%AI.ToolMgr`, so there is no parameter to add to it.
+    set entry.TurnId = $select(turnId '= "": turnId, 1: ..CurrentTurn())
     set sc = entry.%Save()
     if $$$ISERR(sc) {
         quit ""
@@ -287,7 +299,7 @@ ClassMethod RecordRefusal(guard As %String, host As %String, refused As %Dynamic
 /// the reason: this runs after the answer is built and immediately before it is written to the client.
 /// An exception here would turn a correct answer into a 500 -- losing the answer AND the record of it,
 /// which is worse than losing the record alone.
-ClassMethod RecordChatTurn(question As %String, answer As %String, toolCalls As %String = "", model As %String = "") As %String
+ClassMethod RecordChatTurn(turnId As %String, question As %String, answer As %String, toolCalls As %String = "", model As %String = "") As %String
 {
     // Assigned then quit after the try, for the reason `RecordRefusal` gives: `quit <value>` inside a
     // TRY is #1043, because inside a block QUIT means leave the block.
@@ -300,7 +312,7 @@ ClassMethod RecordChatTurn(question As %String, answer As %String, toolCalls As 
         // field -- so the number belongs in the durable record and not only in the HTTP reply that
         // nobody keeps.
         set payload = { "answer": (answer), "toolCalls": (toolCalls), "model": (model) }
-        set handle = ..Record($username, "Ask", arguments.%ToJSON(), payload.%ToJSON(), "answered", , , , 0)
+        set handle = ..Record($username, "Ask", arguments.%ToJSON(), payload.%ToJSON(), "answered", , , , 0, turnId)
     } catch ex {
         set handle = ""
     }
@@ -326,7 +338,13 @@ ClassMethod BeginTurn() As %String
     quit id
 }
 
-/// Forget the current turn. Call before anything else in a request -- see `ChatDispatcher.Ask`.
+/// Forget the current turn.
+///
+/// CALLED TWICE BY ONE REQUEST, AND BOTH ARE NECESSARY. Once the instant `agent.Run` returns, which is
+/// the last moment a tool can execute and therefore the end of the turn's useful life; and once at the
+/// very top of the request, because an exception inside `Run` skips the first. The top-of-request call
+/// cannot be the only one -- it protects the next CHAT request and not the next resolve, which is the
+/// leak described under `TurnId`.
 ClassMethod ClearTurn()
 {
     kill ^||ProductionGuardian.Audit("turn")

@@ -332,11 +332,21 @@ ClassMethod Ask() As %Status
         // AFTER SMALL TALK, deliberately: a greeting reaches no tool and produces no answer about the
         // production, so a turn row for one would be a question in the audit log that the production
         // never answered. Small talk returns above this line.
-        do ##class(ProductionGuardian.LabDemo.Audit.Entry).BeginTurn()
+        set turn = ##class(ProductionGuardian.LabDemo.Audit.Entry).BeginTurn()
 
         set session = agent.CreateSession()
         set goal = ..BuildGoal(question, body.%Get("history"))
         set r = agent.Run(session, goal, ..#MAXITERATIONS)
+        // CLEARED THE INSTANT `Run` RETURNS, and this is the placement rather than a tidy-up at the end
+        // of the method. `Run` is the last moment a tool can execute, so it is the end of the turn's
+        // useful life -- and POOLING CUTS BOTH WAYS: this process serves the next *resolve* too, and a
+        // turn id still set would stamp that resolve's audit rows with this question. Held in `turn` and
+        // handed to `RecordChatTurn` explicitly below, which is why clearing here costs nothing.
+        //
+        // NOTHING BETWEEN `Run` AND THIS LINE CAN RETURN OR THROW, deliberately -- the two 502 checks
+        // that follow are after it. An exception INSIDE `Run` skips this, and the kill at the top of the
+        // method is what covers that case.
+        do ##class(ProductionGuardian.LabDemo.Audit.Entry).ClearTurn()
         if '$isobject(r) {
             return ..Fail(502, "agent returned no response")
         }
@@ -375,7 +385,7 @@ ClassMethod Ask() As %Status
         // reports it as "". An answer that could not be recorded is still a correct answer, and this is
         // one statement away from writing it to the client.
         do ##class(ProductionGuardian.LabDemo.Audit.Entry).RecordChatTurn(
-            question, parsed.%Get("answer", ""), parsed.%Get("toolCalls", ""), agent.Model)
+            turn, question, parsed.%Get("answer", ""), parsed.%Get("toolCalls", ""), agent.Model)
 
         write parsed.%ToJSON()
         return $$$OK

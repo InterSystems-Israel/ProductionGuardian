@@ -55,9 +55,12 @@ turns asking once, is unanswerable — `recordedAt` has one-second resolution, a
 reuses processes** across requests, so "the rows this process wrote" spans unrelated questions. Row id
 is monotonic and says nothing about where a turn ends.
 
-`turnId` is read inside the single `Record` path rather than passed as an argument, which is what keeps
-the other three writers untouched: the runtime's own `%LogExecution` signature is fixed by
-`%AI.ToolMgr` and has no parameter to add.
+`turnId` is read inside the single `Record` path rather than threaded through each writer, which is what
+keeps the other three untouched: the runtime's own `%LogExecution` signature is fixed by `%AI.ToolMgr`
+and has no parameter to add. It is *also* accepted as an explicit override, because the stashed value
+must not outlive the tool calls — pooling cuts both ways, and a process that has just served a chat
+serves the next resolve. A turn id left set would stamp that resolve's rows with an unrelated question,
+which is worse than uncorrelated rows because the grouping looks authoritative.
 
 ### What a consumer must still not assume
 
