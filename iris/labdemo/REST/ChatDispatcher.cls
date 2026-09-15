@@ -1097,6 +1097,17 @@ ClassMethod BuildGoal(question As %String, history As %DynamicArray) As %String 
     set g = g _ $char(10) _ "<<<QUESTION" _ $char(10) _ question _ $char(10) _ "QUESTION>>>" _ $char(10)
     set g = g _ "Answer it using the tools. Read the values before answering; do not guess a number "
     set g = g _ "you could look up."
+
+    // AND A MUST, BECAUSE A DESCRIPTION IS NOT A DIRECTIVE (`iris/CLAUDE.md` §7, measured twice). The
+    // system prompt already said to state the window from the payload and the tool's own description
+    // now says to quote `window`; with both in place the model still took a 23.6-hour window and
+    // called it "the last hour" (#251). The period is not a detail of the answer -- an operator told
+    // "48,588 messages in the last hour" at a real rate of 0.57/s has been given a figure 24x wrong,
+    // which is worse than being given no figure. So it goes where the directives that DID stick go:
+    // the per-request goal.
+    set g = g _ " Every recorded figure you report belongs to a period, and you MUST state that "
+    set g = g _ "period using the tool's own words for it -- the window or since field of the reply "
+    set g = g _ "you read it from. Do not describe the period in your own words and do not round it."
     quit g
 }
 

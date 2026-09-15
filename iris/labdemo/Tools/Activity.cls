@@ -361,9 +361,10 @@ ClassMethod GetActivityTrend(host As %String, resolution As %String = "hours", b
 /// pipeline every host in it is within a message or two of every other, which reads as a tie and
 /// hides the host that is actually behind.
 ///
-/// The reply states its own window and rates. Use them rather than describing the window yourself:
-/// `from` and `to` are both bucket START instants, `through` is when the window ends, `windowSeconds`
-/// is how much time it covers, and each host's `messagesPerSecond` is already divided by that.
+/// The reply states its own window and rates. `window` is the period as a ready-made phrase -- quote
+/// it rather than describing the window yourself, because `from` and `to` are both bucket START
+/// instants and reading them as the span understates it. `through` is when the window ends,
+/// `windowSeconds` is how much time it covers, and each host's `messagesPerSecond` is divided by that.
 /// `windowSeconds` is not `periodSeconds` x `bucketsMeasured` when `lastBucketPartial` is true -- the
 /// newest bucket is counted only as far as it has actually elapsed, so the rates are comparable
 /// across resolutions. A null `messagesPerSecond` means no time has elapsed to measure over, never
@@ -538,6 +539,14 @@ ClassMethod CompareHostActivity(resolution As %String = "hours", buckets As %Int
     set out.periodSeconds = period
     set out.bucketsMeasured = slots
     set out.windowSeconds = windowSeconds
+    // THE WINDOW AS A FINISHED PHRASE, because publishing the parts was not enough (#251, second
+    // pass). With `periodSeconds`, `windowSeconds` and `through` all present and correct, the chat
+    // took the 24-bucket default as intended, read `Lab Router` 48,588 correctly -- and called a
+    // 23.6-hour window "the last hour". Handing the model three numbers and a rule for turning them
+    // into English is the same defect as handing it a count and a rule for turning it into a rate:
+    // a derivation left to the caller is a derivation that gets skipped. So the derivation is done
+    // here, once, and the answer can quote it. `messagesPerSecond` exists for the same reason.
+    set out.window = ..WindowPhrase(windowSeconds, ..IsoUTC(from), ..IsoUTC(through))
     // Typed, for the reason spelled out at `GetActivityCoverage`'s `readable`.
     do out.%Set("lastBucketPartial", partial, "boolean")
     set out.bucketsRequested = buckets
@@ -787,6 +796,47 @@ ClassMethod IsoUTC(stamp As %String) As %String [ Private ]
         quit ""
     }
     quit $translate($piece(stamp, ".", 1), " ", "T") _ "Z"
+}
+
+/// The window as one quotable English phrase, e.g. `23.6 hours, 2026-09-14T09:00:00Z to
+/// 2026-09-15T08:34:19Z`. Private.
+///
+/// A PRESENTATIONAL FIELD IN A DATA PAYLOAD, DELIBERATELY, because the consumer is a language model
+/// and the thing it kept getting wrong was the sentence, not the arithmetic (#251). It read the count
+/// correctly and called 23.6 hours "the last hour". The unit is chosen from the magnitude so the
+/// phrase is never absurd -- "84859 seconds" is technically true and unreadable, and an hourly window
+/// stated in days rounds to nothing.
+///
+/// NO RANGE WHEN EITHER END IS MISSING: the duration alone is still true, where a range with an empty
+/// end would read as a window running to the epoch. And a zero window says so in words rather than
+/// claiming "0 seconds", which invites being read as an instant that was measured.
+ClassMethod WindowPhrase(pSeconds As %Numeric, pFrom As %String, pThrough As %String) As %String [ Private ]
+{
+    if +pSeconds = 0 {
+        quit "no elapsed time to measure over yet"
+    }
+    if pSeconds < 120 {
+        set phrase = ..Plural($number(pSeconds, 0), "second")
+    } elseif pSeconds < 7200 {
+        set phrase = ..Plural($number(pSeconds / 60, 1), "minute")
+    } elseif pSeconds < 172800 {
+        set phrase = ..Plural($number(pSeconds / 3600, 1), "hour")
+    } else {
+        set phrase = ..Plural($number(pSeconds / 86400, 1), "day")
+    }
+    if (pFrom = "") || (pThrough = "") {
+        quit phrase
+    }
+    quit phrase _ ", " _ pFrom _ " to " _ pThrough
+}
+
+/// A number with its unit, pluralised. Private.
+///
+/// Exists so `WindowPhrase` cannot emit "1 hours". A model quoting the phrase verbatim -- which is
+/// what it is asked to do -- would reproduce the error in the operator's answer.
+ClassMethod Plural(pValue As %Numeric, pUnit As %String) As %String [ Private ]
+{
+    quit pValue _ " " _ pUnit _ $select(pValue = 1: "", 1: "s")
 }
 
 /// Seconds from the first ODBC timestamp to the second, negative if backwards, "" if either is

@@ -1172,7 +1172,7 @@ trend call per host.
 Same restated-default and refusal behaviour as §3.8.
 
 **Output**: `resolution`, `measured`, `from`, `to`, `through`, `periodSeconds`, `bucketsMeasured`,
-`windowSeconds`, `lastBucketPartial`, `bucketsRequested`, `hosts[]`.
+`windowSeconds`, `window`, `lastBucketPartial`, `bucketsRequested`, `hosts[]`.
 
 `hosts[]`: `host`, `hostType`, `application`, `messages`, `avgProcessingTime`, `avgQueueingTime`,
 `totalProcessingTime`, `bucketsWithActivity`, `messagesPerSecond`, `messageKinds[]`. Ordered by
@@ -1210,6 +1210,7 @@ Five fields close it, and a consumer should read the window from these rather th
 | `windowSeconds` | The **covered** time, and the rate denominator. See the partial-bucket rule below |
 | `through` | The instant the window ends: `to` plus as much of its period as has elapsed. Omitted, never faked, if unparseable |
 | `lastBucketPartial` | Whether the newest bucket is still filling. Usually `true` |
+| `window` | The period as one **quotable phrase**: `23.6 hours, 2026-09-14T09:00:00Z to 2026-09-15T08:36:25Z` |
 
 **`windowSeconds` is covered time, not elapsed time**, and the two differ whenever the instance was
 idle: the window is "the newest N slots *that exist*", so a gap between two of them belongs to no
@@ -1241,6 +1242,24 @@ understating, never inventing time.
 
 **`windowSeconds` can be `0`, and then every `messagesPerSecond` is `null`.** One bucket, less than a
 second old: a rate over no elapsed time is not zero messages per second (§2.1).
+
+#### `window` is a rendered phrase in a data payload, and that is the point (#251)
+
+**Publishing the parts was measured and was not enough.** With `periodSeconds`, `windowSeconds` and
+`through` all present and correct, and a system-prompt rule to state the window from them, the chat
+took the intended 24-bucket default, read `Lab Router` 48,588 correctly — and reported it as **"over
+the last hour"** against a real window of 23.6 hours. An operator handed "48,588 messages in the last
+hour" for traffic actually running at 0.57/s has a figure 24× wrong, which is worse than no figure.
+
+So the rendering is done once, here, and the consumer quotes it. This is the same argument as
+`messagesPerSecond`: **a derivation left to the caller is a derivation that gets skipped**, and the
+caller of these tools is a language model whose failure mode is the sentence, not the arithmetic.
+
+The unit is chosen from the magnitude — seconds under 2 minutes, minutes under 2 hours, hours under
+2 days, then days, one decimal place, pluralised — so the phrase is never absurd (`84859 seconds` is
+true and unreadable; an hourly window in days rounds to nothing). A zero window reads
+`no elapsed time to measure over yet` rather than `0 seconds`, which would invite being read as an
+instant that was measured. The range is dropped, keeping the duration, if either end is missing.
 
 #### `messagesPerSecond` is per host but over the WHOLE window (#251)
 
@@ -1307,6 +1326,7 @@ would itself be a small disclosure about the traffic.
   "resolution": "hours", "measured": true,
   "from": "2026-08-23T06:00:00Z", "to": "2026-08-23T11:00:00Z", "through": "2026-08-23T12:00:00Z",
   "periodSeconds": 3600, "bucketsMeasured": 6, "windowSeconds": 21600,
+  "window": "6 hours, 2026-08-23T06:00:00Z to 2026-08-23T12:00:00Z",
   "lastBucketPartial": false, "bucketsRequested": 6,
   "hosts": [
     { "host": "EMR Source", "hostType": "service", "application": true, "messages": 12318,

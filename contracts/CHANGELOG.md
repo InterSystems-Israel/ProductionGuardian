@@ -6,8 +6,8 @@ Every contract change, dated, with the reason. Newest first.
 
 ## 2026-09-15 — `mcp-tools.md` §3.9: `compare_host_activity` publishes its window and a per-host rate; `from`/`to` were bucket starts with no width (#251)
 
-**Additive.** Six new fields — `through`, `periodSeconds`, `bucketsMeasured`, `windowSeconds`,
-`lastBucketPartial` on the payload and `messagesPerSecond` on each `hosts[]` entry. `from`, `to`,
+**Additive.** Seven new fields — `through`, `periodSeconds`, `bucketsMeasured`, `windowSeconds`,
+`window`, `lastBucketPartial` on the payload and `messagesPerSecond` on each `hosts[]` entry. `from`, `to`,
 `bucketsRequested` and every existing host field are unchanged in name, meaning and value, so no
 consumer has to change. §3.8 gains a cross-reference only; `get_activity_trend` already published
 `periodSeconds` per bucket.
@@ -60,6 +60,25 @@ Truncating the newest bucket to its elapsed part makes them agree, and `lastBuck
 that has happened. **This is the one clock read in the tool**; the slots still choose the bounds, so
 every host is still compared over the same span. A future-dated or unparseable slot falls back to the
 full period, understating rather than inventing time.
+
+### A third pass: the parts were not enough, so the phrase is published too
+
+Rolled to the cluster and re-asked, the fix above worked as far as it went — the chat took the intended
+24-bucket default and read `Lab Router` 48,588 correctly — and then reported it as **"over the last
+hour"** against a 23.6-hour window. `periodSeconds`, `windowSeconds` and `through` were all present and
+correct, and the prompt told it to use them.
+
+**A derivation left to the caller is a derivation that gets skipped**, whether the derivation is a
+division or a sentence. So `window` publishes the period as one quotable phrase
+(`23.6 hours, 2026-09-14T09:00:00Z to 2026-09-15T08:36:25Z`), the unit chosen from the magnitude, and
+the answer quotes it. A presentational field in a data payload is the right call when the consumer is
+a language model whose failure mode is the sentence rather than the arithmetic — the same reasoning
+that put `messagesPerSecond` in the payload instead of leaving the model to divide.
+
+Paired with a `MUST` in the **per-request goal** rather than another line of system prompt, which is
+`iris/CLAUDE.md` §7's measured rule: a description is not a directive. An operator told "48,588
+messages in the last hour" for traffic running at 0.57/s has a figure 24× wrong, which is worse than
+no figure.
 
 ### Why the producer and not the prompt
 
