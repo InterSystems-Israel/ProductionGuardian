@@ -32,11 +32,15 @@
  * `missing_folder` and `closed_port` arm atomically and pass through the middle phase in under a
  * second, with no branch for that case.
  *
- * THE MIDDLE PHASE IS NOW BRIEF ENOUGH TO MISS, and that does not change this component. The engine
- * polls IRIS every 5s, so a 10s settle is one or two samples: the phase can flick past, or fall
- * entirely between two polls on an unlucky click. Nothing here should grow a timer to paper over that —
- * the states are read from witnesses IRIS sets, which is what keeps them right when a presenter arms
- * from a terminal instead. It is why the settle should not go below 10.
+ * THE MIDDLE PHASE STILL RENDERS ABOUT FIVE TIMES, AND THE FIRST VERSION OF THIS PARAGRAPH SAID IT
+ * WAS "BRIEF ENOUGH TO MISS" — wrong, on a premise worth naming so nobody re-derives it. It reasoned
+ * from the engine's 5s `POLL_INTERVAL_MS`, which is the metrics cadence and has never governed this:
+ * `/api/demo/triggers` is the engine's one async GET and hits IRIS live per request. The rate that
+ * matters is this app's own, `DEFAULT_INTERVAL_MS = 2000` in `usePolling`. Measured live 2026-09-15:
+ * a 10.01s settle, `activating` true across four consecutive samples spanning ~11s. 10 against 2 is a
+ * 5x margin, not a coin flip. Nothing here should grow a timer regardless — the states are read from
+ * witnesses IRIS sets, which is what keeps them right when a presenter arms from a terminal instead.
+ * The floor to protect is the browser tick, so 10s has room; going below ~6 would start to matter.
  *
  * A CLICK ON AN ALREADY-ACTIVATED TRIGGER IS ANSWERED LOCALLY, WITHOUT A REQUEST. See `onArm`.
  *
@@ -179,8 +183,8 @@ export function TriggerRail(): JSX.Element | null {
    * reads "trigger activating…" for about 10 seconds — still the longest wait in the demo and the whole
    * reason the middle phase exists (#135) — and a collapsed rail that said nothing about it would
    * re-create, one layer up, exactly the defect the three-phase rail was built to fix. The summary
-   * matters MORE now that the wait is short, not less: a phase that lasts one or two engine polls is
-   * one a presenter can miss entirely behind a collapsed list.
+   * matters MORE now that the wait is short, not less: ten seconds is plenty of time to press a second
+   * button, and it is short enough that a presenter does not think to go looking for a reason not to.
    *
    * NOT PERSISTED, unlike the panel widths. A remembered "expanded" would put the scaffolding back on
    * screen for whoever opens the dashboard next, which is the state this change exists to avoid; and
