@@ -4,6 +4,67 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-15 — `mcp-tools.md` §3.12: the boot-time `Cloud API` rows are real where the values move, and the fix is producer-side only (#249)
+
+**Documentation of a producer fix, not a contract change.** `get_recent_config_changes` returns exactly
+what it returned before: same fields, same filters, same allowlist. What changed is upstream of it —
+`Triggers.SetSetting()` gained `pAudit`, and `FirstBoot.ApplyDeploymentSettings()` passes 0 for a
+re-application that matches what it last applied. No consumer needs to do anything differently. The
+prose is here because §3.12 asserted this class of false positive was **fixed at both ends**, and a live
+run showed it was fixed at one.
+
+### What was wrong
+
+The 2026-08-31 entry below (#171) reasoned from compose, where `Production.cls` ships `127.0.0.1:52773`
+and the deployment declares the same, so the boot re-application moved nothing and the movement test
+suppressed it. On the Kubernetes deployment `PG_IRIS_HTTP_SERVER=pg-webgateway` and
+`PG_IRIS_HTTP_PORT=80`, so every boot wrote two rows that genuinely **moved**:
+
+```
+06:03:31.599  Production class deleted or uncompiled
+06:03:32.019  Production class compiled
+06:03:32.146  item Cloud API ...  HTTPServer:127.0.0.1>>pg-webgateway
+06:03:32.147  item Cloud API ...  HTTPPort:52773>>80
+```
+
+`noOpSaves` did not count them and `suppressed` did not count them, correctly: an allowlisted setting on
+a host of this production changed value, which is precisely what this tool exists to report.
+
+### What it cost
+
+Reported by the owner and reproduced from the live instance: `pool_bottleneck` armed, `queue_buildup` on
+`Cloud API` at queue 240 with an 83.03s wait (4152x baseline), `get_host_settings` returning
+`PoolSize: 1` in the same turn — and the investigation answered **"a configuration issue on EMR
+Source"**. Four `Cloud API` setting rows sat 28 minutes upstream of the finding, and §3.12's own framing
+("a setting changed shortly before a finding is the likeliest cause of it, and the audit log is the only
+place that records one") plus the CAUSE-or-VICTIM directive ("a fault two hops upstream is still the
+cause of your queue … name the upstream host") turned them into a diagnosis that named a healthy host
+over the setting the scenario is built on. The tool-audit table confirms the model scoped
+`get_recent_config_changes` to `{"host":"Cloud API"}`, so the misattribution came from the directives
+reading those rows, not from a wider scan.
+
+### Why the producer and not this tool
+
+A consumer-side rule broad enough to drop them — "ignore a setting change that closely follows a
+production recompile" — would also drop an operator edit made just after a compile, which is the exact
+evidence §3.12 exists to surface. The false positive has a source, and the source knows something no
+consumer can reconstruct: whether the value it just wrote is the one it last wrote.
+`AuditThisApplication()` records the applied value under `^ProductionGuardian.Setup("Applied", name)`
+and returns 1 the moment the deployment's intent moves, so **re-applying a declared value is not a
+change, and re-targeting a production still is.** Prompt-only fixes were not attempted: this area has a
+documented failure record (0/2, then 13/20 non-compliant runs).
+
+### What a consumer must still not assume
+
+**Rows already written do not disappear.** Audit rows are not ours to delete, so an instance that booted
+before this fix keeps its boot pairs until they age out of `DEFAULTWINDOW` (168h) or IRIS purges them —
+the four rows from 2026-09-15 06:03 on the live cluster included. An investigation against such an
+instance can still reach the wrong host; `retention.oldest` is the field that says whether that window
+is still open. **An instance with no `Applied` record is treated as already applied**, which drops
+exactly one genuine row: the first application on a fresh volume. Deliberate — auditing the unknown case
+would plant one last spurious pair on the first boot after the fix, on the very deployment the fix is
+for.
+
 ## 2026-09-02 — `earlywarning-api.md` §1.1: `projection.slope` and `secondsToThreshold` are fitted over the 45 s tail, not the 300 s window (#237)
 
 **Behaviour change.** `projectHost` in `services/detection-engine/src/detect/earlywarning.ts` divides by

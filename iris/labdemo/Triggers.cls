@@ -861,7 +861,14 @@ ClassMethod SetPoolSize(pItem As %String, pSize As %Integer) As %Status
 }
 
 /// Set one setting on one config item, adding it if absent.
-ClassMethod SetSetting(pItem As %String, pTarget As %String, pName As %String, pValue As %String) As %Status
+///
+/// `pAudit = 0` WRITES THE SETTING AND NO AUDIT ROW, and it exists for exactly one caller:
+/// `Setup.FirstBoot.ApplyDeploymentSettings()`, re-applying the deployment's own declared values
+/// after a compile reverted them. Read that method's comment for why that is not a change, and #249
+/// for what auditing it cost. Every other caller leaves the default alone -- a trigger
+/// mutating a live production setting MUST be attributable (root `CLAUDE.md` §2.1), which is the
+/// reason `AuditSettingChange()` exists at all.
+ClassMethod SetSetting(pItem As %String, pTarget As %String, pName As %String, pValue As %String, pAudit As %Boolean = 1) As %Status
 {
     set def = ##class(Ens.Config.Production).%OpenId(..#PRODUCTION)
     if '$IsObject(def) {
@@ -925,7 +932,16 @@ ClassMethod SetSetting(pItem As %String, pTarget As %String, pName As %String, p
     // keeps an empty previous value deliberately, for exactly this. So the test is on movement, not
     // on `previous` being non-empty. `found` is set inside the item loop above and survives it;
     // `$get` guards the path where the loop never assigned it.
-    if '$get(found, 0) || (previous '= pValue) {
+    //
+    // AND ONLY IF THE CALLER IS MAKING A CHANGE RATHER THAN RESTORING A DECLARED ONE (#249). The
+    // movement test above is necessary and was not sufficient: on the Kubernetes deployment
+    // `ApplyDeploymentSettings()` writes `HTTPServer 127.0.0.1 -> pg-webgateway` and
+    // `HTTPPort 52773 -> 80`, which MOVE, so every boot left two genuine `Cloud API` rows in the
+    // window -- and a `queue_buildup` investigation on that host then read them as the likeliest
+    // cause of a fault caused by `PoolSize`. Measured: 4 such rows 28 minutes before the finding.
+    // compose never showed it, because there the declared values equal the shipped ones and the
+    // movement test already caught them.
+    if pAudit, '$get(found, 0) || (previous '= pValue) {
         do ..AuditSettingChange(pItem, pName, previous, pValue)
     }
     quit $$$OK
