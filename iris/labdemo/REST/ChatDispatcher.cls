@@ -900,6 +900,16 @@ ClassMethod SystemPrompt() As %String [ Private ]
     set p = p _ "periodSeconds wide -- ten seconds at ""seconds"" resolution -- so 1 bucket is never "
     set p = p _ "one second. When the question names no time span at all, leave buckets out and take "
     set p = p _ "the default: a single bucket is too narrow to separate hosts and will read as a tie. "
+    // AND WHEN IT DOES NAME ONE, THE SPAN HAS TO BE DIVIDED BY THE BUCKET WIDTH -- which the rule
+    // above did not say, so "the last minute" became ("seconds", 1) and reported 9 messages over 10
+    // seconds. It LABELLED that correctly, which is #251's fix working, but a correctly-labelled
+    // answer to a question nobody asked is still not the answer. The worked conversions are spelled
+    // out rather than left as arithmetic, for the same reason the window is: a division the model has
+    // to perform is a division it can skip.
+    set p = p _ "When the question DOES name a span, divide that span by the bucket width to get "
+    set p = p _ "buckets: the last minute is 6 buckets at ""seconds"", five minutes is 30, ten "
+    set p = p _ "minutes is 60; the last two hours is 2 buckets at ""hours"", the last day is 24; the "
+    set p = p _ "last week is 7 buckets at ""days"". Never pass the span itself as buckets. "
     set p = p _ "State the window from the reply's own from, through and windowSeconds -- never "
     set p = p _ "describe it as ""the last second"" or ""the last minute"" unless those fields say so. "
     set p = p _ "When ranking hosts by load use messagesPerSecond and the queueing time together: in a "
