@@ -141,9 +141,12 @@ Act 2 was ~4 min until 2026-08-27, on the assumption that the drain beat ended w
 zero. Re-measured, the last finding takes ~200s rather than ~103s to age out — see §2.3. The number
 here is the one that matters for a slot, so it follows the measurement rather than the intent.
 
-**Act 1 got ~47s shorter on 2026-09-07** (the `pool_bottleneck` settle went 77s → 30s, §1.2) and Act 1
-is the only act that moved. **That is not enough for a 5-minute slot and this sheet does not claim to
-be one.** The unavoidable floor is Act 2.3: the drain is a real production catching up, measured at
+**Act 1 got ~47s shorter on 2026-09-07 and another ~20s shorter on 2026-09-15** (the
+`pool_bottleneck` settle went 77s → 30s → 10s, §1.2), and Act 1 is the only act that has moved either
+time — so it is now ~67s shorter than the version this sheet's act budgets were first written against.
+**That is still not enough for a 5-minute slot and this sheet does not claim to be one.** Act 1's ~2 min
+above is now generous rather than tight, and the slack is in 1.2, where the presenter used to be waiting.
+The unavoidable floor is Act 2.3: the drain is a real production catching up, measured at
 ~90s to an empty queue and ~200s to a clean board, and it is the beat the whole demo exists for. A
 5-minute cut is a different script — most plausibly Acts 1+2 only, with 2.3 called at an empty queue
 rather than a clean board — and it needs writing and measuring, not trimming on stage.
@@ -165,7 +168,7 @@ now is that it is quiet."*
 > **Why that matters:** a monitoring tool that is silent when nothing is wrong is the whole point.
 > False positives are the top risk this product was designed against, so a quiet list is a feature.
 
-### 1.2 Break something real (30s)
+### 1.2 Break something real (15s)
 
 Click **Pool bottleneck** in the rail under *Demo triggers*.
 
@@ -176,24 +179,33 @@ the most common real-world failure and the hardest to see, because every individ
 | t | What happens |
 |---|---|
 | 0s | Button returns immediately (0.03s); shows *activating* |
-| **~30s** | Takes effect — measured 30s. It settles with nothing armed first |
-| ~35s | Queue starts climbing, ~1/sec net — **and Early Warning starts projecting** (§1.2b) |
-| ~90s | First finding confirmed |
+| **~10s** | Takes effect. It settles with nothing armed first |
+| ~15s | Queue starts climbing, ~1/sec net — **and Early Warning starts projecting** (§1.2b) |
+| ~70s | First finding confirmed |
 
-**Measured on the containerised stack, 2026-09-07, two consecutive arms from a warm engine.** Armed
-at +30s both times; the queue crossed the floor of 50 at +86s and +91s; `queue_buildup` confirmed at
-+91s and +96s.
+**Measured on the containerised stack, 2026-09-07, two consecutive arms from a warm engine — at the
+30s settle.** Armed at +30s both times; the queue crossed the floor of 50 at +86s and +91s;
+`queue_buildup` confirmed at +91s and +96s. **The table above is that measurement minus 20s**, which
+the settle going 30s → 10s on 2026-09-15 justifies exactly: the settle is a `hang` with nothing armed,
+so it moves when the clock starts and changes no interval after it. The gaps — arm to climb, climb to
+finding — are the measured part and they are unchanged.
 
-> **THE SETTLE WAS 77s UNTIL 2026-09-07 AND IS NOW 30s.** If you are presenting from an older build
-> the button will sit on *activating* for over a minute; that is the old default, not a hang.
+> **THE SETTLE WAS 77s UNTIL 2026-09-07, 30s UNTIL 2026-09-15, AND IS NOW 10s.** If you are presenting
+> from an older build the button will sit on *activating* for half a minute or more; that is an old
+> default, not a hang.
 >
-> **Do not fill the 30 seconds with silence**, and do not repeat the old line about it. The wait used
-> to be defended as *"it is establishing what normal looks like before I break anything"*, which was a
-> good line and is now false: **the wait gates nothing.** `queue_buildup`'s baseline is a *stated* one
-> (`referenceBaselines`), and Early Warning's twelve-sample fit is counted from **engine uptime**, not
-> from this trigger — measured at 49 samples already banked at the moment the button was pressed. What
-> the 30s buys is a beat: the room sees a healthy production immediately before the fault, and you get
-> to set up what is about to happen. Say that instead — it is true, and it is a better line anyway.
+> **You no longer have to fill the wait**, which is the practical effect of the change — but do not
+> repeat the old line about it either. The wait used to be defended as *"it is establishing what normal
+> looks like before I break anything"*, which was a good line and is false: **the wait gates nothing.**
+> `queue_buildup`'s baseline is a *stated* one (`referenceBaselines`), and Early Warning's twelve-sample
+> fit is counted from **engine uptime**, not from this trigger — measured at 49 samples already banked at
+> the moment the button was pressed. What the 10s buys is a beat: the room sees a healthy production
+> immediately before the fault. Say that if you say anything — it is true, and at ten seconds the
+> honest option is also to say nothing and let the click land.
+>
+> **Watch for the state word, because it is now brief.** *trigger activating…* covers ~10s against the
+> engine's 5s poll, so it is one or two refreshes and an unlucky click may skip it. The scenario arming
+> correctly is what the queue climbing proves; a missed *activating* is not a failed arm.
 >
 > **The one precondition that IS real: the engine must have been up ~60s.** That is where the twelve
 > samples come from. It is covered by the pre-flight above; if you arm within a minute of
@@ -207,7 +219,12 @@ Guardian is saying something no threshold alert can say: *not yet, but shortly, 
 
 **Measured live on the containerised stack, 2026-09-07, at the 30s settle from a warm engine.** `t` is
 seconds from the button press, so the +30s row is the moment the scenario arms; the queue crossed the
-floor of 50 at t=86s:
+floor of 50 at t=86s.
+
+**AT TODAY'S 10s SETTLE, READ EVERY `t` BELOW AS 20 SECONDS SMALLER** — arming at ~10s, the first
+projection at ~20s, the crossing at ~66s. The table is left at its measured values because what it is
+evidence for is the *sequence of things Early Warning says*, and that sequence is anchored to the arm
+moment, not to the button press. Only the offset moved.
 
 | t | queue | Early Warning shows |
 |---|---|---|
@@ -225,8 +242,8 @@ before the queue was deep enough for any threshold to have fired. That is the di
 monitor and a warning."*
 
 > **Point at the RATE.** `~61.4/min` is a measurement and it converges on exactly the net inflow the
-> scenario creates — one message a second, which is the whole point, and it was equally true at the
-> 75s settle: the shorter settle changed *when* the table above starts, not what it says. The
+> scenario creates — one message a second, which is the whole point, and it was equally true at the 75s
+> and 30s settles: shortening the settle changed *when* the table above starts, never what it says. The
 > countdown is the softer of the two claims — it is a projection, prefixed `~`
 > on purpose — and it **does tick down in seconds** once the crossing is under 90 seconds away
 > (`~40 s`, `~18 s`, `~5 s`). An earlier version of this sheet said the sub-90s case rendered as

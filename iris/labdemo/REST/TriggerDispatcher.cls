@@ -52,15 +52,19 @@ Parameter FLAGVAR = "PG_DEMO_TRIGGERS";
 /// Scenarios that take longer to arm than the web server will wait, so they run as a background job.
 ///
 /// A LIST RATHER THAN A DURATION THRESHOLD, because the cost is not measurable before the call: the
-/// only way to know a scenario is slow is to know what it does. `pool_bottleneck` settles for 30s;
+/// only way to know a scenario is slow is to know what it does. `pool_bottleneck` settles for 10s;
 /// the other two return in under a second. Adding a scenario means deciding which side of
 /// this it falls on, which is the decision that should be explicit.
 ///
-/// 30s IS STILL THE SLOW SIDE, and the settle shortening from 75s to 30s (2026-09-07) does not move
-/// it: IRIS's embedded Apache answers 504 after exactly 60s, measured directly with no proxy in
-/// front, so the threshold this list stands in for is 60s and not "about a minute". A future settle
-/// under that would be a genuine decision to make, not an automatic promotion — the job also keeps
-/// the arm POST at ~0.02s, which is what makes the `activating` state observable at all.
+/// `pool_bottleneck` STAYS ON THIS LIST AT 10s, AND THAT IS THE DECISION THE OLD COMMENT ASKED FOR.
+/// It read: the threshold this list stands in for is 60s -- IRIS's embedded Apache answers 504 after
+/// exactly 60s, measured directly with no proxy in front -- so a settle under 60 "would be a genuine
+/// decision to make, not an automatic promotion". 10s is comfortably under 60 and would now survive a
+/// synchronous call. It is still jobbed, for the reason that same comment named as the tiebreak: the
+/// job is what keeps the arm POST at ~0.02s, and THAT is what makes `activating` observable. Making it
+/// synchronous would delete the middle state (#135) rather than speed anything up -- the operator
+/// would get one 10-second hang with no feedback instead of an immediate "trigger activating…", and
+/// the dashboard's fetch would be the thing waiting. Shorter settle, same shape, on purpose.
 Parameter SLOWSCENARIOS = {$listbuild("pool_bottleneck")};
 
 XData UrlMap [ XMLNamespace = "http://www.intersystems.com/urlmap" ]
@@ -86,7 +90,7 @@ ClassMethod Enabled() As %Boolean [ Private ]
 ///
 /// PUBLISHES TWO MAPS, `armed` AND `activating`, because there are THREE states and only two of
 /// them were previously observable. See `Scenarios()` for how the pair is derived; the short version
-/// is that "the request was accepted" and "the scenario is in effect" are ~30 seconds apart for
+/// is that "the request was accepted" and "the scenario is in effect" are ~10 seconds apart for
 /// `pool_bottleneck`, and a presenter watching a button needs to tell those apart from each other
 /// and from nothing having happened.
 ///
@@ -145,22 +149,31 @@ ClassMethod Status() As %Status
 ///   activating      the request landed; the scenario is not in effect yet
 ///   activated       the scenario is in effect
 ///
-/// The middle state is real and observable, not a UI nicety. `PoolBottleneck()` settles for 30
+/// The middle state is real and observable, not a UI nicety. `PoolBottleneck()` settles for 10
 /// seconds with nothing armed BEFORE arming anything -- and it runs as a background job, so the HTTP
-/// call returns in ~0.02s. For those 30 seconds the operator has a scenario that was accepted and is
+/// call returns in ~0.02s. For those 10 seconds the operator has a scenario that was accepted and is
 /// doing nothing yet. Reporting that as "not activated" invites a second click; reporting it as
 /// "activated" is a claim the presenter notices is false when no queue appears.
 ///
 /// THE WAIT IS NO LONGER LOAD-BEARING, and this comment claimed twice that it was. It gave #43's
 /// zero baseline, then Early Warning's minimum fit window, and noted approvingly that "the 75s did
 /// not move" -- which was the tell. Both reasons are dead and `Triggers.PoolBottleneck()` has the
-/// autopsy; the wait is now a presentational beat, cut to 30s on 2026-09-07 for a 5-minute slot.
+/// autopsy; the wait is now a presentational beat, cut to 30s on 2026-09-07 and to 10s on 2026-09-15.
+///
+/// AT 10s THE MIDDLE STATE IS BRIEF, WHICH IS A REAL COST AND NOT A REGRESSION. The engine polls IRIS
+/// every 5s (POLL_INTERVAL_MS), so a 10-second window is one or two polls wide: a viewer can now see
+/// "trigger activating…" flick past, or land on the poll that misses it. It is still worth publishing.
+/// Its job was never to be admired for 30 seconds -- it was to stop the SECOND CLICK, and one poll of
+/// honest "accepted, not in effect" does that as well as six. What would break it is a settle SHORTER
+/// than the poll interval, where the state could exist entirely between two samples and the button
+/// would appear to do nothing at all until it armed. 10 against 5 is a 2x margin; do not cut further
+/// without moving the poll too.
 ///
 /// NONE OF THAT WEAKENS THIS THREE-STATE MODEL, which is the point worth keeping. The states are
 /// keyed on witnesses the scenario sets, not on a duration, so they were never reading the 75 in the
-/// first place -- shortening the settle to 30 needed no change here beyond this prose. A model built
-/// on "assume it is arming for ~75s" would have needed one, and would have been silently wrong for a
-/// day. Any future change to the settle is likewise free.
+/// first place -- shortening the settle to 30, and then to 10, needed no change here beyond this
+/// prose. A model built on "assume it is arming for ~75s" would have needed one, and would have been
+/// silently wrong for a day.
 ///
 /// `effectWitness` IS THE ONE THAT MEANS "IN EFFECT", and for `pool_bottleneck` it is deliberately
 /// NOT the stash. `DispatcherMs` is set unconditionally, only by this scenario, and only AFTER the
@@ -255,17 +268,22 @@ ClassMethod Arm() As %Status
         //     POST /labdemo/trigger/arm {"scenario":"pool_bottleneck"}  ->  HTTP 504 in 60.2s
         //
         // `PoolBottleneck()` settled for 75s when this block was written, so the 504 was certain.
-        // SINCE 2026-09-07 IT SETTLES FOR 30s AND THE 504 IS NO LONGER CERTAIN -- 30 is under 60, so a
-        // synchronous request would now, on today's numbers, come back. `pool_bottleneck` STAYS on
-        // `SLOWSCENARIOS` anyway, deliberately, for three reasons that do not depend on the settle:
+        // IT SETTLED FOR 30s FROM 2026-09-07 AND FOR 10s SINCE 2026-09-15, SO THE 504 IS NOT MERELY
+        // UNCERTAIN NOW, IT IS UNLIKELY -- 10 is a 6x margin under 60 and a synchronous request would
+        // plainly come back. `pool_bottleneck` STAYS on `SLOWSCENARIOS` anyway, deliberately, for three
+        // reasons that do not depend on the settle, and note that the margin argument is the one that
+        // got weaker while the other two did not:
         //
         //   1. The `activating` state exists because this POST returns immediately. Un-jobbing the
         //      scenario would collapse the three states in `Scenarios()` back to two and put a
-        //      half-minute spinner where a presenter currently gets "trigger accepted".
-        //   2. 30s against a 60s limit is a 2x margin on a `hang`, and the settle is a presentational
-        //      number now -- exactly the kind that gets nudged for a room. The demo breaks at 60.
+        //      ten-second dead button where a presenter currently gets "trigger accepted".
+        //   2. The settle is a PRESENTATIONAL number -- exactly the kind that gets nudged for a room,
+        //      twice now, in one direction so far. The demo breaks at 60, and the whole point of this
+        //      block is that no future nudge can reach that cliff. Being jobbed makes the number safe
+        //      to tune, which is why the margin growing is not a reason to remove the guard.
         //   3. `pRateSecs` and `pWarmSeconds` are the method's defaults, not the wire's, so a terminal
-        //      caller can pass a longer warm through a path this route cannot see.
+        //      caller can pass a longer warm through a path this route cannot see. `PoolBottleneck(
+        //      1000, 0.5, 120)` from a session is still a 504 waiting to happen without this.
         //
         // Worth noting the 504 does not care WHY the wait exists, so this block was needed regardless
         // of which justification for the settle was current -- and it is needed now that the settle has
@@ -294,7 +312,7 @@ ClassMethod Arm() As %Status
                 return $$$OK
             }
             write { "armed": (scenario), "ok": true, "pending": true, "log": "",
-                "note": "Settling for ~30s with nothing armed, so the room sees a healthy production before the fault. The throttle and the inflow then go on together and the armed indicator appears." }.%ToJSON()
+                "note": "Settling for ~10s with nothing armed, so the room sees a healthy production before the fault. The throttle and the inflow then go on together and the armed indicator appears." }.%ToJSON()
             return $$$OK
         }
 

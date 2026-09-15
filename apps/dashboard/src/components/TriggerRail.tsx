@@ -22,14 +22,21 @@
  *     activating        the request was accepted; the scenario is not in effect yet
  *     activated         the scenario is live
  *
- * `pool_bottleneck` is why. It settles for ~30 seconds with nothing armed *before* arming anything —
+ * `pool_bottleneck` is why. It settles for ~10 seconds with nothing armed *before* arming anything —
  * see `Triggers.PoolBottleneck`, which is also where to read why that wait is now a presentational
- * beat rather than a gate on the engine, and why it went 75s → 30s on 2026-09-07 — and it runs as a
- * background job, so the arm POST returns in ~0.02s. For half a minute the scenario is in neither of
- * the other two states. Collapsing that into "not activated" invites a second click; collapsing it
- * into "activated" is a claim a presenter notices is false when no queue appears. The dispatcher reports
- * both maps and this component renders three phases from them. `missing_folder` and `closed_port`
- * arm atomically and pass through the middle phase in under a second, with no branch for that case.
+ * beat rather than a gate on the engine, and why it went 75s → 30s (2026-09-07) → 10s (2026-09-15) —
+ * and it runs as a background job, so the arm POST returns in ~0.02s. For those ten seconds the
+ * scenario is in neither of the other two states. Collapsing that into "not activated" invites a
+ * second click; collapsing it into "activated" is a claim a presenter notices is false when no queue
+ * appears. The dispatcher reports both maps and this component renders three phases from them.
+ * `missing_folder` and `closed_port` arm atomically and pass through the middle phase in under a
+ * second, with no branch for that case.
+ *
+ * THE MIDDLE PHASE IS NOW BRIEF ENOUGH TO MISS, and that does not change this component. The engine
+ * polls IRIS every 5s, so a 10s settle is one or two samples: the phase can flick past, or fall
+ * entirely between two polls on an unlucky click. Nothing here should grow a timer to paper over that —
+ * the states are read from witnesses IRIS sets, which is what keeps them right when a presenter arms
+ * from a terminal instead. It is why the settle should not go below 10.
  *
  * A CLICK ON AN ALREADY-ACTIVATED TRIGGER IS ANSWERED LOCALLY, WITHOUT A REQUEST. See `onArm`.
  *
@@ -169,9 +176,11 @@ export function TriggerRail(): JSX.Element | null {
    * beats merely lower down.
    *
    * WHAT COLLAPSING MUST NOT HIDE IS STATE, which is why the summary below exists. `pool_bottleneck`
-   * reads "trigger activating…" for about 30 seconds — the longest wait in the demo and the whole
+   * reads "trigger activating…" for about 10 seconds — still the longest wait in the demo and the whole
    * reason the middle phase exists (#135) — and a collapsed rail that said nothing about it would
-   * re-create, one layer up, exactly the defect the three-phase rail was built to fix.
+   * re-create, one layer up, exactly the defect the three-phase rail was built to fix. The summary
+   * matters MORE now that the wait is short, not less: a phase that lasts one or two engine polls is
+   * one a presenter can miss entirely behind a collapsed list.
    *
    * NOT PERSISTED, unlike the panel widths. A remembered "expanded" would put the scaffolding back on
    * screen for whoever opens the dashboard next, which is the state this change exists to avoid; and
@@ -274,16 +283,26 @@ export function TriggerRail(): JSX.Element | null {
          * Both notes this system produces are ONE LINE and each answers a question the state word
          * immediately provokes, rather than restating it:
          *
-         *   pool_bottleneck   "Settling for ~30s with nothing armed, so the room sees a healthy
+         *   pool_bottleneck   "Settling for ~10s with nothing armed, so the room sees a healthy
          *                      production before the fault..."
          *   reset             "Findings clear within ~10s. A system_alert finding persists until it
          *                      ages out of the proxy's buffer."
          *
-         * The first is close to load-bearing. `pool_bottleneck` reads "trigger activating…" for
-         * about 30 seconds — the longest wait in the demo, and the whole reason the middle state
-         * exists (#135) — and a word that sits unchanged that long reads as a hang to everyone
-         * except the person who wrote it. The note is what makes the wait legible. Cutting it would
-         * re-create the defect the three-state rail was built to fix, one layer up.
+         * (Two unrelated ~10s, arrived at independently — the settle is a chosen beat, the reset
+         * figure is measured clearing time. Do not read one as the other.)
+         *
+         * The first WAS close to load-bearing AND IS LESS SO SINCE THE SETTLE WENT TO 10s
+         * (2026-09-15), which is worth stating plainly rather than reasserting the old argument with a
+         * new number in it. That argument was about duration: "trigger activating…" sat unchanged for
+         * about thirty seconds, and a word that sits unchanged on a projector that long reads as a hang
+         * to everyone except the person who wrote it. Ten seconds does not read as a hang.
+         *
+         * It is kept anyway, on the weaker but still sufficient ground: it is the only place the
+         * operator is told the wait is DELIBERATE and that nothing is armed during it. Without it, a
+         * presenter who says "and now the queue builds" during the settle has no on-screen support for
+         * why it has not started. One line, once per demo, for the state that has the most explaining
+         * to do — and if the settle ever goes to zero, this note goes with it rather than becoming a
+         * claim about a wait that no longer happens.
          *
          * The second answers the question a presenter asks ten seconds after pressing Reset: the
          * finding is still on screen, and the note is the difference between "the reset failed" and
@@ -480,8 +499,11 @@ export function TriggerRail(): JSX.Element | null {
                       />
                     )}
                   </span>
-                  {/* Words, not a spinner: pool_bottleneck settles for 30 seconds and a spinner that
-                      long reads as a hang. The word the operator now sees is "activated" rather than
+                  {/* Words, not a spinner. The original reason was duration — pool_bottleneck settled
+                      for 30 seconds and a spinner that long reads as a hang — and the settle is 10s
+                      since 2026-09-15, so that reason is thinner. Words still win: a spinner says
+                      "waiting", where "trigger activating…" says WHAT is waiting, which is the thing an
+                      audience cannot infer. The word the operator sees is "activated" rather than
                       "armed" — same state, plainer language. */}
                   {phase === 'activating' && (
                     <span className="pg-rail__trigger-state">trigger activating…</span>

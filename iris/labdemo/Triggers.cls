@@ -312,11 +312,12 @@ ClassMethod SystemAlert(pHost As %String = {..#OPERATION}) As %Status
 /// this value, and #66 established that restoring to a hardcoded number destroys a deployment that
 /// legitimately differs.
 ///
-/// `pWarmSeconds` (default 30) WAITS WITH BOTH HALVES OFF BEFORE ARMING. THE DEFAULT WAS 75 UNTIL
-/// 2026-09-07 AND THE REASON FOR 75 HAD ALREADY EXPIRED TWICE OVER. It first read "THE BASELINE MUST
-/// WARM AT ZERO, WITH NO QUEUE"; `referenceBaselines` killed that. It was then re-argued as Early
-/// Warning's minimum fit window, which is the block below -- and that argument, checked properly
-/// against the engine rather than against its own comment, does not need the wait either:
+/// `pWarmSeconds` (default 10) WAITS WITH BOTH HALVES OFF BEFORE ARMING. THE DEFAULT WAS 75 UNTIL
+/// 2026-09-07, 30 UNTIL 2026-09-15, AND THE REASON FOR 75 HAD ALREADY EXPIRED TWICE OVER. It first
+/// read "THE BASELINE MUST WARM AT ZERO, WITH NO QUEUE"; `referenceBaselines` killed that. It was
+/// then re-argued as Early Warning's minimum fit window, which is the block below -- and that
+/// argument, checked properly against the engine rather than against its own comment, does not need
+/// the wait either:
 ///
 ///   * `minFitSamples` (12) is counted by `BaselineStore.recent()`, which filters ONLY on
 ///     `fitWindowSeconds` and DELIBERATELY IGNORES the regime boundary (`window.ts` -- "Raw sample
@@ -326,28 +327,41 @@ ClassMethod SystemAlert(pHost As %String = {..#OPERATION}) As %Status
 ///     there.
 ///
 ///   * The one case where the fit genuinely is cold is a COLD ENGINE -- the first ~60s after
-///     `compose up` or an engine restart. 30s of settling does not cover that and is not meant to.
-///     It is a precondition on the stack, not on this method: bring the stack up before you demo,
-///     which #108's pre-demo check already requires for four other reasons.
+///     `compose up` or an engine restart. 10s of settling does not cover that and is not meant to
+///     (nor did 30, nor did 75 reliably). It is a precondition on the stack, not on this method:
+///     bring the stack up before you demo, which #108's pre-demo check already requires for four
+///     other reasons.
 ///
-/// SO WHAT DOES THE 30s BUY, given both original reasons are gone? Two things, both about the room
+/// SO WHAT DOES THE 10s BUY, given both original reasons are gone? Two things, both about the room
 /// rather than the engine, which is why it is not zero: the audience sees a healthy production for a
 /// beat before the fault, and the presenter gets to say what is happening while nothing is happening.
-/// Requested at 30s for a 5-minute slot (@Ari-Glikman, 2026-09-07). It measured 77s wall-clock at 75.
+/// A beat is all it has to be, and 30 was longer than a beat -- long enough that a presenter waiting
+/// on it starts explaining the wait instead of the product, which is the failure mode the number is
+/// tuned against. Requested at 30s for a 5-minute slot and then at 10s as still too long
+/// (@Ari-Glikman, 2026-09-07 and 2026-09-15). It measured 77s wall-clock at 75.
 ///
-/// MEASURED AT 30, twice, against the containerised stack from a warm engine (2026-09-07). `t` is
-/// seconds from the arm POST, which itself returns in 0.02s because the dispatcher jobs this scenario:
+/// MEASURED AT 30, twice, against the containerised stack from a warm engine (2026-09-07). Kept as
+/// the measurement record and NOT restated for 10 -- see the shift note under it. `t` is seconds from
+/// the arm POST, which itself returns in 0.02s because the dispatcher jobs this scenario:
 ///
 ///     armed (DispatcherMs set)   +30s   +30s
 ///     first Early Warning fit    +40s   +40s
 ///     queue crosses the floor    +91s   +86s
 ///     confirmed queue_buildup    +96s   +91s
 ///
+/// AT 10 EVERY ROW MOVES 20s EARLIER AND NOTHING ELSE CHANGES, because the settle is a plain `hang`
+/// with nothing armed: it delays when the clock starts and has no effect on any interval after it.
+/// So arming lands at ~+10s and `queue_buildup` at ~+71-76s. That is arithmetic on a measurement,
+/// not a measurement -- the numbers above are what was on a stopwatch.
+///
 /// The fit was already at 20 and 49 samples respectively when the button was pressed, which is the
 /// evidence for the paragraph above: nothing about the wait produced those samples.
 ///
-/// A NUMBER TO PUT BACK IF THE FIT IS EVER COLD ON PURPOSE: 60s, not 75. The 75 was 60 plus margin
-/// for a reason that no longer holds, and nothing measured ever needed the extra 15.
+/// A NUMBER TO PUT BACK IF THE FIT IS EVER COLD ON PURPOSE: 60s, not 75 and not 30. The 75 was 60
+/// plus margin for a reason that no longer holds, and nothing measured ever needed the extra 15.
+/// Note what this means: the settle is now WELL BELOW the only figure that would make it a real gate
+/// again, so it is unambiguously presentational. If a cold fit ever has to be covered here, that is a
+/// separate parameter with a separate reason, not this one crept back up.
 ///
 /// The dead argument is kept below because a reader who trusts it will "fix" the wrong thing:
 ///
@@ -460,7 +474,7 @@ ClassMethod SystemAlert(pHost As %String = {..#OPERATION}) As %Status
 /// So the default leaves headroom: 2/sec in against 4/sec out drains ~2/sec, and the backlog the
 /// demo built visibly disappears. Raise pRateSecs to make the drain faster and more dramatic;
 /// lower it toward 0.25 only if you want to demonstrate that a pool of 4 is NOT enough.
-ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Double = 0.5, pWarmSeconds As %Integer = 30, pMaxQueued As %Integer = 400) As %Status
+ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Double = 0.5, pWarmSeconds As %Integer = 10, pMaxQueued As %Integer = 400) As %Status
 {
     set sc = ..CheckProduction()
     if $$$ISERR(sc) {
@@ -498,6 +512,12 @@ ClassMethod PoolBottleneck(pDispatcherMs As %Integer = 1000, pRateSecs As %Doubl
     // fit comes from engine uptime, which no wait here can change; `queue_buildup`'s baseline is
     // stated in `referenceBaselines`. Both halves still go on together AFTER the wait, because
     // arming the throttle before the inflow would let a queue form against a half-armed scenario.
+    //
+    // 10s SINCE 2026-09-15 (75 -> 30 -> 10). The value only ever has to be long enough for the room
+    // to register a healthy production, and the number below is written from `pWarmSeconds` rather
+    // than typed, so shortening it again is one default and the prose that quotes it -- which is the
+    // part that has drifted twice now, so check `TriggerDispatcher.cls`'s `note`, `TriggerRail.tsx`
+    // and `docs/demo/cue-sheet.md` in the same change.
     if pWarmSeconds > 0 {
         write "  settling for ", pWarmSeconds, "s with NOTHING armed", !
         write "    (a beat on the healthy state; the engine needs no warm-up if it has been up ~60s)", !
