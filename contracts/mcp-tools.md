@@ -1639,6 +1639,36 @@ Fixed at both ends: `Triggers.SetSetting()` no longer audits a save that moved n
 filters the shape anyway — for the rows already in the log, and for the Management Portal, which this
 project does not control.
 
+#### The boot rows came back where the values MOVE, and no filter here could have caught them (#249)
+
+**Read the paragraph above as being about compose only.** Its premise is that
+`ApplyDeploymentSettings()` re-applies values that already match, which is true where the deployment's
+declared target equals `Production.cls`'s shipped `127.0.0.1:52773`. On the Kubernetes deployment it
+does not: `PG_IRIS_HTTP_SERVER=pg-webgateway` and `PG_IRIS_HTTP_PORT=80`, so every boot wrote
+`HTTPServer 127.0.0.1 >> pg-webgateway` and `HTTPPort 52773 >> 80` — **real movements of an allowlisted
+setting on a host of this production, correctly reported.** `noOpSaves` did not count them, `suppressed`
+did not count them, and nothing in this tool should have: a consumer-side rule broad enough to drop
+them would also drop the operator edit this tool exists to surface.
+
+What that cost, measured 2026-09-15 on the live cluster: `pool_bottleneck` armed, `queue_buildup` on
+`Cloud API` at queue 240 and an 83s wait, `get_host_settings` returning `PoolSize: 1` in the same turn —
+and the investigation answered "a configuration issue on EMR Source", because four `Cloud API` setting
+rows sat 28 minutes upstream of the finding and §3.12's framing plus the CAUSE-or-VICTIM directive
+("name the upstream host") together outrank a pool size.
+
+**So it is fixed at the producer, and the shape of that fix is the point.**
+`Triggers.SetSetting()` takes `pAudit`, and `FirstBoot.ApplyDeploymentSettings()` is the only caller
+that passes 0 — computed per setting by `AuditThisApplication()`, which returns 1 as soon as the
+deployment asks for a value different from the one it last applied. **Re-applying a declared value is
+not a configuration change; re-targeting a production is, and still audits.** Consumers gain no new
+guarantee to rely on here: this removes a false positive at its source, it does not narrow what a
+genuine change looks like.
+
+**Rows already written do not disappear.** A producer fix is forward-looking, and audit rows are not
+ours to delete, so an instance that booted before the fix keeps its boot pairs until they age out of
+`DEFAULTWINDOW` (168h) or IRIS purges them. An investigation run against such an instance can still
+reach the wrong host, and `retention.oldest` is the field that tells a reader whether that is possible.
+
 **Not every setting change is audited.** `Ens.Config.Production.%Save()` writes no audit row — only the
 Management Portal's own save path does. Measured by arming `Triggers.MissingFolder()` and finding the
 newest row three days stale. `Triggers.SetSetting()` therefore emits a byte-compatible row itself via

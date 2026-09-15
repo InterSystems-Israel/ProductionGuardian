@@ -464,6 +464,46 @@ ClassMethod EnableMetrics() As %Status
 /// Absent globals leave the shipped values alone -- deliberately, because silently rewriting a
 /// working deployment is the defect Reset() had in #66. That default is now a working target
 /// rather than an unreachable one.
+///
+/// ─────────────────────────────────────────────────────────────────────────────────────────────
+/// RE-APPLYING A DECLARED VALUE IS NOT A CONFIGURATION CHANGE, AND AUDITING IT AS ONE BROKE A
+/// DIAGNOSIS (#249)
+///
+/// This method runs on every boot and its writes MOVE the value, because `VerifyDeploymentSettings()`
+/// below explains why they have to: compiling `Production.cls` regenerates the stored config from the
+/// class's XData, so the shipped `127.0.0.1:52773` comes back and this method puts the deployment's
+/// target back. That round trip is invisible on compose -- there the declared values ARE the shipped
+/// ones, so `SetSetting`'s movement test (#171) suppressed the audit row and nobody noticed.
+///
+/// On the Kubernetes deployment the values differ, so the row was real, and the audit log carried
+/// this after every boot:
+///
+///     Production class deleted or uncompiled
+///     Production class compiled
+///     item Cloud API ...  HTTPServer:127.0.0.1>>pg-webgateway
+///     item Cloud API ...  HTTPPort:52773>>80
+///
+/// `Tools.ChangeLog` reports those correctly -- they passed every filter it has, because they are
+/// genuine movements of an allowlisted setting on a host of this production. The cost landed on the
+/// investigation: `AgentDispatcher`'s goal tells the model that "a setting changed shortly before a
+/// finding is the likeliest cause of it", so an armed `pool_bottleneck` -- whose whole mechanism is
+/// `PoolSize`, on the same host -- was diagnosed as a configuration fault on the interface instead.
+/// Measured 2026-09-15: 4 rows timestamped 28 minutes before the finding, `GetHostSettings` returning
+/// `PoolSize: 1` in the same turn, and the queue at 240 with an 83s wait.
+///
+/// SO THE ROW IS SUPPRESSED, AND ONLY WHILE THE DEPLOYMENT'S INTENT HOLDS STILL. What is recorded is
+/// not the setting but the value this method LAST APPLIED; when the deployment asks for something
+/// different, that is a real change and it audits. This matters and is not defensive: pointing the
+/// production at an unreachable gateway is the #96 failure, which cost a wrong diagnosis of Smart
+/// Resolve, and the change log is where an investigation would find it.
+///
+/// AN INSTANCE WITH NO RECORD IS TREATED AS ALREADY APPLIED, which drops exactly one row -- the
+/// genuine first application on a fresh volume. Deliberate, and the alternative is worse: every
+/// instance that predates this change has no record, so auditing the unknown case would plant one
+/// last spurious pair on the first boot after the fix, on the very deployment the fix is for. A first
+/// deployment is also not "someone changed a production somebody was running", which is the question
+/// `Tools.ChangeLog` exists to answer. The boot log still says what was applied, unconditionally, and
+/// `VerifyDeploymentSettings()` still confirms it against the live adapter.
 ClassMethod ApplyDeploymentSettings() As %Status
 {
     set server = $get(^ProductionGuardian.Setup("HTTPServer"), "")
@@ -483,7 +523,8 @@ ClassMethod ApplyDeploymentSettings() As %Status
     // gateway, which is the failure this whole class exists to prevent. Verified: the error
     // is returned and `do` swallows it (@tanifgit, #73).
     if server '= "" {
-        set sc = ##class(ProductionGuardian.LabDemo.Triggers).SetSetting(item, "Adapter", "HTTPServer", server)
+        set sc = ##class(ProductionGuardian.LabDemo.Triggers).SetSetting(item, "Adapter", "HTTPServer",
+            server, ..AuditThisApplication("HTTPServer", server))
         if $$$ISERR(sc) {
             write "6b. HTTPServer FAILED: ", $system.Status.GetErrorText(sc), !
             quit sc
@@ -491,7 +532,8 @@ ClassMethod ApplyDeploymentSettings() As %Status
         write "6b. HTTPServer -> ", server, !
     }
     if port '= "" {
-        set sc = ##class(ProductionGuardian.LabDemo.Triggers).SetSetting(item, "Adapter", "HTTPPort", port)
+        set sc = ##class(ProductionGuardian.LabDemo.Triggers).SetSetting(item, "Adapter", "HTTPPort",
+            port, ..AuditThisApplication("HTTPPort", port))
         if $$$ISERR(sc) {
             write "6b. HTTPPort FAILED: ", $system.Status.GetErrorText(sc), !
             quit sc
@@ -499,6 +541,28 @@ ClassMethod ApplyDeploymentSettings() As %Status
         write "6b. HTTPPort   -> ", port, !
     }
     quit $$$OK
+}
+
+/// Should this re-application of a deployment setting be audited as a change? Private.
+///
+/// Records what it was asked for as a side effect, because the answer and the record must not be able
+/// to disagree -- a caller that asked and then forgot to record would audit the same value on every
+/// boot forever, which is the defect this exists to fix.
+///
+/// Returns 1 only on OBSERVED DRIFT: a recorded value that differs from this one. An absent record
+/// reads as "already applied" and returns 0; `ApplyDeploymentSettings()`'s comment has the reasoning
+/// and what it costs.
+///
+/// The record lives beside the intent it tracks, under `^ProductionGuardian.Setup("Applied", name)`,
+/// so it survives a restart with the rest of the setup globals and is visible to anyone reading them.
+/// It is NOT read to decide whether to write the setting: the write is unconditional, because a
+/// compile has just reverted the stored config and skipping it is how #96 happens.
+ClassMethod AuditThisApplication(pName As %String, pValue As %String) As %Boolean [ Private ]
+{
+    set known = $data(^ProductionGuardian.Setup("Applied", pName))
+    set previous = $get(^ProductionGuardian.Setup("Applied", pName), "")
+    set ^ProductionGuardian.Setup("Applied", pName) = pValue
+    quit known && (previous '= pValue)
 }
 
 /// Does the LIVE adapter target still match what the deployment asked for?

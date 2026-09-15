@@ -142,6 +142,17 @@ arg4 lands in `EventData` and arg5 in `Description`** — the reverse of what th
 getting it wrong produces a valid row that the tool's host parse silently discards as a lifecycle
 event. Anything else here that mutates a setting through `%Save()` is invisible to that tool.
 
+**There is exactly one caller allowed to pass `pAudit = 0`, and adding a second needs this much
+thought.** `FirstBoot.ApplyDeploymentSettings()` re-applies the deployment's own declared
+`HTTPServer`/`HTTPPort` after every boot's `Production.cls` compile reverts them. On compose those
+values equal the shipped ones so #171's movement test already hid the row; on Kubernetes they differ,
+the row is a genuine movement, and it passed every filter `Tools.ChangeLog` has — so every boot left
+`Cloud API` setting changes in the window, and a `pool_bottleneck` investigation read them as the
+likeliest cause of a fault whose mechanism is `PoolSize` (#249). The suppression is narrow on purpose:
+the flag is computed by `AuditThisApplication()`, which returns 1 the moment the deployment's intent
+moves, so a real re-target still audits. **A trigger mutating a live production setting must stay
+attributable (root `CLAUDE.md` §2.1)** — that is what the default is for.
+
 **A tool that is registered and described is not a tool that gets CALLED.** Adding a tool takes three
 things, and the third is the one that keeps being forgotten: register it in `Tools.Governance`,
 describe it in the system prompt, and **name it in a `MUST` in the per-request goal**. Measured twice.
