@@ -278,6 +278,11 @@ ClassMethod Ask() As %Status
         // stale. Killing on the way out instead would be skipped by every early return above --
         // malformed body, over-long question, small talk -- and by any exception path.
         kill ^||PGGuardian("chat")
+        // AND THE TURN ID, for the identical reason and in the identical place. A stale one would stamp
+        // this request's tool calls with the PREVIOUS question's turn -- correlating rows to the wrong
+        // exchange, which is worse than not correlating them, because the grouping looks authoritative.
+        // Cleared through the owning class rather than by naming its global here (#255).
+        do ##class(ProductionGuardian.LabDemo.Audit.Entry).ClearTurn()
 
         set body = ##class(%DynamicObject).%FromJSON(%request.Content)
         set question = body.%Get("question", "")
@@ -319,9 +324,29 @@ ClassMethod Ask() As %Status
         // ONE SESSION PER REQUEST, and the transcript is replayed into the goal -- see the class
         // comment for the measurement that forces this. `CreateSession()` here is not an attempt at
         // continuity; it is the object `Run()` requires.
+        // THE TURN BEGINS BEFORE `Run`, AND THAT ORDERING IS THE WHOLE POINT (#255). `Audit.Entry.Record`
+        // reads the turn id at write time, and the audit hook writes DURING `Run` -- once per tool call,
+        // inline in this process. Minting it afterwards would leave every tool row uncorrelated and only
+        // the turn row stamped, which is the half of the record that was never missing.
+        //
+        // AFTER SMALL TALK, deliberately: a greeting reaches no tool and produces no answer about the
+        // production, so a turn row for one would be a question in the audit log that the production
+        // never answered. Small talk returns above this line.
+        set turn = ##class(ProductionGuardian.LabDemo.Audit.Entry).BeginTurn()
+
         set session = agent.CreateSession()
         set goal = ..BuildGoal(question, body.%Get("history"))
         set r = agent.Run(session, goal, ..#MAXITERATIONS)
+        // CLEARED THE INSTANT `Run` RETURNS, and this is the placement rather than a tidy-up at the end
+        // of the method. `Run` is the last moment a tool can execute, so it is the end of the turn's
+        // useful life -- and POOLING CUTS BOTH WAYS: this process serves the next *resolve* too, and a
+        // turn id still set would stamp that resolve's audit rows with this question. Held in `turn` and
+        // handed to `RecordChatTurn` explicitly below, which is why clearing here costs nothing.
+        //
+        // NOTHING BETWEEN `Run` AND THIS LINE CAN RETURN OR THROW, deliberately -- the two 502 checks
+        // that follow are after it. An exception INSIDE `Run` skips this, and the kill at the top of the
+        // method is what covers that case.
+        do ##class(ProductionGuardian.LabDemo.Audit.Entry).ClearTurn()
         if '$isobject(r) {
             return ..Fail(502, "agent returned no response")
         }
@@ -346,6 +371,22 @@ ClassMethod Ask() As %Status
         // even if the two had diverged -- which is how a truncated or re-encoded question produces an
         // answer that reads as a non-sequitur with nothing to point at.
         set parsed.question = question
+
+        // THE ONE THING THE AUDIT TABLE NEVER HELD (#255). Every tool call in this turn has already
+        // written its own row -- the chat path is governed like any other, and 18 `CompareHostActivity`
+        // rows measured on the live instance say so -- but the QUESTION and the ANSWER appear in no row
+        // anywhere. #251 was a defect in the prose over correct data: the audit log could show the
+        // 48,588 and could not show the reply that called a 23.6-hour window "the last hour".
+        //
+        // LAST, AND AFTER `parsed` IS COMPLETE, so the row records what the caller is actually about to
+        // receive rather than an intermediate. `toolCalls` in particular is set two statements up.
+        //
+        // RETURN VALUE IGNORED, AND THAT IS THE CONTRACT: `RecordChatTurn` swallows its own failure and
+        // reports it as "". An answer that could not be recorded is still a correct answer, and this is
+        // one statement away from writing it to the client.
+        do ##class(ProductionGuardian.LabDemo.Audit.Entry).RecordChatTurn(
+            turn, question, parsed.%Get("answer", ""), parsed.%Get("toolCalls", ""), agent.Model)
+
         write parsed.%ToJSON()
         return $$$OK
     } catch ex {

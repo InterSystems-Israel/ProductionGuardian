@@ -2334,17 +2334,36 @@ protects the endpoint from an unauthenticated caller. Both are required; neither
 
 ### 5.5 Audit
 
-**Two mechanisms, not one — and the split is the runtime's, not a choice.** The runtime audits
-*executions*; our authorization policy audits *denials*. Every call is recorded, but by different
-code, and a reader who assumes one mechanism will look for denials in the wrong place.
+**Four mechanisms, not one — and the first split is the runtime's, not a choice.** The runtime audits
+*executions*; three writers of ours audit the three events its hook cannot see. Every call is
+recorded, but by different code, and a reader who assumes one mechanism will look for denials in the
+wrong place.
 
-| Event | Recorded by |
-|---|---|
-| successful read | the runtime, via `%LogExecution` |
-| dry-run of the write tool | the runtime |
-| **tool-level** refusal — our `2`–`8` bounds guard returning `outcome: "refused"` | the runtime (the tool ran) |
-| unknown host | the runtime |
-| **authorization** denial — `%CanExecute` refuses | **`Tools.AuthPolicy`, writing its own row** |
+**This said "two mechanisms" until 2026-09-15 and was two short of the implementation for most of
+that time** — `dropped` shipped with #196 and was never added here, `answered` with #255. The rule
+each addition follows is worth more than the count, so it is stated once: **a writer exists because
+the writer before it could not see the event.** Anything that adds a new event to this list adds a
+writer, or that event leaves no trace.
+
+| Event | Recorded by | `disposition` |
+|---|---|---|
+| successful read | the runtime, via `%LogExecution` | `executed` |
+| dry-run of the write tool | the runtime | `executed` |
+| **tool-level** refusal — our `2`–`8` bounds guard returning `outcome: "refused"` | the runtime (the tool ran) | `executed` |
+| unknown host | the runtime | `executed` |
+| **authorization** denial — `%CanExecute` refuses | **`Tools.AuthPolicy`, writing its own row** | `denied` |
+| a **claim in the model's reply** refused by a dispatcher guard (#196) | **`Audit.Entry.RecordRefusal`** — every tool had already run and audited | `dropped` |
+| a **chat turn that answered** — the question and the reply (#255) | **`Audit.Entry.RecordChatTurn`** — the hook fires per *tool*, from inside the turn | `answered` |
+
+Two consequences for anyone reading the table, and both bite quietly:
+
+- **Counting tool calls requires filtering `disposition`.** `dropped` rows carry a *guard's* method
+  name in the tool column and `answered` rows carry `Ask`, the dispatcher entry point. Both are
+  ObjectScript method names, so the column stays one kind of thing — and neither is a tool call.
+- **`answered` rows and `executed` rows are joined by `turnId`, never by time or by order.** Measured:
+  three identical `compare_host_activity` calls two seconds apart, one turn or three being
+  unanswerable from the timestamps, because `recordedAt` has one-second resolution and CSP pools
+  processes across requests.
 
 CORRECTED 2026-08-19 (#95, found by implementing it). This section previously read:
 
@@ -2386,6 +2405,50 @@ step is read against.
 **Audit records are subject to §6 as well.** `%LogExecution` receives the full `result` object, and
 for `get_recent_errors` that result is already sanitised — which is a second reason the sanitisation
 lives in the tool rather than in the caller.
+
+#### A record that is never queried is indistinguishable from one that was never written (#255)
+
+The reason this subsection exists is a mistake, and the mistake is more useful than the fix. #251 — a
+chat answer that called a 23.6-hour window "the last hour" — was diagnosed by re-running the tool by
+hand, on the stated belief that *nothing recorded what the chat model was handed*. That belief was
+false. The chat path is governed like every other (§5.2), so every one of its tool calls had been
+writing an `executed` row all along. Measured after the fact:
+
+```
+COMPAREHOSTACTIVITY  executed  n=18   newest 2026-09-15T08:53:27Z
+```
+
+and the specific run behind #251's opening report was row 132, arguments and all:
+
+```
+132  2026-09-15T07:52:59Z  {"buckets":60,"resolution":"seconds"}  ->  messages 764
+```
+
+60 buckets at `seconds` is **600 seconds**, reported to the operator as "the last minute". The entire
+defect chain — 600s as a minute, 10s as a second, a payload with no `window` field, a correct window
+mislabelled, a right label over a wrong span, then the fix — is legible in six rows of this table.
+
+So the audit guarantee held and the *use* of it did not, which is why §5.5 now names what the record
+can and cannot answer rather than only who writes it:
+
+| Question | Answerable before #255? |
+|---|---|
+| what tool ran, with what arguments, returning what | yes, always — this never had a gap |
+| who ran it, under which roles, when | yes |
+| which **question** caused it | **no** |
+| what the assistant **said** as a result | **no** |
+| which calls belonged to the same turn | **no** |
+
+The three noes are one shape: this table recorded what the model was *handed* and nothing about the
+exchange it was part of. For a defect **in the prose over correct data** that is the half that
+matters, and it is the half a demo's final step is read against.
+
+**The turn row is the first content here not derived from a tool's return value**, so §6 applies to it
+by a different route. The question is operator free text; the answer is model prose. Neither is
+sanitised by a tool, because neither came from one — the guarantee is instead that this table is never
+transmitted (§6: the boundary governs what *leaves* the instance, and an audit row does not leave).
+Anything that ever ships audit rows off-instance must revisit that, and this is the sentence it should
+find when it does.
 
 ### 5.6 Unverified — close these before promising them
 

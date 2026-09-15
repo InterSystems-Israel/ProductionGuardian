@@ -164,6 +164,20 @@ that the payload contains what the rule asks the model to say — and prefer the
 which is the description the model actually sees, since `RegisterToolSet` introspects the class.
 Publishing a derived figure (`messagesPerSecond`) beats leaving the model to divide.
 
+**QUERY THE RECORD BEFORE DECLARING IT MISSING — a record nobody queries is indistinguishable from one
+nobody wrote.** #251 was diagnosed by re-running the tool by hand, and reported to the owner with the
+claim that *nothing records what the chat model was handed*. The claim was false and one SQL query
+disproved it: `Tools.Governance.GovernAgent` attaches the audit policy **before any early return**, so
+the chat path had been writing an `executed` row per tool call the whole time — 18 of them for
+`CompareHostActivity` alone, and the exact run behind the bug report sitting in row 132 with
+`{"buckets":60,"resolution":"seconds"} -> 764`, i.e. 600 seconds reported as "the last minute" (#255).
+The proposed fix would have added a second recorder beside a working one. **The failing step was
+knowing the table existed and never running `SELECT` against it** — this file's own §7 rules were
+written from measurements, and the measurement here cost one `kubectl exec`. What was genuinely missing
+turned out to be narrower and worth stating for its own sake: the table recorded what the model was
+*handed* and nothing about the *exchange* — not the question, not the answer, not which calls shared a
+turn. For a defect **in the prose over correct data**, that is the half that matters.
+
 **A tool that is registered and described is not a tool that gets CALLED.** Adding a tool takes three
 things, and the third is the one that keeps being forgotten: register it in `Tools.Governance`,
 describe it in the system prompt, and **name it in a `MUST` in the per-request goal**. Measured twice.

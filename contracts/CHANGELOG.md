@@ -4,6 +4,78 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-15 — `mcp-tools.md` §5.5: the audit table records four events, not two, and a chat turn is now one of them (#255)
+
+**Additive, and partly a correction of the section's own count.** A fourth `disposition` — `answered` —
+and a `turnId` correlation column. No existing row changes: `turnId` is `""` on all 139 rows written
+before it existed, and `executed` / `denied` / `dropped` keep their meanings exactly. Nothing here
+alters a tool's request or response, so no tool consumer is affected. The `disposition` values are not
+constrained by `resolve.schema.json`, which was checked before adding the fourth.
+
+### The correction is the more important half
+
+§5.5 said **"Two mechanisms, not one"**. It had been wrong for two shipped writers: `dropped`
+(`Audit.Entry.RecordRefusal`, #196) was never documented here at all, and `answered` is the fourth. The
+count is now stated as four *and* the rule that generates it is stated once, so the next writer does
+not have to be caught the same way: **a writer exists because the writer before it could not see the
+event.**
+
+### What was actually missing, and what was not
+
+The premise this work opened on was false, and recording that is the point of the entry. #251 was
+diagnosed by re-running a tool by hand under the belief that *nothing recorded what the chat model was
+handed*. The chat path is governed like every other (§5.2), so every chat tool call had been writing an
+`executed` row the whole time — 18 `compare_host_activity` rows, and the exact run behind #251's
+opening report sitting in row 132 with its arguments:
+
+```
+132  2026-09-15T07:52:59Z  {"buckets":60,"resolution":"seconds"}  ->  messages 764
+```
+
+600 seconds, reported to the operator as "the last minute". So the audit **guarantee** held and the
+**use** of it did not. What the table genuinely could not answer was narrower, and all three are the
+same shape:
+
+| Question | Before |
+|---|---|
+| what tool ran, with what arguments, returning what | recorded — never a gap |
+| which **question** caused it | not recorded |
+| what the assistant **said** as a result | not recorded |
+| which calls belonged to the same **turn** | not recorded |
+
+It recorded what the model was *handed* and nothing about the exchange. #251 was a defect **in the
+prose over correct data** — row 135 holds a correct `messages: 48588` beside a reply that called a
+23.6-hour window "the last hour" — and the prose was the one thing not stored.
+
+### Why correlation is a column and not an ordering
+
+Measured: rows 128, 129 and 130 are identical `compare_host_activity` calls with
+`{"buckets":10,"resolution":"seconds"}` spanning two seconds. One turn asking three times, or three
+turns asking once, is unanswerable — `recordedAt` has one-second resolution, and CSP **pools and
+reuses processes** across requests, so "the rows this process wrote" spans unrelated questions. Row id
+is monotonic and says nothing about where a turn ends.
+
+`turnId` is read inside the single `Record` path rather than threaded through each writer, which is what
+keeps the other three untouched: the runtime's own `%LogExecution` signature is fixed by `%AI.ToolMgr`
+and has no parameter to add. It is *also* accepted as an explicit override, because the stashed value
+must not outlive the tool calls — pooling cuts both ways, and a process that has just served a chat
+serves the next resolve. A turn id left set would stamp that resolve's rows with an unrelated question,
+which is worse than uncorrelated rows because the grouping looks authoritative.
+
+### What a consumer must still not assume
+
+- **A turn id with no `answered` row is not corrupt data** — it is a turn that made tool calls and then
+  failed to produce a reply. The row is written only on the success path, deliberately.
+- **`answered` rows are not tool calls.** Counting calls from this table requires a `disposition`
+  filter; this is the second value (after `dropped`) that makes that true.
+- **Small talk writes no turn row.** A greeting reaches no tool and answers nothing about the
+  production, so it is not an exchange this table describes.
+- **The turn row is the first content here not derived from a tool's return value.** §6 still governs
+  it, by a different route: nothing sanitises operator free text or model prose, and the guarantee is
+  that audit rows are never transmitted off-instance. Anything that changes that must revisit §5.5.
+
+---
+
 ## 2026-09-15 — `mcp-tools.md` §3.9: `compare_host_activity` publishes its window and a per-host rate; `from`/`to` were bucket starts with no width (#251)
 
 **Additive.** Seven new fields — `through`, `periodSeconds`, `bucketsMeasured`, `windowSeconds`,
