@@ -50,12 +50,17 @@ export interface TriggerStatus {
    * "probably still arming" from a timer it started would be wrong the moment someone drives the
    * terminal — the same reason `armed` is not tracked from button presses.
    *
-   * THE WINDOW IS NOW ONE OR TWO POLLS WIDE (10s settle, 5s `POLL_INTERVAL_MS`), where it used to be
-   * six. Reading this state is therefore genuinely sample-limited: a scenario can arm between two
-   * polls and the dashboard may never render `activating` at all. That is expected and is not a bug to
-   * chase — the alternative, a browser-side timer, would guess instead of observe. It does mean the
-   * settle must stay comfortably above the poll interval, which is why 10s is the floor rather than a
-   * waypoint (see `TriggerDispatcher.cls`, "AT 10s THE MIDDLE STATE IS BRIEF").
+   * THE WINDOW IS THE WHOLE SETTLE, ~10s, AND `POLL_INTERVAL_MS` HAS NOTHING TO DO WITH IT. The first
+   * version of this note said the opposite — "one or two polls wide (10s settle, 5s POLL_INTERVAL_MS)",
+   * and that a scenario could arm between two polls so the dashboard "may never render `activating` at
+   * all". Wrong premise, and the answer was already in `server.ts`: `/api/demo/triggers` is **the one
+   * async GET**, which queries IRIS live per request exactly so the buttons cannot go stale.
+   * `POLL_INTERVAL_MS` is the METRICS cadence. The rate that matters is the browser's, 2s.
+   *
+   * Measured live 2026-09-15: settle 10.01s witness-to-witness, `activating` true across four
+   * consecutive samples spanning ~11s, transition seen within ~2-3s of the real one. So it renders ~5
+   * times at the shipped tick. Do not add a browser-side timer to "cover" a gap that is not there —
+   * a timer would guess where this observes, and would be wrong the moment someone arms from a terminal.
    *
    * Absent for a scenario that arms atomically. An older dispatcher omits the map entirely, which
    * parses to `{}` — every scenario then reads not-activating, i.e. the previous two-state

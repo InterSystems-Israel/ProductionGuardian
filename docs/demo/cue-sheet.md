@@ -203,9 +203,13 @@ finding — are the measured part and they are unchanged.
 > immediately before the fault. Say that if you say anything — it is true, and at ten seconds the
 > honest option is also to say nothing and let the click land.
 >
-> **Watch for the state word, because it is now brief.** *trigger activating…* covers ~10s against the
-> engine's 5s poll, so it is one or two refreshes and an unlucky click may skip it. The scenario arming
-> correctly is what the queue climbing proves; a missed *activating* is not a failed arm.
+> **The state word is still easy to see.** *trigger activating…* covers ~10s and the dashboard refreshes
+> every 2s, so it renders about five times — measured live on 2026-09-15: a 10.01s settle with
+> `activating` true across four consecutive samples spanning ~11s. An earlier version of this line warned
+> that it was "one or two refreshes" and might be skipped; that was reasoning from the engine's 5s
+> metrics poll, which does not govern this button (the triggers endpoint queries IRIS per request). Either
+> way, the scenario arming correctly is what the queue climbing proves — the word is a courtesy, not the
+> evidence.
 >
 > **The one precondition that IS real: the engine must have been up ~60s.** That is where the twelve
 > samples come from. It is covered by the pre-flight above; if you arm within a minute of

@@ -160,14 +160,25 @@ ClassMethod Status() As %Status
 /// not move" -- which was the tell. Both reasons are dead and `Triggers.PoolBottleneck()` has the
 /// autopsy; the wait is now a presentational beat, cut to 30s on 2026-09-07 and to 10s on 2026-09-15.
 ///
-/// AT 10s THE MIDDLE STATE IS BRIEF, WHICH IS A REAL COST AND NOT A REGRESSION. The engine polls IRIS
-/// every 5s (POLL_INTERVAL_MS), so a 10-second window is one or two polls wide: a viewer can now see
-/// "trigger activating…" flick past, or land on the poll that misses it. It is still worth publishing.
-/// Its job was never to be admired for 30 seconds -- it was to stop the SECOND CLICK, and one poll of
-/// honest "accepted, not in effect" does that as well as six. What would break it is a settle SHORTER
-/// than the poll interval, where the state could exist entirely between two samples and the button
-/// would appear to do nothing at all until it armed. 10 against 5 is a 2x margin; do not cut further
-/// without moving the poll too.
+/// AT 10s THE MIDDLE STATE IS STILL COMFORTABLY OBSERVABLE, AND THE FIRST VERSION OF THIS PARAGRAPH
+/// SAID OTHERWISE ON A WRONG PREMISE. It claimed the window was "one or two polls wide" because the
+/// engine polls IRIS every 5s -- but that interval (POLL_INTERVAL_MS) governs the METRICS poll and has
+/// never governed this. `GET /api/demo/triggers` is "THE ONE ASYNC GET" in the engine's `server.ts`,
+/// which queries IRIS live on every request precisely so the buttons cannot show stale state. The
+/// engine's own comment says so, three lines from the handler. So the `activating` window is the FULL
+/// settle, and the sampling rate that matters is the dashboard's own tick -- 2s (`usePolling`'s
+/// DEFAULT_INTERVAL_MS), giving ~5 renders across a 10s settle.
+///
+/// MEASURED ON THE LIVE DEPLOYMENT, 2026-09-15, immediately after this change shipped: the settle from
+/// witness to witness (`PoolWas` set, then `DispatcherMs` set) was **10.01s**, the arm POST returned in
+/// 0.72s, and `activating` read true on four consecutive samples spanning ~11s at 3s spacing, flipping
+/// to armed within ~2-3s of the true arming instant.
+///
+/// THE FLOOR IS THEREFORE THE DASHBOARD'S TICK, NOT THE ENGINE'S POLL: a settle at or under ~2s could
+/// exist entirely between two renders and the button would appear to do nothing until it armed. 10
+/// against 2 is a 5x margin. The correction is worth keeping in the file because the wrong version of
+/// it was an argument for treating 10s as barely-sufficient, and it is not -- the middle state is not
+/// the constraint on shortening this further, and if it ever is, this is the number to check.
 ///
 /// NONE OF THAT WEAKENS THIS THREE-STATE MODEL, which is the point worth keeping. The states are
 /// keyed on witnesses the scenario sets, not on a duration, so they were never reading the 75 in the
