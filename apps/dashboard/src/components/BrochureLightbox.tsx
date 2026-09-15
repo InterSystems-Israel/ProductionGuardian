@@ -2,7 +2,7 @@
  * Full-screen brochure reader — the enlarge-and-zoom half of the Brochure view.
  *
  * AN OVERLAY RATHER THAN IN-PLACE ZOOM, and the deciding argument is geometry, not
- * taste. The brochure is a 1024×1536 portrait page rendered inside a card that sits
+ * taste. The brochure is a 2339×3308 portrait page rendered inside a card that sits
  * beside a 208px nav rail inside a padded content region — so in place, the widest
  * viewport it can ever have is a few hundred pixels narrower than the screen, and
  * panning it would mean a second scroll container nested inside the page's own. A
@@ -26,7 +26,7 @@
  * given for free. No dependency either way (§3); this is the cheaper of the two.
  *
  * ZOOM IS A MULTIPLE OF THE STAGE WIDTH, NOT OF THE ASSET'S OWN PIXELS. A ladder
- * against the file's intrinsic 1024px would read as an honest "100% = 1:1", and would
+ * against the file's intrinsic 2339px would read as an honest "100% = 1:1", and would
  * also compile that number into the UI — the same class of staleness as a copied host
  * list (root `CLAUDE.md` §6). Against the stage, `1` means "as wide as the panel
  * allows" on a 1024-wide projector and a 2560-wide laptop alike, and the labels say
@@ -74,10 +74,12 @@ export function BrochureLightbox({
   onImageError,
 }: BrochureLightboxProps): JSX.Element {
   /* Fit-to-width is the default. On the presenter's case — a tall portrait page on a
-     1024px-high laptop — fitting the HEIGHT would render 1536px of page into ~900px of
-     stage, i.e. 0.6x, barely better than the 68vh that made this unreadable in the
-     first place. 1:1 would pin the page to 1024px and leave a 1920-wide screen half
-     empty, so the first thing a presenter did would be to zoom in. Fit-width is the
+     1024px-high laptop — fitting the HEIGHT would render 3308px of page into ~900px of
+     stage, i.e. 0.27x, far worse than the 68vh that made this unreadable in the first
+     place. 1:1 is not a mode at all now that the asset is a 200 DPI render of an A3
+     master: it would pin the page to 2339px and overflow every screen in the room. Both
+     numbers moved when the brochure became vector-derived and neither conclusion did,
+     which is why the ladder is a multiple of the STAGE and not of the file. Fit-width is the
      only default that is never smaller than the screen can show, and vertical scroll is
      the natural gesture on a page taller than it is wide. */
   const [step, setStep] = useState(0);

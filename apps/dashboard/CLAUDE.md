@@ -365,12 +365,14 @@ docker compose up -d --build dashboard
 **And `npm run build` can pass where the image build fails,** because on a host the whole repo is on
 disk and in the image only what a `COPY` put there is. MVP 3's brochure import
 (`../../../../docs/Brochure.png`) type-checked, passed `npm run build`, was reported as verified, and
-failed the image build with `Could not resolve`.
+failed the image build with `Could not resolve`. The same trap re-armed itself when the brochure
+became a vector master and the import moved to `docs/Brochure-A3.webp`: `tsc` and `vite build` see the
+new name, the `COPY` still named the old one, and nothing on a host says so.
 
 The resolution is in `docker-compose.yml` and the `Dockerfile` and is worth knowing before adding any
 asset: **the build context is the repo root, not this directory.** `WORKDIR` is `/repo/apps/dashboard`
 and the source tree is reproduced at the same depth, so a repo-relative import resolves inside the
-image exactly as on a host — and `docs/Brochure.png` is copied in on its own, so the 1.7 MB asset keeps
+image exactly as on a host — and `docs/Brochure-A3.webp` is copied in on its own, so the asset keeps
 **one copy in git** rather than a duplicate here.
 
 So an import that reaches outside this directory is fine **provided the `Dockerfile` copies that file

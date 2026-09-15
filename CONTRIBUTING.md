@@ -58,7 +58,9 @@ production-guardian/
 │  └─ scripts/                   # dev-up, port checks, contract type generation
 │
 ├─ docs/                         # source material — read-only after Day 1
-│  ├─ Brochure.png
+│  ├─ Brochure-A3.pdf            # ★ the brochure: A3 vector print master, prints at any size
+│  ├─ Brochure-A3.webp           #   200 DPI render of it — the only copy the dashboard imports
+│  ├─ Brochure.png               #   superseded: 1024×1536, 131 PPI on A4, kept as provenance
 │  ├─ production-guardian-deck.pptx
 │  ├─ production-guardian-demo.html          # concept demo — do not edit
 │  ├─ production-guardian-healthscan-mvp1.docx

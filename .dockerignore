@@ -30,11 +30,20 @@
 .git
 .github
 
-# Everything under docs/ EXCEPT the one asset the bundle imports. Brochure.png is
+# Everything under docs/ EXCEPT the one asset the bundle imports. Brochure-A3.webp is
 # `COPY`-ed explicitly by apps/dashboard/Dockerfile; the deck, the MVP .docx files and the
 # concept demo are source material (root CLAUDE.md §3) with no place in a build layer.
+#
+# THE SECOND PLACE THE FILENAME IS LOAD-BEARING, and it fails DIFFERENTLY from the Dockerfile.
+# A missing `!` line does not produce "no such file" from the compiler; it produces
+#   failed to compute cache key: "/docs/Brochure-A3.webp": not found
+# from BuildKit, about a file that is plainly on disk — measured when this asset was renamed
+# and only the Dockerfile was updated. Exclusion and COPY are one change in two files.
+#
+# Brochure-A3.pdf stays excluded on purpose. It is the print master and nothing imports it, so
+# shipping it would put 190 KB in a build layer to no end.
 docs/*
-!docs/Brochure.png
+!docs/Brochure-A3.webp
 
 # Other services' trees. Each has its own build context; none is read by the dashboard
 # build, and sending them makes every dashboard rebuild wait on unrelated file churn.
