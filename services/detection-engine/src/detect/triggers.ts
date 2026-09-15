@@ -37,18 +37,25 @@ export interface TriggerStatus {
    * Per-scenario **in effect** state, read from the trigger globals in IRIS.
    *
    * Means "the scenario is live", not "a request was accepted" — the dispatcher keys it on a global
-   * the scenario sets when it actually takes effect. For `pool_bottleneck` those are ~30s apart.
+   * the scenario sets when it actually takes effect. For `pool_bottleneck` those are ~10s apart.
    */
   armed: Record<string, boolean>;
   /**
    * Per-scenario **accepted but not yet in effect** state.
    *
-   * A THIRD STATE, not a flag on the second. `pool_bottleneck` settles for 30s with nothing armed
+   * A THIRD STATE, not a flag on the second. `pool_bottleneck` settles for 10s with nothing armed
    * before it arms anything and runs as a background job, so the arm POST returns in ~0.02s and the
-   * scenario is in neither of the other two states for half a minute. Carried through this service
+   * scenario is in neither of the other two states for that window. Carried through this service
    * rather than re-derived in the dashboard: IRIS owns the witnesses, and a browser inferring
    * "probably still arming" from a timer it started would be wrong the moment someone drives the
    * terminal — the same reason `armed` is not tracked from button presses.
+   *
+   * THE WINDOW IS NOW ONE OR TWO POLLS WIDE (10s settle, 5s `POLL_INTERVAL_MS`), where it used to be
+   * six. Reading this state is therefore genuinely sample-limited: a scenario can arm between two
+   * polls and the dashboard may never render `activating` at all. That is expected and is not a bug to
+   * chase — the alternative, a browser-side timer, would guess instead of observe. It does mean the
+   * settle must stay comfortably above the poll interval, which is why 10s is the floor rather than a
+   * waypoint (see `TriggerDispatcher.cls`, "AT 10s THE MIDDLE STATE IS BRIEF").
    *
    * Absent for a scenario that arms atomically. An older dispatcher omits the map entirely, which
    * parses to `{}` — every scenario then reads not-activating, i.e. the previous two-state
@@ -197,7 +204,8 @@ function parseResult(raw: unknown, scenario: string | null): TriggerResult {
  *
  * ARM'S 150s IS NOW A CEILING, NOT A BUDGET, and the reason it was set is no longer the reason it is
  * kept. It was sized for `PoolBottleneck()` blocking through its own settle; the dispatcher jobs that
- * scenario and answers `pending`, and the settle itself went 75s -> 30s on 2026-09-07. Measured on
+ * scenario and answers `pending`, and the settle itself went 75s -> 30s (2026-09-07) -> 10s
+ * (2026-09-15). Measured on
  * that build: the arm POST returns in **0.02s**. Left large rather than retuned to the measurement —
  * `pWarmSeconds` is a method default that a terminal caller can override on a path this service
  * cannot see, and a generous ceiling on a route called once per demo costs nothing, while a tight one

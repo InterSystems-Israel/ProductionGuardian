@@ -1731,8 +1731,11 @@ html[data-pg-resizing] {
 }
 
 /* What the collapsed heading says about a live scenario — the count and the phase word. Kept
-   readable rather than decorative: `pool_bottleneck` sits in `activating` for ~75s, and this is
-   the only place that state is visible while the list is closed. */
+   readable rather than decorative: `pool_bottleneck` sits in `activating` for ~10s, and this is
+   the only place that state is visible while the list is closed. (This comment said ~75s until
+   2026-09-15, having missed both the 75→30 cut and the 30→10 one. The number is not what the rule
+   depends on — legibility is — but a stale figure here is what made the settle look longer than it
+   was to anyone reading the styles.) */
 .pg-triggers__summary {
   display: flex;
   align-items: center;

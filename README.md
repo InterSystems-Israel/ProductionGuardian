@@ -297,9 +297,11 @@ docker compose exec iris iris session IRIS -U LABDEMO
 ```
 
 ```objectscript
-// Arm: throttles the downstream to ~1s/message and raises inflow, after a 30s settle with nothing
-// armed so the room sees a healthy production first. Measured over two runs: armed at +30s, the queue
-// crosses the threshold at +86-91s, confirmed `queue_buildup` finding at +91-96s.
+// Arm: throttles the downstream to ~1s/message and raises inflow, after a 10s settle with nothing
+// armed so the room sees a healthy production first. The settle went 30s -> 10s on 2026-09-15, so the
+// two-run measurement below (taken at 30) starts 20s later than it now will: armed at +30s, the queue
+// crosses the threshold at +86-91s, confirmed `queue_buildup` finding at +91-96s. Subtract 20 from
+// every figure for the current default; the intervals between them are unaffected.
 do ##class(ProductionGuardian.LabDemo.Triggers).PoolBottleneck()
 do ##class(ProductionGuardian.LabDemo.Triggers).Status()   // what is armed, and the queue cap
 do ##class(ProductionGuardian.LabDemo.Triggers).Reset()    // undo, including the pool size

@@ -121,7 +121,7 @@ const MIN_SPAN_SECONDS = 60;
  * Span served when a caller names none.
  *
  * Ten minutes, which at the shipped 5s poll is ~120 points per metric — enough to read a slope
- * over the `pool_bottleneck` scenario's whole life (it arms in 30s and crosses in another ~60s)
+ * over the `pool_bottleneck` scenario's whole life (it arms in 10s and crosses in another ~60s)
  * without serving the full 1800s window on every 2-second dashboard tick. A caller that wants more
  * asks for it and is clamped at the window; nobody gets 360 points by accident.
  */
