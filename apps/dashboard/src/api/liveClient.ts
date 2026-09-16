@@ -34,6 +34,55 @@ function baseUrl(): string {
   return value.replace(/\/+$/, '');
 }
 
+/**
+ * `serverNow − clientNow` in milliseconds, from the most recent response that carried a readable
+ * `Date`. Zero until one does.
+ *
+ * WHY THE DASHBOARD HAS TO MEASURE THIS. Every timestamp on the wire is an instant on the ENGINE's
+ * clock — `Host.lastActivity` is the engine's `now − elapsedSeconds` (contract Q11), so it is in the
+ * past by construction — and the browser renders it by subtracting its OWN clock. Nothing in the
+ * system makes those two agree. A presenter's laptop that has not synced NTP and runs two minutes
+ * slow therefore puts every server timestamp in its own future, and the grid reports
+ * `Last activity: in 2 minutes` for a production that is perfectly healthy. That is not a timezone
+ * bug and no zone setting changes it: both sides are epoch milliseconds and every timestamp is
+ * `Z`-suffixed UTC. Only the clock's OFFSET matters.
+ *
+ * `Date` IS WORTH TRUSTING, WHERE `X-Healthscan-State` IS NOT, and the difference is not
+ * inconsistency. The test is whether the dashboard can derive the fact itself: it can derive warm-up
+ * from `baselineValue: null` and staleness from its own `lastSuccessAt`, so a header there would be
+ * a second, disagreeing source of truth for one banner. It CANNOT derive the engine's clock. That is
+ * observable nowhere but the wire, which makes the header the only source rather than a competing
+ * one.
+ *
+ * ACCURATE TO ABOUT A SECOND, and that is enough. `Date` is second-resolution per RFC 9110 and is
+ * stamped before the response travels, so this absorbs one network leg — an order of magnitude
+ * inside the ±10s the contract already claims for `lastActivity` itself, and three orders inside the
+ * error being fixed.
+ *
+ * DEGRADES TO ZERO, and the two ways it can are both real. `Date` is not on the CORS-safelisted
+ * response-header list, so a CROSS-ORIGIN engine hides it from JavaScript unless it sends
+ * `Access-Control-Expose-Headers: Date` — which the engine now does, but an older build on the other
+ * end of `VITE_HEALTHSCAN_BASE_URL` will not. And before the first poll returns there is nothing to
+ * read. Both leave the offset at `0`, i.e. exactly today's behaviour, which is why `formatRelative`
+ * keeps its own clamp rather than relying on this.
+ */
+let serverClockOffsetMs = 0;
+
+/**
+ * Recorded from SUCCESSFUL responses only. A 502 from a gateway carries the GATEWAY's `Date`, and
+ * letting a failing hop set the page's clock would mean an outage could also silently shift every
+ * timestamp on screen.
+ */
+function recordServerClock(response: Response): void {
+  const header = response.headers.get('Date');
+  if (header === null) return;
+  const serverNow = Date.parse(header);
+  // A proxy that rewrites `Date` into something unparseable must not be able to make the offset NaN
+  // — that would propagate into every relative timestamp as `—`, losing real readings to a header.
+  if (Number.isNaN(serverNow)) return;
+  serverClockOffsetMs = serverNow - Date.now();
+}
+
 /** Raised for anything the operator should see in the connection banner. */
 export class HealthScanRequestError extends Error {
   readonly status: number | null;
@@ -88,6 +137,11 @@ async function getJson(path: string, signal?: AbortSignal): Promise<unknown> {
       response.status,
     );
   }
+
+  /* The GET paths are where the clock is read, and only here: these two poll every couple of
+     seconds, so the offset is never more than a tick old, while the POSTs are user-initiated and
+     would add call sites without improving the estimate. */
+  recordServerClock(response);
 
   try {
     return await response.json();
@@ -171,6 +225,7 @@ async function getJsonAbsolute(url: string, signal?: AbortSignal): Promise<unkno
   if (!response.ok) {
     throw new HealthScanRequestError(`Health Scan API returned ${response.status}`.trim(), response.status);
   }
+  recordServerClock(response);
   try {
     return await response.json();
   } catch {
@@ -286,6 +341,13 @@ export function createLiveClient(): HealthScanApi {
         throw new HealthScanRequestError('The settings response could not be read', null);
       }
       return parsed;
+    },
+
+    /* The measurement itself is taken in `recordServerClock` on every poll; this only publishes the
+       latest one across the seam. A getter rather than a captured value, because the client object
+       is created once per session and the offset is re-read on each response. */
+    clockOffsetMs(): number {
+      return serverClockOffsetMs;
     },
   };
 }

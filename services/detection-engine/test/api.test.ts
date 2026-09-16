@@ -107,6 +107,23 @@ describe('headers', () => {
     assert.equal(res.headers.get('cache-control'), 'no-store');
   });
 
+  it('exposes Date, so a cross-origin dashboard can read this process clock', async () => {
+    /* `lastActivity` is `now − elapsedSeconds` on THIS process's clock, and the browser renders it
+       relative to its OWN. A viewer whose laptop is behind NTP therefore shows a healthy host as
+       "Last activity: in 2 minutes". `Date` is the only thing on the wire that reveals the engine's
+       clock, and it is not CORS-safelisted, so without this header `headers.get('Date')` is null in
+       a cross-origin browser -- unreadable, while `fetch` here (same process, no CORS) would still
+       see it. Asserting the HEADER rather than the reading is therefore the only way to catch its
+       removal from a test in-process. */
+    const res = await fetch(`${base}/api/healthscan/hosts`);
+    const exposed = (res.headers.get('access-control-expose-headers') ?? '').toLowerCase();
+    assert.ok(
+      exposed.split(',').some((name) => name.trim() === 'date'),
+      `Expose-Headers must name Date or relative timestamps drift with the viewer's clock, got "${exposed}"`,
+    );
+    assert.ok(res.headers.get('date') !== null, 'the runtime must still be sending Date at all');
+  });
+
   it('answers preflight', async () => {
     const res = await fetch(`${base}/api/healthscan/findings`, { method: 'OPTIONS' });
     assert.equal(res.status, 204);

@@ -70,7 +70,8 @@ export interface HostDetailProps {
   series: HostSeriesView | null;
   /** True until the first series response for this host lands. */
   seriesLoading: boolean;
-  now: number;
+  /** The current instant on the ENGINE's clock, not this browser's — see `App.tsx`. */
+  engineNow: number;
   onClose: () => void;
 }
 
@@ -80,7 +81,7 @@ export function HostDetail({
   worst,
   series,
   seriesLoading,
-  now,
+  engineNow,
   onClose,
 }: HostDetailProps): JSX.Element | null {
   /* Esc closes from anywhere, bound to the document for the same reason `FindingDetail` does it: the
@@ -230,7 +231,7 @@ export function HostDetail({
             </div>
             <div className="pg-facts__row">
               <dt>Last activity</dt>
-              <dd>{formatRelative(host.lastActivity, now)}</dd>
+              <dd>{formatRelative(host.lastActivity, engineNow)}</dd>
             </div>
           </dl>
 

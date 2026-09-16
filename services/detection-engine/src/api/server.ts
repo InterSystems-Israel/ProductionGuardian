@@ -596,6 +596,17 @@ function writeHead(
     // than a refusal it has to discover by trying.
     'Access-Control-Allow-Methods': allowWrite ? 'GET, POST, OPTIONS' : 'GET, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
+    /* `Date` IS DATA HERE, not plumbing, and without this line a cross-origin browser cannot read it.
+       The dashboard renders `lastActivity` — which this engine computes as `now − elapsedSeconds`,
+       i.e. an instant on THIS process's clock — by subtracting the browser's own clock, and nothing
+       makes those two agree. A viewer's laptop two minutes behind NTP therefore reports
+       `Last activity: in 2 minutes` for a healthy production. `Date` is the only thing on the wire
+       that reveals this clock, and it is NOT on the CORS-safelisted response-header list, so
+       `response.headers.get('Date')` returns null cross-origin unless it is named here. Same origin
+       (the deployed nginx proxies `/api/healthscan`) never needed it, which is exactly why the gap
+       would have gone unnoticed until someone pointed `VITE_HEALTHSCAN_BASE_URL` at the engine
+       directly — the configuration Q9 exists to support. Costs one header and no round trip. */
+    'Access-Control-Expose-Headers': 'Date',
     'X-Healthscan-State': state,
     // Findings change every poll; a cached response would defeat the 10s bar.
     'Cache-Control': 'no-store',

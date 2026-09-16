@@ -17,7 +17,8 @@ export interface FindingRowProps {
   selected: boolean;
   /** First seen on the latest poll — gets one soft pulse. */
   isNew: boolean;
-  now: number;
+  /** The current instant on the ENGINE's clock, not this browser's — see `App.tsx`. */
+  engineNow: number;
   onSelect: (id: string) => void;
 }
 
@@ -25,7 +26,7 @@ export function FindingRow({
   finding,
   selected,
   isNew,
-  now,
+  engineNow,
   onSelect,
 }: FindingRowProps): JSX.Element {
   const meta = findingMeta(finding.type, finding.message);
@@ -64,7 +65,7 @@ export function FindingRow({
         <span className="pg-finding__message">{finding.message}</span>
       </span>
 
-      <span className="pg-finding__time">{formatRelative(finding.detectedAt, now)}</span>
+      <span className="pg-finding__time">{formatRelative(finding.detectedAt, engineNow)}</span>
     </button>
   );
 }
