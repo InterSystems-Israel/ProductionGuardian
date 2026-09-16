@@ -167,6 +167,17 @@ is worse on stage than a slightly old one. `X-Healthscan-State` is advisory: `ok
 **CORS:** `Access-Control-Allow-Origin: *` is sent on both endpoints, so the dashboard works
 with or without the Vite dev proxy (Q9).
 
+**`Access-Control-Expose-Headers: Date`** is sent with it, and `Date` is part of the contract rather
+than transport furniture. `lastActivity` is computed as the engine's `now − elapsedSeconds` (Q11), so
+every relative time the dashboard renders is an instant on *this process's* clock; a client that
+subtracts its own clock instead is only right if the two agree. A viewer's machine two minutes behind
+NTP renders `Last activity: in 2 minutes` for a healthy production — reported and fixed 2026-09-16.
+`Date` is the only thing on the wire that reveals the engine's clock, and it is **not** on the
+CORS-safelisted response-header list, so `response.headers.get('Date')` returns `null` cross-origin
+without this header. Same-origin deployments never needed it; the direct-to-engine configuration Q9
+exists to permit does. Clients should treat the reading as ~1s accurate (second-resolution, plus one
+network leg) — comfortably inside the ±10 s Q11 already claims for `lastActivity` itself.
+
 ---
 
 ## 4. The Day-1 questions, answered

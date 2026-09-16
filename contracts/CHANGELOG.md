@@ -4,6 +4,51 @@ Every contract change, dated, with the reason. Newest first.
 
 ---
 
+## 2026-09-16 — `healthscan-api.md` §3: `Date` is exposed to cross-origin clients, because `lastActivity` is on the engine's clock (#258)
+
+**Additive, one response header, no payload change.** `Access-Control-Expose-Headers: Date` alongside
+the existing `Access-Control-Allow-Origin: *`. Nothing in either endpoint's body moves, no field is
+added or retyped, and a client that ignores the header behaves exactly as before. Recorded here anyway,
+because what it exposes is *data* the dashboard needs to render correctly rather than plumbing.
+
+### The defect it answers
+
+Reported as "why does Last activity always say **in 2 minutes**". The data was honest throughout:
+`lastActivity` is the engine's `now − elapsedSeconds` (Q11), so it is in the past *by construction*.
+The dashboard was rendering it against its **own** `Date.now()`, and nothing in the system made the two
+clocks agree — a viewer's laptop a couple of minutes behind NTP puts every server timestamp into its
+own future, where `Intl.RelativeTimeFormat` reports future tense and is correct to do so for the input
+it was handed. Measured on the live deployment first: ALB `Date`, the local clock and `lastActivity`
+agreed within 5 s on the machine doing the measuring, which is precisely why it could not be reproduced
+there.
+
+**Not a timezone bug, and this is worth stating in the contract because timezone is the intuitive
+suspect.** Both sides of the comparison are epoch milliseconds, which carry no zone, and every
+timestamp this API emits is `Z`-suffixed UTC (§2). Only the clock's *offset* was ever in play. No zone
+setting on either end changes the symptom.
+
+### Why `Date` and not a new field
+
+A `generatedAt` in the body would have worked and was rejected: it duplicates something HTTP already
+carries on every response, and a new required field is a breaking change to two schemas for a fact the
+transport states for free. The cost of using `Date` instead is exactly this header — `Date` is not on
+the CORS-safelisted response-header list, so a cross-origin browser cannot see it at all unless the
+server names it.
+
+### Why it was invisible until now
+
+The deployed dashboard reaches `/api/healthscan` same-origin through nginx, where the header is
+readable regardless. The gap only opens in the configuration **Q9 exists to support** — a client
+pointed straight at the engine — which is the shape a dev proxy is optional *for*. An engine build
+without this header degrades a client to today's behaviour rather than breaking it: the offset reads
+`0`, which is what it has always effectively been.
+
+Guarded by a test in `services/detection-engine/test/api.test.ts` asserting both that
+`Access-Control-Expose-Headers` names `Date` and that the runtime is still sending `Date` at all — the
+second half matters because the first would keep passing against a server that stopped sending it.
+
+---
+
 ## 2026-09-15 — `mcp-tools.md` §5.5: the audit table records four events, not two, and a chat turn is now one of them (#255)
 
 **Additive, and partly a correction of the section's own count.** A fourth `disposition` — `answered` —
