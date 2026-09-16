@@ -45,12 +45,36 @@ export function parseTimestamp(iso: string | null | undefined): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-/** `2 minutes ago`, `just now`. `now` is injected so callers re-render on tick. */
+/**
+ * `2 minutes ago`, `just now`. `now` is injected so callers re-render on tick.
+ *
+ * PAST TENSE ONLY, and the clamp below is a fix rather than a nicety. Every one of the four call
+ * sites formats an instant stamped by the ENGINE and already in the past by construction:
+ * `Host.lastActivity` is the engine's `now − elapsedSeconds` (contract Q11) and
+ * `Finding.detectedAt` is when a rule fired. Neither can honestly be ahead of the present, so a
+ * positive delta never means the future — it means the viewer's clock disagrees with the engine's,
+ * and `Intl.RelativeTimeFormat` renders that as `Last activity: in 2 minutes`. A presenter's laptop
+ * two minutes behind NTP is enough to put every host in the grid into the future tense, which is
+ * how this was reported.
+ *
+ * Timezone is NOT the mechanism, checked rather than assumed: both sides here are epoch
+ * milliseconds, which carry no zone, and every timestamp on the wire is `Z`-suffixed UTC. Only the
+ * OFFSET of the clock matters, never its zone.
+ *
+ * The real repair is upstream — `App.tsx` anchors the clock it passes here to the engine's own
+ * `Date` header, so the residual is one network leg. This clamp is the second layer, and it earns
+ * its place twice: before the first response lands there is no offset to apply, and a
+ * cross-origin engine can withhold `Date` from JavaScript entirely (see `liveClient`). Clamping to
+ * zero reads as `just now`, which is the truth to within the ±10s the contract claims anyway.
+ *
+ * Early Warning's projections ARE about the future. They do not come through here — nothing routes
+ * a forecast through this function, which is what makes the clamp safe.
+ */
 export function formatRelative(iso: string | null | undefined, now: number = Date.now()): string {
   const date = parseTimestamp(iso);
   if (date === null) return ABSENT;
 
-  const deltaSeconds = Math.round((date.getTime() - now) / 1000);
+  const deltaSeconds = Math.min(0, Math.round((date.getTime() - now) / 1000));
   const magnitude = Math.abs(deltaSeconds);
   if (magnitude < 10) return 'just now';
   if (magnitude < 60) return relativeTime.format(deltaSeconds, 'second');

@@ -41,7 +41,8 @@ import { IconClose } from './icons';
 export interface FindingDetailProps {
   /** The selected finding, or null when the drawer is closed. */
   finding: FindingView | null;
-  now: number;
+  /** The current instant on the ENGINE's clock, not this browser's — see `App.tsx`. */
+  engineNow: number;
   onClose: () => void;
   /**
    * The MVP 2 panel, passed in rather than built here.
@@ -77,7 +78,7 @@ function deltaFormatter(kind: ReturnType<typeof valueKind>): (value: number) => 
 
 export function FindingDetail({
   finding,
-  now,
+  engineNow,
   onClose,
   investigation = null,
 }: FindingDetailProps): JSX.Element | null {
@@ -200,7 +201,7 @@ export function FindingDetail({
             {/* Relative for "how long has this been going", absolute UTC because
                 that is what correlates against a log (§7.2). */}
             <dd>
-              {formatRelative(finding.detectedAt, now)}
+              {formatRelative(finding.detectedAt, engineNow)}
               <span className="pg-facts__sub pg-facts__mono">
                 {formatAbsoluteUtc(finding.detectedAt)}
               </span>

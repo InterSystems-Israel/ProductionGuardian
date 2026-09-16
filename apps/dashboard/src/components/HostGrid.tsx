@@ -23,7 +23,8 @@ export interface HostGridProps {
 
   hosts: readonly HostView[];
   findings: readonly FindingView[];
-  now: number;
+  /** The current instant on the ENGINE's clock, not this browser's — see `App.tsx`. */
+  engineNow: number;
   loading: boolean;
   /**
    * How many loading skeletons to draw — the host count this browser last saw.
@@ -113,7 +114,7 @@ function HostSkeleton(): JSX.Element {
 export function HostGrid({
   hosts,
   findings,
-  now,
+  engineNow,
   loading,
   skeletonCount = null,
   projections = [],
@@ -174,7 +175,7 @@ export function HostGrid({
             host={host}
             worst={summary?.worst ?? null}
             findingCount={summary?.count ?? 0}
-            now={now}
+            engineNow={engineNow}
             projection={byHost.get(host.host) ?? null}
             /* Spread conditionally rather than passed as `onSelect={onSelectHost}`: under
                `exactOptionalPropertyTypes` an explicit `undefined` is not the same as an absent prop,

@@ -123,6 +123,22 @@ export interface HealthScanApi {
 
   /** Reset to the engine's committed values — POST /api/settings/thresholds/reset. */
   resetThresholdSettings(signal?: AbortSignal): Promise<ThresholdSettingsView>;
+
+  /**
+   * `serverNow − clientNow` in milliseconds, or `0` when it cannot be observed.
+   *
+   * ON THE SEAM RATHER THAN IMPORTED FROM `liveClient`, because the two implementations have
+   * genuinely different answers and neither is a stub. Every timestamp the UI renders relatively is
+   * an instant on the clock of whoever stamped it: `liveClient` reads timestamps the ENGINE stamped
+   * and must report how far that clock sits from this browser's, while `mockClient` stamps its
+   * fixtures from `Date.now()` in this same tab and must report `0` — correcting demo data toward a
+   * server clock it never touched would inject the very error this exists to remove.
+   *
+   * SYNCHRONOUS, and not a promise or a piece of state, so that a render can ask. The value is only
+   * consumed beside `Date.now()`, which is also synchronous, and the page re-renders on its own
+   * clock tick — so the freshest offset is picked up within a second without anything subscribing.
+   */
+  clockOffsetMs(): number;
 }
 
 export type Mode = 'demo' | 'live';

@@ -74,8 +74,11 @@ export interface HostCardProps {
   /** Worst severity among this host's findings; null when it has none. */
   worst: Severity | null;
   findingCount: number;
-  /** Injected so every card's relative time re-renders on the same tick. */
-  now: number;
+  /**
+   * Injected so every card's relative time re-renders on the same tick — and it is the current
+   * instant on the ENGINE's clock, not this browser's. See `App.tsx`.
+   */
+  engineNow: number;
   /**
    * This host's Early Warning projection, or null when there is none.
    *
@@ -98,7 +101,7 @@ export function HostCard({
   host,
   worst,
   findingCount,
-  now,
+  engineNow,
   projection = null,
   onSelect,
   selected = false,
@@ -145,7 +148,7 @@ export function HostCard({
             span we have not measured would be the invented precision §7.3 argues against. */}
         <MetricRow label="Avg processing (completed)" value={formatDuration(host.avgProcessingTime)} />
         <MetricRow label="Avg queueing (completed)" value={formatDuration(host.avgQueueingTime)} />
-        <MetricRow label="Last activity" value={formatRelative(host.lastActivity, now)} />
+        <MetricRow label="Last activity" value={formatRelative(host.lastActivity, engineNow)} />
       </div>
 
       {/* Between the metrics and the finding count: it is derived FROM the metrics above and is

@@ -177,9 +177,31 @@ Eight of the nine original assumptions held. **Q1 and Q13 are the two correction
 | Q8 | `finding.host` is always exactly a `host.host` value. |
 | Q9 | CORS `*` is sent; the dev proxy is optional, kept as the default anyway. |
 | Q10 | IRIS says `actor` for business processes; Dev B normalizes to `process`. |
-| Q11 | `lastActivity` is derived from elapsed seconds — trust it to ±10s, not for sub-second ordering. |
+| Q11 | `lastActivity` is derived from elapsed seconds — trust it to ±10s, not for sub-second ordering. And it is derived from the **engine's** clock, which is why the page carries two: see below. |
 | Q12 | `avgProcessingTime` is a sample-count-weighted aggregate across message types. |
 | Q13 | `queued` / `errored` are `number \| null`. `null` is **"not measurable for this host"**, never zero — the counts come from a host-status endpoint merged on host name, and a host that merge does not reach stays null. Render `—`; never compare against it. |
+
+**THE PAGE HAS TWO CLOCKS, AND WHICH ONE A NUMBER USES IS NOT A STYLE CHOICE.** Reported as
+"why does Last activity always say *in 2 minutes*". Nothing was wrong with the data: `lastActivity`
+is the engine's `now − elapsedSeconds` and is in the past by construction, but the browser was
+rendering it against its OWN clock, and a viewer's laptop a couple of minutes behind NTP puts every
+server timestamp in its future — `Intl.RelativeTimeFormat` says `in 2 minutes` and means it. Not a
+timezone bug and no zone setting touches it: both sides are epoch milliseconds and every timestamp
+on the wire is `Z`-suffixed UTC. Only the OFFSET matters.
+
+So `App.tsx` keeps `now` (this browser) and derives `engineNow = now + api.clockOffsetMs()`, and the
+rule is:
+
+- **A duration between two instants THIS TAB observed** — staleness, `updated 4s ago` — uses `now`.
+  A constant clock error cancels out of that subtraction, and anchoring it would misread a clock
+  offset as stale data and raise the banner over a healthy poll.
+- **Anything formatted from a timestamp the ENGINE stamped** uses `engineNow`. The prop is named
+  `engineNow` all the way down for that reason; a `now` that is not `Date.now()` is a trap.
+
+The offset is measured from the response `Date` header in `liveClient` (~1s accurate; the engine
+sends `Access-Control-Expose-Headers: Date` so a cross-origin build can read it) and is `0` from
+`mockClient`, which stamps its fixtures from this tab's own clock. `formatRelative` also clamps a
+positive delta to `just now` as a second layer, for the first paint before any offset exists.
 
 **Keep the `// CONTRACT-Q<n>` convention** for future contract-dependent work. Tagging each assumption site with a greppable marker made reconciliation a `grep` rather than an audit — ADR 0004 recommends promoting it to practice.
 

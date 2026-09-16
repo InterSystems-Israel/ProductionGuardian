@@ -639,6 +639,12 @@ export function createMockClient(pinnedScenarioId?: string): MockClient {
       return settingsView();
     },
 
+    /* ZERO, and not "unknown". `resolveScenario` stamps every fixture timestamp from `Date.now()` in
+       this tab, so the clock that wrote them is the clock that reads them and the offset is exactly
+       nought. Reporting anything else would shift demo timestamps by a server skew no demo data ever
+       experienced — inventing the defect that this method exists to remove in live mode. */
+    clockOffsetMs: () => 0,
+
     currentScenario: () => pinned ?? scenarioAt(served),
     step: () => (pinned !== undefined ? 0 : served % PROGRESSION.length),
     stepCount: () => (pinned !== undefined ? 1 : PROGRESSION.length),

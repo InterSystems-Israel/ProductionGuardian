@@ -52,6 +52,13 @@ export function App(): JSX.Element {
      stale copy of the host's metrics across every poll -- the same reason `selectedId` holds an id and
      `selected` is looked up from the live array below. */
   const [selectedHost, setSelectedHost] = useState<string | null>(null);
+  /* THIS BROWSER's clock, and it stays that way. Everything measured from it is a duration between
+     two instants THIS TAB observed -- `lastSuccessAt` to now, for staleness and "updated 4s ago" --
+     where the local clock is not merely adequate but correct, because a clock that is wrong by a
+     constant cancels out of a subtraction. Server-stamped timestamps are the opposite case and use
+     `engineNow` below. Seeded from `Date.now()` rather than the engine's clock because no response
+     has arrived yet at first render -- and because `api` is declared further down, so reading it in
+     this initialiser would be the TDZ trap the polling hooks below already warn about. */
   const [now, setNow] = useState(() => Date.now());
 
   /* Which top-level view is on screen (MVP 3).
@@ -75,6 +82,29 @@ export function App(): JSX.Element {
   const mockClient = useMemo<MockClient>(() => createMockClient(readScenario()), []);
   const liveClient = useMemo(() => createLiveClient(), []);
   const api = mode === 'live' ? liveClient : mockClient;
+
+  /**
+   * The same instant as `now`, expressed on the clock of whoever STAMPED the timestamps on screen.
+   *
+   * WHY THE PAGE NEEDS TWO CLOCKS. `Host.lastActivity` and `Finding.detectedAt` are instants on the
+   * engine's clock — `lastActivity` is its `now − elapsedSeconds` (contract Q11), so it is in the
+   * past by construction — and rendering "how long ago" means subtracting the present from them.
+   * Subtracting THIS browser's present is only valid if the two clocks agree, and nothing makes them
+   * agree: a laptop two minutes behind NTP puts every server timestamp in its own future, and
+   * `Intl.RelativeTimeFormat` duly reports `Last activity: in 2 minutes` for a healthy production.
+   * That was the reported symptom, and it is a clock OFFSET, not a timezone: both sides are epoch
+   * milliseconds and every timestamp on the wire is `Z`-suffixed UTC, so no zone setting can move it.
+   *
+   * `api.clockOffsetMs()` is the measurement — the engine's `Date` header against `Date.now()`, so
+   * ~1s accurate, and `0` in demo mode where this tab stamped the fixtures itself. Recomputed every
+   * render rather than held in state: `now` already ticks every second, which is more than often
+   * enough to pick up an offset that only changes when a poll returns.
+   *
+   * The split is the whole point. Durations between two LOCAL observations keep `now`; anything
+   * formatted from a timestamp the engine wrote gets this. `formatRelative` clamps the future away as
+   * a second layer, for the first paint before any offset exists.
+   */
+  const engineNow = now + api.clockOffsetMs();
 
   const {
     hosts,
@@ -334,8 +364,19 @@ export function App(): JSX.Element {
     setSettingsOpen(false);
   }, []);
 
+  /* STALENESS KEEPS THE LOCAL CLOCK, deliberately, and this is the case the two-clock split exists to
+     get right rather than an oversight. Both operands were observed by this tab, so the subtraction is
+     an elapsed-time measurement in which a constant clock error cancels exactly -- and it MUST stay
+     that way: mixing a server-anchored `now` with a locally stamped `lastSuccessAt` would read a
+     two-minute clock offset as two-minute-old data and raise the stale banner over a healthy poll. */
   const isStale =
     lastSuccessAt !== null && now - lastSuccessAt > intervalMs * STALE_AFTER_INTERVALS;
+
+  /* The banner's "Showing data as of HH:MM:SS UTC", which is a different question from staleness: it
+     names an absolute instant out loud and labels it UTC, so a slow local clock makes it say a UTC
+     time that is not the UTC time. Anchored, therefore, while `isStale` above is not. */
+  const lastSuccessAtOnEngineClock =
+    lastSuccessAt === null ? null : lastSuccessAt + api.clockOffsetMs();
 
   const connectionState: ConnectionState =
     error !== null ? 'error' : isStale ? 'stale' : 'ok';
@@ -450,7 +491,7 @@ export function App(): JSX.Element {
       <ConnectionBanner
         state={connectionState}
         error={error}
-        lastSuccessAt={lastSuccessAt}
+        lastSuccessAt={lastSuccessAtOnEngineClock}
         failureCount={failureCount}
         onRetry={pollNow}
         onSwitchToDemo={() => switchMode('demo')}
@@ -467,7 +508,7 @@ export function App(): JSX.Element {
             projections={projections}
             hosts={hosts}
             findings={findings}
-            now={now}
+            engineNow={engineNow}
             loading={loading}
             skeletonCount={hostCountHint}
             onSelectHost={selectHost}
@@ -506,7 +547,7 @@ export function App(): JSX.Element {
             findings={visibleFindings}
             selectedId={selectedId}
             newFindingIds={newFindingIds}
-            now={now}
+            engineNow={engineNow}
             loading={loading}
             onSelect={selectFinding}
           />
@@ -534,7 +575,7 @@ export function App(): JSX.Element {
         worst={selectedHostWorst}
         series={hostSeries.series}
         seriesLoading={hostSeries.loading}
-        now={now}
+        engineNow={engineNow}
         onClose={closeHostDetail}
       />
 
@@ -563,7 +604,7 @@ export function App(): JSX.Element {
           the same "as of" caveat the banner states once. */}
       <FindingDetail
         finding={selected}
-        now={now}
+        engineNow={engineNow}
         onClose={closeDetail}
         investigation={
           selected === null ? null : (

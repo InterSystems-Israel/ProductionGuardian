@@ -15,7 +15,8 @@ export interface FindingsListProps {
   findings: readonly FindingView[];
   selectedId: string | null;
   newFindingIds: ReadonlySet<string>;
-  now: number;
+  /** The current instant on the ENGINE's clock, not this browser's — see `App.tsx`. */
+  engineNow: number;
   loading: boolean;
   onSelect: (id: string) => void;
 }
@@ -36,7 +37,7 @@ export function FindingsList({
   findings,
   selectedId,
   newFindingIds,
-  now,
+  engineNow,
   loading,
   onSelect,
 }: FindingsListProps): JSX.Element {
@@ -67,7 +68,7 @@ export function FindingsList({
           finding={finding}
           selected={finding.id === selectedId}
           isNew={newFindingIds.has(finding.id)}
-          now={now}
+          engineNow={engineNow}
           onSelect={onSelect}
         />
       ))}
